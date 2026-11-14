@@ -161,7 +161,7 @@ requestAnimationFrame(frame);
 
 ### Step 12 — `README.md`
 
-Content: title **Veggie Bros.**; one-line description; **Run** (no install needed): from repo root, `python3 -m http.server 8000`, open `http://localhost:8000` (alternative: `npx serve .`); **Controls** table (←/→ or A/D move · Shift run · Space/Z/W/↑ jump · Enter start/confirm · P/Esc pause · R restart level while paused · M mute; touch buttons appear on small/touch screens); **Goal**: collect Sunfruit, stomp Turnip Troopers, grow with the Mega Berry, reach the Melon Gate at the end of 1-1 and 1-2, defeat Bromely the Pineapple King in 1-3; **Structure**: pointer to `architecture.md`.
+Done — README.md merged (run instructions, controls table cross-checked against src/input.js, goal + architecture pointer — all per spec).
 
 ---
 
