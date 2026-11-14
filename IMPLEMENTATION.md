@@ -40,5 +40,5 @@ For each plan step, in order, until all are Done:
 - Stop and ask the user on: spec ambiguity that blocks a step, a fix loop that doesn't converge after 3 rounds, or unexpected git state (dirty working tree at loop start, diverged branches).
 
 ## Current state
-- Steps 1–3 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`.
-- Resume at Step 4 (`src/input.js`). Full pause state, approved deviations, and restart prompt: see `RESUME.md`.
+- Steps 1–6 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`; `src/input.js`; `src/audio.js`; `src/levels.js` + `src/level.js`.
+- Resume at Step 7 (`src/items.js`). Full pause state, approved deviations, and restart prompt: see `RESUME.md`.
