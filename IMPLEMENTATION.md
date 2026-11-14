@@ -32,7 +32,7 @@ For each plan step, in order, until all are Done:
 
 ## Rules
 
-- Strictly sequential: at most one worker or reviewer running at a time (shared checkout).
+- Isolation: each worker (and its post-worker reviewer) runs in its own git worktree — `git worktree add /tmp/vb-wt/step-NN-<slug> -b step-NN-<slug> main`; the shared checkout stays on `main` for merges and plan/state updates only. Independent steps (disjoint files) may run in parallel batches; a step that imports or integrates code from a prior step (e.g. step 11) runs after the batch that produced its dependencies. Per-branch review gate, 3-round fix cap, and merge-only-on-main rules are unchanged.
 - Orchestrator never edits code; workers never touch files outside their step; reviewer never edits.
 - Every worker/reviewer brief is self-contained (subagents share no conversation): include the spec text, file list, verification commands, and "do not touch other files".
 - Never rebase or force-push; `main` only moves via merges.
@@ -40,5 +40,5 @@ For each plan step, in order, until all are Done:
 - Stop and ask the user on: spec ambiguity that blocks a step, a fix loop that doesn't converge after 3 rounds, or unexpected git state (dirty working tree at loop start, diverged branches).
 
 ## Current state
-- Steps 1–6 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`; `src/input.js`; `src/audio.js`; `src/levels.js` + `src/level.js`.
-- Resume at Step 7 (`src/items.js`). Full pause state, approved deviations, and restart prompt: see `RESUME.md`.
+- Steps 1–7 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`; `src/input.js`; `src/audio.js`; `src/levels.js` + `src/level.js`; `src/items.js`.
+- Next: Batch A (parallel worktrees) = Step 8 `src/enemy.js` + Step 9 `src/player.js` + Step 10 `src/camera.js` + `src/render.js` + Step 12 `README.md` → then Step 11 `src/main.js` → plan §Verification. Full pause state, approved deviations, and restart prompt: see `RESUME.md`.

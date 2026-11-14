@@ -50,14 +50,7 @@ Done — 3 level maps (byte-exact vs plan) + DOM-free parser/tile helpers merged
 
 ### Step 7 — `src/items.js`
 
-DOM-free. Export classes/factories:
-
-- `makeFruit(x, y)` → `{ kind:'fruit', x, y, t:0 }`; update: `t += dt`, frame = `Math.floor(t*8) % 4`.
-- `makeBerry(x, y)` → `{ kind:'berry', x, y, vx:BERRY_SPEED, vy:0, t:0, onGround:false }`; update: gravity, horizontal move + wall check (reverse vx at wall), vertical move + ground check against `tileAt`; `t += dt`, remove when `t > BERRY_LIFE`.
-- `makePop(x, y, what)` → `{ kind:'pop', x, y, what:'fruit'|'berry', t:0 }` — pure visual: sprite rises 16 px over 0.25 s (remove after).
-- `makeShards(x, y)` → 4 `{ kind:'shard', x, y, k, t:0 }` — per-shard velocity (`k=0..3`: dx ±40..±90, dy −160..−220), gravity 600, remove at `t>0.5`.
-- `makePopup(x, y, text)` → `{ kind:'popup', x, y, text, t:0 }` — rise 20 px over 0.6 s, remove after.
-- `updateItems(list, dt, level)` — mutates the array in place (filter removed).
+Done — DOM-free items module merged (5 factories + in-place updateItems; berry 14×14 wall-bounce physics, 15 s life; deterministic per-k shards; makeShards returns an array of 4 — step 11 spec updated to spread it).
 
 ### Step 8 — `src/enemy.js`
 
@@ -140,7 +133,7 @@ const G = { state:'TITLE', score:0, fruitCount:0, lives:START_LIVES, levelIndex:
     - Head bump: if `p.headBump` → `{x: tx, y: ty}`, `ch = G.level.tiles[ty][tx]`:
       - `'P'` → `tiles = 'U'; G.items.push(makePop(tx*16+4, ty*16-16, 'fruit')); G.fruitCount++; addScore(SCORE.fruit, tx*16+4, ty*16); audio.sfx('coin');`
       - `'Q'` → `tiles = 'U'; G.items.push(makePop(tx*16+4, ty*16-16, 'berry')); G.items.push(makeBerry(tx*16+1, ty*16-16)); addScore(SCORE.berry, tx*16+4, ty*16); audio.sfx('power');`
-      - `'B'` + `p.big` → `tiles = '.'; G.items.push(makeShards(tx*16+4, ty*16+6)); addScore(SCORE.block, tx*16+4, ty*16); audio.sfx('break');`
+      - `'B'` + `p.big` → `tiles = '.'; G.items.push(...makeShards(tx*16+4, ty*16+6)); addScore(SCORE.block, tx*16+4, ty*16); audio.sfx('break');`
       - `'B'` + small → `G.level.bumps.push({x: tx, y: ty, t: 0}); audio.sfx('bump');`
     - Turnip collision: for each active, not-squashed turnip with AABB overlap: if `p.vy > 0 && (p.y + p.h) - e.y < 10` → `e.squashed = true; e.squashT = 0; addScore(SCORE.stomp, e.x, e.y); audio.sfx('stomp'); p.vy = STOMP_BOUNCE; p.onGround = false;` else if `hurtPlayer(p)` → `audio.sfx('hurt'); if (p.dead) { G.dyingT = 0; audio.musicStop(); audio.sfx('die'); }`.
     - Boss collision: same stomp rule against the top 10 px of the boss: `b.hp -= 1; b.hurtT = 1.0; addScore(SCORE.bossHit, b.x, b.y); audio.sfx('bossHit'); p.vy = STOMP_BOUNCE; if (b.hp <= 0) { b.defeated = true; b.defeatT = 0; b.vx = 0; }`; side contact → `hurtPlayer` path (same as turnip).
