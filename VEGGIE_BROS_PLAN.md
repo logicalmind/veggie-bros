@@ -34,23 +34,7 @@ Done — page shell + constants module merged; `SOLID` is `"XSBPQU=|"` (pipe sol
 
 ### Step 3 — `src/sprites.js`
 
-Procedural pixel art: every sprite is a function using `ctx.fillStyle` + `ctx.fillRect` at integer coordinates (1 px = 1 internal px). No offscreen canvases except the text helper. Export:
-
-- `drawHero(ctx, x, y, facing, big, pose, frame)` — x,y = top-left of hitbox; draw sprite 12 wide, 14 tall (small) / 12×28 (big) at `(x, y-2)`. Strawberry: cone body `heroBody` (wider top, tapering bottom), 4 seed dots `heroSeed`, green leaf crown (5 spikes `heroLeaf`) + 1 px stem, 2 white eyes with 1 px `black` pupils. `pose`: `idle` (frame 0), `run` (legs 2×4 `heroDark` alternate ±1 px x offset on `frame`, body bounces 1 px on odd frame), `jump` (legs tucked up 2 px). `facing` flips the eye/pupil offset left/right.
-- `drawTurnip(ctx, x, y, frame, facing)` — 14×14 at `(x-1, y-1)`: `turnipBody` bulb (roundish: stacked rows 6/10/12/12/10/8 px wide), `turnipTip` 2 px bottom tip, 3-leaf green sprout (`heroLeaf`), 2 eyes, 2 px feet alternating 1 px per `frame`.
-- `drawBoss(ctx, x, y, frame, facing, hurt)` — 32×32 at `(x-2, y-2)`: `pineapple` oval body with `pineappleDark` diagonal crosshatch grid, 5-spike green crown, face (eyes + 2 px mouth); `frame` bounces whole sprite 1 px; `hurt` → draw body+face in `white` instead.
-- `drawFruit(ctx, x, y, frame)` — 8×8 at `(x, y)`: 5-point `crown`-yellow star with `black` 1 px outline; spin = 4 frames, star width 8/4/2/4 (frame 0..3).
-- `drawBerry(ctx, x, y, frame)` — 14×14 at `(x, y)`: `berryBody` circle (rows 8/12/14/14/14/12/8), `berryDark` outline, 2 px `white` highlight, 5 px star scar `berryDark` on top; frame 1: skip bottom 1 px row (pulse).
-- `drawGround(ctx, x, y, top)` — 16×16: `dirt` fill, 5 `dirtDark` 1×1 specks at fixed offsets, `black`-ish 1 px bottom edge; if `top`: 4 px `grass` band + 1 px `dirtDark` line under it.
-- `drawStone(ctx, x, y)` — `stone` fill, 1 px `stoneDark` bottom+right, 1 px `white` top+left bevel.
-- `drawBrick(ctx, x, y)` — `brick` fill, `brickDark` mortar: 1 px lines at y+5, y+10 full width, verticals x+5 / x+11 (top row), x+8 (bottom two rows); 1 px `brickDark` border.
-- `drawPumpkin(ctx, x, y, used)` — `pumpkin` fill, `pumpkinDark` vertical ridge lines at x+4, x+11 + border; face: two 2×2 triangle `pumpkinLit` eyes, 3 px zigzag `pumpkinLit` mouth, 1 px `pumpkinDark` stem top-center; `used` → plain `used` with `usedDark` border, no face.
-- `drawPlatform(ctx, x, y)` — `platform` fill, `platformDark` 1 px top+bottom edges, 3 `black` seed dots, 1 px green `bush` rind on left+right columns.
-- `drawPipe(ctx, x, y, isTop, isLeft)` — 16×16 melon pipe segment: `pipe` fill, `pipeDark` vertical stripes at x+3/x+11, 2 px `pipeFlesh` inner edge on the inside column (left segment: right edge; right segment: left edge); `isTop` row: 2 px `pipeDark` cap overhang extending 2 px beyond the pipe run on its outer side, 3 px `pipeFlesh` lip.
-- `drawGate(ctx, x, y)` — 2 tiles wide × 7 tall at tile (x,y): stone post (`stone`/`stoneDark`) 2×16 at bottom tile + `red` pennant flag on a 1 px pole above the arch; watermelon arch on top 2×2 tiles (`pipeFlesh` fill, `pipe` rind, 3 seed dots); draw order bottom-up.
-- `drawHill(ctx, x, y, r, color)` / `drawCloud(ctx, x, y)` / `drawBush(ctx, x, y)` — simple stacked-rects approximations in the given colors.
-- `drawShard(ctx, x, y, k, t)` — one of 4 `brick` 4×4 rects with per-shard offsets scaled by `t`.
-- `drawPixelText(ctx, text, x, y, color, scale=1)` — crisp text: cached offscreen canvas (created lazily via `document.createElement('canvas')`, guarded by `typeof document !== 'undefined'`); draw the text at `24px monospace`, white on transparent (glyph cell 12×24 px, advance 12), then per character i: `ctx.imageSmoothingEnabled = false; ctx.drawImage(off, i*12, 0, 12, 24, x + i*6*scale, y, 6*scale, 12*scale)` → chunky 6×12 px glyphs at scale 1 (12×24 at scale 2, 18×36 at scale 3). Return total width `text.length * 6 * scale`.
+Done — procedural pixel-art module merged (17 draw functions + cached pixel-text helper; text helper fills glyphs with the `color` arg — approved deviation, see RESUME.md).
 
 ### Step 4 — `src/input.js`
 
