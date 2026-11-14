@@ -30,26 +30,7 @@ Done — `architecture.md` is at the repo root (verbatim copy; source of truth f
 
 ### Step 2 — `index.html` + `src/config.js`
 
-`index.html` (exact structure): `<!DOCTYPE html>`, head with `<meta charset="utf-8">`, `<meta name="viewport" content="width=device-width, initial-scale=1">`, `<title>Veggie Bros.</title>`, `<style>`: `html,body{margin:0;height:100%;background:#14141f;display:flex;align-items:center;justify-content:center;overflow:hidden}`, `canvas{image-rendering:pixelated;image-rendering:crisp-edges}`, `#touch{position:fixed;left:0;right:0;bottom:0;display:none;justify-content:space-between;padding:12px 16px;pointer-events:none}`, `#touch .g{display:flex;gap:12px;pointer-events:auto}`, `#touch button{width:56px;height:56px;border-radius:50%;border:2px solid #555;background:rgba(255,255,255,.15);color:#fff;font-size:20px}`. Body: `<canvas id="game" width="256" height="240"></canvas>`, then `<div id="touch"><div class="g"><button id="t-left">◀</button><button id="t-right">▶</button></div><div class="g"><button id="t-jump">A</button></div></div>`, then `<script type="module" src="src/main.js"></script>`.
-
-`src/config.js` exports: `TILE=16, VIEW_W=256, VIEW_H=240, ROWS=15, STEP=1/60, GRAVITY=2300, MAX_FALL=420, JUMP_VY=-640, WALK_MAX=110, RUN_MAX=190, ACCEL=800, AIR_ACCEL=600, FRICTION=1400, COYOTE=0.08, JUMP_BUFFER=0.12, JUMP_CUT_VY=-200, STOMP_BOUNCE=-360, PLAYER_W=12, PLAYER_SMALL_H=12, PLAYER_BIG_H=26, INVULN_TIME=2.0, START_LIVES=3, ENEMY_SPEED=30, BOSS_SPEED=40, BOSS_HP=3, BOSS_HOP_COOLDOWN=1.6, BOSS_HOP_RANGE=120, BOSS_HOP_VY=-380, BERRY_SPEED=60, BERRY_LIFE=15, SCORE={fruit:100,stomp:200,block:50,berry:1000,gate:1000,bossHit:500,bossDown:2000}`, `SOLID="XSBPQU="`, and `PALETTE` with these named hex values:
-
-```
-sky #9be3f5 · skyDark #7fd4ec · cloud #ffffff · hillFar #a8e08f · hillNear #6cc760 · bush #3f9e4d
-dirt #d98c4a · dirtDark #a35f2c · grass #5fbf4a
-stone #e8e0c0 · stoneDark #a89e78
-brick #e0a45c · brickDark #9c6428
-pumpkin #f08c1e · pumpkinDark #b35c0a · pumpkinLit #ffd23e
-used #b08050 · usedDark #7a5230
-platform #e8c86a · platformDark #b08830
-pipe #4fc76a · pipeDark #2f8f47 · pipeFlesh #dff2c8
-heroBody #e8434f · heroDark #b02531 · heroSeed #ffd23e · heroLeaf #3f9e4d
-white #ffffff · black #1a1a1a
-turnipBody #f2e8dc · turnipTip #c9a86a
-berryBody #4a6cf0 · berryDark #2f4ab0
-pineapple #e8b83e · pineappleDark #a87820 · crown #ffd23e
-red #e8434f
-```
+Done — page shell + constants module merged; `SOLID` is `"XSBPQU=|"` (pipe solid per architecture; documented deviation).
 
 ### Step 3 — `src/sprites.js`
 
