@@ -54,14 +54,7 @@ Done — DOM-free items module merged (5 factories + in-place updateItems; berry
 
 ### Step 8 — `src/enemy.js`
 
-DOM-free. Export:
-
-- `makeTurnip(spawn)` → `{ type:'turnip', x, y, vx:-ENEMY_SPEED, vy:0, w:12, h:12, onGround:false, active:false, squashed:false, squashT:0, t:0 }`.
-- `updateTurnip(e, dt, level, camX, player)`: if `!e.squashed && !e.active && e.x < camX + VIEW_W + 32` → `e.active = true`; if not active → return. If `squashed`: `squashT += dt`, remove when `> 0.4` (caller filters). Else: gravity + MAX_FALL; horizontal move with wall resolution (on wall hit `vx = -vx`); vertical move + ground; edge check: if `onGround` and `tileAt(level, frontFootTileX, Math.floor((e.y + e.h + 1) / 16)) === '.'` (front = sign of vx) → `vx = -vx`; `t += dt`, frame = `Math.floor(t*4) % 2`.
-- `makeBoss(spawn)` → `{ type:'boss', x, y, vx:BOSS_SPEED, vy:0, w:28, h:28, onGround:false, active:false, hurtT:0, hopT:0, defeated:false, defeatT:0, t:0 }`.
-- `updateBoss(b, dt, level, camX, player)`: activate like turnip; if `defeated`: `defeatT += dt` (caller ends game at 1.5 s); return. Walk + wall reverse; gravity/ground; `hopT += dt`; if `onGround && hopT > BOSS_HOP_COOLDOWN && !player.dead && Math.abs(player.x - b.x) < BOSS_HOP_RANGE && Math.abs(player.y - b.y) < 48`: `vy = BOSS_HOP_VY`, `vx = Math.sign(player.x - b.x) * 60 || BOSS_SPEED`, `hopT = 0`; `hurtT = max(0, hurtT - dt)`; `t += dt`, frame = `Math.floor(t*3) % 2`.
-- Tile collision helpers: implement locally as `moveX(e, dt, level)` / `moveY(e, dt, level)` (same axis-separated clamp logic as player; entities have `w`,`h`).
-- Stomp decision lives in main (see step 11).
+Done — `src/enemy.js` merged (Turnip Trooper + Bromely boss: activation at view+32, wall/edge reversal, squash-corpse + defeat states, hop AI; `hp: BOSS_HP` added per step-11 requirement — recorded deviation).
 
 ### Step 9 — `src/player.js`
 
