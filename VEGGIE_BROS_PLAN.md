@@ -58,18 +58,7 @@ Done — `src/enemy.js` merged (Turnip Trooper + Bromely boss: activation at vie
 
 ### Step 9 — `src/player.js`
 
-DOM-free. Export `makePlayer(x, y)` → `{ x, y, vx:0, vy:0, w:12, h:12, facing:1, big:false, onGround:false, coyoteT:0, bufferT:0, invulnT:0, dead:false, deadT:0, deadPit:false, headBump:null, jumped:false, t:0 }` and `updatePlayer(p, dt, input, level)`:
-
-- If `p.dead`: `p.deadT += dt`; if not `deadPit`: `p.vy += GRAVITY*dt; p.y += p.vy*dt` (no collision); return.
-- `p.headBump = null`.
-- Horizontal: `target = (input.left? -1:0) + (input.right? 1:0)`; `maxSpeed = input.run ? RUN_MAX : WALK_MAX`; if `target !== 0`: `p.facing = target`; accel = `p.onGround ? ACCEL : AIR_ACCEL`; move vx toward `target*maxSpeed` by `accel*dt`, clamped to ±maxSpeed. Else: friction (grounded `FRICTION`, air 200) toward 0.
-- Jump: if `input.jumpPressed` → `p.bufferT = JUMP_BUFFER`. If `p.onGround` → `p.coyoteT = COYOTE` else `p.coyoteT -= dt`. If `p.bufferT > 0 && p.coyoteT > 0`: `p.vy = JUMP_VY; p.bufferT = 0; p.coyoteT = 0; p.onGround = false; p.jumped = true; p.jumpCut = false;` (main reads `jumped`, plays SFX, clears it). If `!input.jump && !p.jumpCut && p.vy < JUMP_CUT_VY` → `p.vy = JUMP_CUT_VY; p.jumpCut = true;`.
-- `p.bufferT -= dt` (floor 0); `p.vy = min(p.vy + GRAVITY*dt, MAX_FALL)`.
-- Move + resolve axis-separated vs `tileAt` (same clamp logic as `moveX/moveY` in enemy.js, inlined here): x-pass sets `p.vx = 0` on wall; y-pass: landing sets `onGround = true`; ceiling hit while `vy < 0` → record `p.headBump = { x: tx, y: ty }` for the bumped tile (prefer the tile with most x-overlap among the overlapping row), `p.vy = 0`.
-- `p.invulnT = max(0, p.invulnT - dt)`; `p.t += dt`.
-- Export `hurtPlayer(p)`: if `p.invulnT > 0 || p.dead` → return `false`; if `p.big`: `p.big = false; p.h = 12; p.y += 14; p.invulnT = INVULN_TIME; return true`. Else: `p.dead = true; p.deadT = 0; p.vy = -400; return true`.
-- Export `killPlayer(p, pit)`: if not dead: `p.dead = true; p.deadT = 0; p.deadPit = pit; if (!pit) p.vy = -400;` (pit callers set `deadPit=true` and skip the pop-up).
-- Render pose: `pose = p.dead ? 'jump' : (!p.onGround ? 'jump' : (Math.abs(p.vx) > 10 ? 'run' : 'idle'))`, `frame = pose==='run' ? Math.floor(p.t*10) % 2 : 0`.
+Done — `src/player.js` merged (axis-separated move + most-overlap headBump, coyote/buffer/jump-cut per spec bullet order, big/small damage + pit/death states; `jumpCut:false` init + boolean `killPlayer` return — recorded deviations).
 
 ### Step 10 — `src/camera.js` + `src/render.js`
 
