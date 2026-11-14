@@ -62,27 +62,7 @@ Done — `src/player.js` merged (axis-separated move + most-overlap headBump, co
 
 ### Step 10 — `src/camera.js` + `src/render.js`
 
-`src/camera.js` (DOM-free): export `makeCamera()` → `{ x: 0 }` and `updateCamera(cam, dt, player, levelW)`: `target = player.x - 96`; rate = `target > cam.x ? 10 : 14`; `cam.x += (target - cam.x) * Math.min(1, rate * dt)`; clamp `cam.x` to `[0, levelW - VIEW_W]`; round to integer on render (render uses `Math.floor(cam.x)`).
-
-`src/render.js`: export `render(ctx, g)` where `g` is the game state object from main (fields: `state, level, player, enemies, items, cam, score, fruitCount, lives, levelIndex, clearT, bannerT, winT, overT, muted`). `const camX = Math.floor(g.cam.x)`. Order:
-
-1. Sky: fill `PALETTE.sky` full 256×240.
-2. Parallax hills: for `i` over the visible range at 96 px steps of `camX*0.25` scroll: `drawHill` alternating `hillFar` (r 40, base y 150) / `hillNear` (r 28, base y 168) with ±8 height variance from a hash of `i`.
-3. Clouds (0.5× parallax, 128 px steps, y from hash 20–70) + bushes (0.5×, 160 px steps) near the ground line; simple, drawn behind tiles.
-4. Tiles: `tx0 = floor(camX/16)` to `tx0+16`: for `ty` 0..14, `ch = level.tiles[ty][tx]`: skip `'.'`; `X` → `drawGround(x, y, tile above non-solid)`; `S` → `drawStone`; `B` → `drawBrick` (offset y by −4·sin(π·t/0.15) if in `level.bumps`); `P`/`Q` → `drawPumpkin(x, y, false)` (same bump offset); `U` → `drawPumpkin(x, y, true)`; `=` → `drawPlatform`; `|` → `drawPipe(x, y, tileAbove !== '|', isLeftColumn)`.
-5. Gate (if `level.gate`): `drawGate` at the gate tile.
-6. Items: per `kind`: fruit → `drawFruit` (frame `floor(t*8)%4`); berry → `drawBerry`; pop → sprite at `y − 16·(t/0.25)`; shard → `drawShard`; popup → `drawPixelText(text, x, y − 20·(t/0.6), '#ffffff')`.
-7. Enemies: turnip → `drawTurnip(x, y, frame, facing)` (squashed: 12×4 flat at bottom of hitbox); boss → `drawBoss(…, hurt: b.hurtT > 0)`; defeated boss: 3-frame flip spin while falling.
-8. Player: skip if `dead && deadPit`; blink: skip drawing on odd `Math.floor(t*8)%2` while `invulnT > 0`; else `drawHero(x, y, facing, big, pose, frame)`.
-9. HUD (PLAYING/PAUSED/LEVEL_CLEAR): `drawPixelText('SCORE ' + String(score).padStart(6,'0'), 8, 6, '#1a1a1a')`; Sunfruit icon (drawFruit frame 0) at (8, 18) + `'x' + padStart(2)` count; `'WORLD ' + level.label` centered; Poppy mini icon + `'x' + lives` right side; `'MUTED'` far right when `g.muted`.
-10. State overlays:
-   - TITLE: ground strip (`drawGround` row at y 208 across), `drawPixelText('VEGGIE BROS.', 29, 60, '#e8434f', 3)` (11 chars × 18 px = 198 wide, centered), subtitle `'A STRAWBERRY S ADVENTURE'` scale 1 centered y 110, `'PRESS ENTER TO START'` blinking at 2 Hz y 150, controls scale 1: `'< > / A D  MOVE   SHIFT RUN'` y 180 and `'SPACE / Z  JUMP  P PAUSE  M MUTE'` y 194; draw hero + turnip sprites standing on the strip.
-   - PAUSED: `rgba(0,0,0,0.5)` full rect + `'PAUSED'` scale 2 centered y 96 + `'P RESUME  R RESTART  M MUTE'` y 140.
-   - LEVEL_CLEAR: `'STAGE CLEAR'` scale 2 centered y 96 + `'+1000'` y 124.
-   - WIN: `'HARVEST SAVED!'` scale 2 y 80, `'SCORE ' + score` y 120, `'PRESS ENTER'` y 150.
-   - GAME_OVER: `'GAME OVER'` scale 2 y 80 (red), `'SCORE ' + score` y 120, `'PRESS ENTER'` y 150.
-   - Level banner: if `bannerT > 0` (PLAYING): centered `'WORLD ' + label + ' — ' + name.toUpperCase()`, `ctx.globalAlpha = min(1, bannerT)`.
-   - Clear fade: during the last 0.5 s of LEVEL_CLEAR, white full rect with `globalAlpha` ramping to 1.
+Done — `src/camera.js` + `src/render.js` merged (lerp side-scroll camera + full render pipeline: parallax background, tiles, gate, all item/enemy/player kinds, HUD, every state overlay; all draw calls audited against sprites.js signatures).
 
 ### Step 11 — `src/main.js`
 
