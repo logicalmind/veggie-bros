@@ -38,7 +38,7 @@ Done — procedural pixel-art module merged (17 draw functions + cached pixel-te
 
 ### Step 4 — `src/input.js`
 
-Export singleton `input = { left, right, run, jump, jumpPressed, start, pausePressed, mutePressed, restartPressed }` (all `false`) plus `consumeJumpPressed()`, `consumeStart()`, `consumePause()`, `consumeMute()`, `consumeRestart()` (return + clear). `setupKeyboard()`: window keydown/keyup; map `ArrowLeft|a`→left, `ArrowRight|d`→right, `Shift`→run, `Space|z|w|ArrowUp`→jump (on keydown: if `!jump` set `jumpPressed=true`; `jump=true`; on keyup `jump=false`), `Enter`→start edge, `p|Escape`→pause edge, `m`→mute edge, `r`→restart edge. `keydown` handler calls `preventDefault()` for `ArrowLeft/ArrowRight/ArrowUp/ArrowDown/Space`. `setupTouch()`: if `matchMedia('(pointer: coarse)').matches`, show `#touch` and wire `t-left/t-right/t-jump` `pointerdown/pointerup/pointercancel` to the same fields (jump button sets `jumpPressed` on pointerdown when `!jump`).
+Done — keyboard + touch input module merged (edge-consume pattern for start/pause/mute/restart; touch overlay shown only on coarse pointers).
 
 ### Step 5 — `src/audio.js`
 
