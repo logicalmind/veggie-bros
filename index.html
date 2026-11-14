@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veggie Bros.</title>
+  <style>
+    html,body{margin:0;height:100%;background:#14141f;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+    #touch{position:fixed;left:0;right:0;bottom:0;display:none;justify-content:space-between;padding:12px 16px;pointer-events:none}
+    #touch .g{display:flex;gap:12px;pointer-events:auto}
+    #touch button{width:56px;height:56px;border-radius:50%;border:2px solid #555;background:rgba(255,255,255,.15);color:#fff;font-size:20px}
+  </style>
+</head>
+<body>
+  <canvas id="game" width="256" height="240"></canvas>
+  <div id="touch">
+    <div class="g"><button id="t-left">◀</button><button id="t-right">▶</button></div>
+    <div class="g"><button id="t-jump">A</button></div>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
