@@ -644,6 +644,9 @@ check('R02', () => {
     const stomps = log.filter((e) => e.stomps > 0);
     const hurts = log.filter((e) => e.hurts > 0);
     if (stomps.length + hurts.length === 0) { bad.push(`drop ${d}px: contact never resolved`); continue; }
+    // every 0-24px drop onto the boss top is a legal over-the-top landing: it must
+    // resolve as a stomp, not a hurt (guards a degenerate hurt-everything "fix")
+    if (stomps.length === 0) bad.push(`drop ${d}px: contact resolved as hurt, expected a legal stomp`);
     resolved++;
     for (const s of stomps) {
       const soon = hurts.filter((h) => h.f > s.f && h.f <= s.f + 5);
