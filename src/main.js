@@ -270,9 +270,13 @@ function update(dt) {
       }
     }
 
+    // a hit taken in this same frame must end the update: falling through would let
+    // the corpse reach the gate (free stage clear) or the pit check below
+    if (p.dead) return;
+
     if (G.level.gate && !G.gateScored) {
       const gate = G.level.gate;
-      if (p.x + p.w > gate.x && p.x < gate.x + 32 && p.y + p.h > gate.y && p.y < gate.y + 80) {
+      if (!p.dead && p.x + p.w > gate.x && p.x < gate.x + 32 && p.y + p.h > gate.y && p.y < gate.y + 80) {
         onGate();
         return;
       }
