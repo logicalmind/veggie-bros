@@ -224,7 +224,9 @@ function update(dt) {
     for (const e of G.enemies) {
       if (e.type !== 'turnip' || !e.active || e.squashed) continue;
       if (!rectOverlap(p, e)) continue;
-      if (p.vy > 0 && p.y + p.h - e.y < 10) {
+      // over-the-top only: legal when the feet were above the enemy's top last frame,
+      // which rules out walking into its flank
+      if (p.vy > 0 && p.prevBottom <= e.y + 0.5) {
         e.squashed = true;
         e.squashT = 0;
         addScore(SCORE.stomp, e.x, e.y);
@@ -245,7 +247,7 @@ function update(dt) {
     }
 
     if (boss && !boss.defeated && rectOverlap(p, boss)) {
-      if (p.vy > 0 && p.y + p.h - boss.y < 10) {
+      if (p.vy > 0 && p.prevBottom <= boss.y + 0.5) {
         boss.hp -= 1;
         boss.hurtT = 1.0;
         addScore(SCORE.bossHit, boss.x, boss.y);

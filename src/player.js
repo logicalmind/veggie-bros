@@ -25,6 +25,7 @@ export function makePlayer(x, y) {
   return {
     x,
     y,
+    prevBottom: y + PLAYER_SMALL_H,
     vx: 0,
     vy: 0,
     w: PLAYER_W,
@@ -61,6 +62,9 @@ export function updatePlayer(p, dt, input, level) {
   }
 
   p.headBump = null;
+  // Where the feet were before this frame's physics. main.js compares this against an
+  // enemy's top, so it must be last frame's bottom, not the post-Y-pass one.
+  const bottomBeforeStep = p.y + p.h;
 
   // Horizontal
   const target = (input.left ? -1 : 0) + (input.right ? 1 : 0);
@@ -158,6 +162,7 @@ export function updatePlayer(p, dt, input, level) {
 
   p.invulnT = Math.max(0, p.invulnT - dt);
   p.t += dt;
+  p.prevBottom = bottomBeforeStep;
 }
 
 export function hurtPlayer(p) {
