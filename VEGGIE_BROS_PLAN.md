@@ -88,7 +88,7 @@ All from repo root `/Users/jasonjordan/repos/veggie_bros`.
 
 1. **Syntax** (after each step, and once at the end): `for f in src/*.js; do node --input-type=module --check < "$f" || echo "FAIL $f"; done` → no FAIL lines.
 2. **Level smoke test** (throwaway script in `/tmp`, NOT the repo): a Node ESM script importing `src/levels.js` + `src/level.js` (both DOM-free) that parses all 3 levels and asserts: `tiles.length === 15`; all rows same length (180/200/160); `playerSpawn` set; exactly one of `gate`/`boss`; rightmost column all non-`'.'`; ground reachability — for the lowest standing surface per column, consecutive rises ≤ 4 tiles and no ground gap wider than 4 columns. Expected: all assertions pass, silent. (The maps as written satisfy these — they were validated during planning; if one fails, fix the map in `levels.js` to satisfy the invariant, do not loosen the checker.)
-3. **Browser end-to-end**: `python3 -m http.server 8000` (background) → open `http://localhost:8000` in a browser tab.
+3. **Browser end-to-end**: `python3 -m http.server 8010` (background; **NEVER port 8000 — that is the splash inference engine's port**) → open `http://localhost:8010` in a browser tab.
    - Title screen: "VEGGIE BROS." logo, controls listed, no console errors.
    - Enter → level 1-1 "Strawberry Fields" banner, player visible, music playing.
    - Walk/jump/run responsive; jump onto the first Melon Pipe (480 px from level start).
