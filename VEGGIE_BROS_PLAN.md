@@ -66,60 +66,7 @@ Done — `src/camera.js` + `src/render.js` merged (lerp side-scroll camera + ful
 
 ### Step 11 — `src/main.js`
 
-Entry module (the only module that starts anything):
-
-- Get `#game` canvas, `ctx = canvas.getContext('2d')`, `ctx.imageSmoothingEnabled = false`.
-- Fit: `function fit()` — `s = clamp(Math.floor(Math.min(innerWidth/VIEW_W, innerHeight/VIEW_H)), 1, 4)`; `canvas.style.width = VIEW_W*s + 'px'`; same for height; `window.addEventListener('resize', fit)`; call once.
-- `setupKeyboard()`, `setupTouch()`.
-- Game state:
-```js
-const G = { state:'TITLE', score:0, fruitCount:0, lives:START_LIVES, levelIndex:0, level:null, player:null, enemies:[], items:[], cam:{x:0}, clearT:0, bannerT:0, winT:0, overT:0, dyingT:0, gateScored:false };
-```
-- `loadLevel(i)`: `G.level = parseLevel(LEVELS[i])`; build enemies via `makeTurnip`/`makeBoss` from spawns; fruits via `makeFruit`; `G.player = makePlayer(spawn.x, spawn.y)`; `G.cam = { x: 0 }`; `G.items = []; G.bannerT = 1.5; G.gateScored = false`.
-- `startGame()`: `G.score = 0; G.fruitCount = 0; G.lives = START_LIVES; loadLevel(0); G.state = 'PLAYING'; audio.init(); audio.musicStart();`.
-- `addScore(n, x, y)`: `G.score += n; G.items.push(makePopup(x, y, '+' + n))`.
-- `onDeathResolved()`: `G.lives -= 1; if (G.lives <= 0) { G.state = 'GAME_OVER'; G.overT = 0; audio.musicStop(); } else { loadLevel(G.levelIndex); }`.
-- `onGate()`: `G.state = 'LEVEL_CLEAR'; G.clearT = 0; G.gateScored = true; G.score += SCORE.gate; audio.musicStop(); audio.sfx('clear'); G.player.vx = 0; G.player.vy = 0;`.
-- `onBossDown()`: `G.state = 'WIN'; G.winT = 0; G.score += SCORE.bossDown; audio.musicStop(); audio.sfx('win');`.
-- `update(dt)`:
-  - Always: `if (consumeMute()) audio.toggleMute();`
-  - TITLE: `if (consumeStart()) startGame();`
-  - PLAYING:
-    - If `G.player.dead`: `G.dyingT += dt`; `updatePlayer(G.player, dt, input, G.level)` (death fall); if `G.dyingT > 1.2` → `onDeathResolved(); G.dyingT = 0;` return.
-    - Else: `updatePlayer(p, dt, input, G.level)`; if `p.jumped` → `audio.sfx('jump'); p.jumped = false;`.
-    - `updateCamera(G.cam, dt, p, G.level.widthPx)`.
-    - `updateItems(G.items, dt, G.level)`; decay `G.level.bumps` (`t += dt`, filter `t > 0.15`).
-    - Enemies: turnip → `updateTurnip`, boss → `updateBoss`; filter removed (squashed expired). If boss `defeated` and `defeatT > 1.5` → `onBossDown(); return;`.
-    - Fruit pickup: AABB overlap (player vs 8×8 fruit box) → `G.fruitCount++; addScore(SCORE.fruit, f.x, f.y); audio.sfx('coin');` remove.
-    - Berry pickup: overlap 14×14 → `addScore(SCORE.berry, …); audio.sfx('power'); if (!p.big) { p.big = true; p.h = 26; p.y -= 14; }` remove.
-    - Head bump: if `p.headBump` → `{x: tx, y: ty}`, `ch = G.level.tiles[ty][tx]`:
-      - `'P'` → `tiles = 'U'; G.items.push(makePop(tx*16+4, ty*16-16, 'fruit')); G.fruitCount++; addScore(SCORE.fruit, tx*16+4, ty*16); audio.sfx('coin');`
-      - `'Q'` → `tiles = 'U'; G.items.push(makePop(tx*16+4, ty*16-16, 'berry')); G.items.push(makeBerry(tx*16+1, ty*16-16)); addScore(SCORE.berry, tx*16+4, ty*16); audio.sfx('power');`
-      - `'B'` + `p.big` → `tiles = '.'; G.items.push(...makeShards(tx*16+4, ty*16+6)); addScore(SCORE.block, tx*16+4, ty*16); audio.sfx('break');`
-      - `'B'` + small → `G.level.bumps.push({x: tx, y: ty, t: 0}); audio.sfx('bump');`
-    - Turnip collision: for each active, not-squashed turnip with AABB overlap: if `p.vy > 0 && (p.y + p.h) - e.y < 10` → `e.squashed = true; e.squashT = 0; addScore(SCORE.stomp, e.x, e.y); audio.sfx('stomp'); p.vy = STOMP_BOUNCE; p.onGround = false;` else if `hurtPlayer(p)` → `audio.sfx('hurt'); if (p.dead) { G.dyingT = 0; audio.musicStop(); audio.sfx('die'); }`.
-    - Boss collision: same stomp rule against the top 10 px of the boss: `b.hp -= 1; b.hurtT = 1.0; addScore(SCORE.bossHit, b.x, b.y); audio.sfx('bossHit'); p.vy = STOMP_BOUNCE; if (b.hp <= 0) { b.defeated = true; b.defeatT = 0; b.vx = 0; }`; side contact → `hurtPlayer` path (same as turnip).
-    - Gate: if `G.level.gate && !G.gateScored && p.x + p.w > G.level.gate.x && p.x < G.level.gate.x + 32 && p.y + p.h > G.level.gate.y && p.y < G.level.gate.y + 80` → `onGate()`.
-    - Pit: if `p.y > VIEW_H + 32` → `killPlayer(p, true); G.dyingT = 0; audio.musicStop(); audio.sfx('die');`.
-    - `G.bannerT = max(0, G.bannerT - dt)`.
-    - `if (consumePause()) { G.state = 'PAUSED'; audio.musicStop(); }`
-  - PAUSED: `if (consumePause()) { G.state='PLAYING'; audio.musicStart(); }`; `if (consumeRestart()) { loadLevel(G.levelIndex); G.state='PLAYING'; audio.musicStart(); }`
-  - LEVEL_CLEAR: `G.clearT += dt`; slide: `G.player.y = min(G.player.y + 120*dt, (G.level.gate.row + 1) * 16 - G.player.h)`; if `G.clearT > 1.4` → `G.levelIndex += 1; loadLevel(G.levelIndex); G.state = 'PLAYING'; audio.musicStart();`
-  - WIN / GAME_OVER: `winT/overT += dt`; `if (consumeStart()) G.state = 'TITLE';`
-- Loop:
-```js
-let last = performance.now(); let acc = 0;
-function frame(now) {
-  let dt = (now - last) / 1000; last = now;
-  if (dt > 0.25) dt = 0.25;
-  acc += dt;
-  while (acc >= STEP) { update(STEP); acc -= STEP; }
-  render(ctx, G);
-  requestAnimationFrame(frame);
-}
-requestAnimationFrame(frame);
-```
-- `rectOverlap(a, b)`: standard AABB test (a/b have x, y, w, h).
+Done — `src/main.js` merged (entry: fixed-timestep loop + 6-state machine + all interactions; fix round 1 added `consumeJumpPressed()` in both PLAYING branches and `G.levelIndex = i` in `loadLevel` — round-1 review FAIL, round-2 re-review PASS 34/34).
 
 ### Step 12 — `README.md`
 

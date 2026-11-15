@@ -40,5 +40,5 @@ For each plan step, in order, until all are Done:
 - Stop and ask the user on: spec ambiguity that blocks a step, a fix loop that doesn't converge after 3 rounds, or unexpected git state (dirty working tree at loop start, diverged branches).
 
 ## Current state
-- Steps 1–7 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`; `src/input.js`; `src/audio.js`; `src/levels.js` + `src/level.js`; `src/items.js`.
-- Next: Batch A (parallel worktrees) = Step 8 `src/enemy.js` + Step 9 `src/player.js` + Step 10 `src/camera.js` + `src/render.js` + Step 12 `README.md` → then Step 11 `src/main.js` → plan §Verification. Full pause state, approved deviations, and restart prompt: see `RESUME.md`.
+- Steps 1–12 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`; `src/input.js`; `src/audio.js`; `src/levels.js` + `src/level.js`; `src/items.js`; `src/enemy.js`; `src/player.js`; `src/camera.js` + `src/render.js`; `src/main.js`; `README.md`.
+- Next: plan §Verification (syntax sweep → /tmp level smoke test → browser E2E → kill server). Build complete — no worker/reviewer rounds remain. Full state, approved deviations, incident log, and restart prompt: see `RESUME.md`.
