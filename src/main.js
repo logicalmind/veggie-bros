@@ -7,6 +7,7 @@ import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
 import { updateCamera } from './camera.js';
 import { render } from './render.js';
 import {
+  consumeJumpPressed,
   consumeMute,
   consumePause,
   consumeRestart,
@@ -53,6 +54,7 @@ const G = {
 };
 
 function loadLevel(i) {
+  G.levelIndex = i;
   G.level = parseLevel(LEVELS[i]);
   G.enemies = G.level.enemies.map(makeTurnip);
   if (G.level.boss) G.enemies.push(makeBoss(G.level.boss));
@@ -129,6 +131,7 @@ function update(dt) {
     if (p.dead) {
       G.dyingT += dt;
       updatePlayer(p, dt, input, G.level);
+      consumeJumpPressed();
       if (G.dyingT > 1.2) {
         onDeathResolved();
         G.dyingT = 0;
@@ -137,6 +140,7 @@ function update(dt) {
     }
 
     updatePlayer(p, dt, input, G.level);
+    consumeJumpPressed();
     if (p.jumped) {
       audio.sfx('jump');
       p.jumped = false;
