@@ -114,7 +114,30 @@ function rectOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+// The one-shot flags on `input` are frame-scoped: the consume*() helpers stay the authority
+// for reads, and endFrame() only guarantees that a flag never survives a frame it was not
+// consumed in. Otherwise a jump pressed while paused fires on the resume frame, a single R
+// press latches until the next pause restarts the level, and Enter held from play snaps
+// GAME_OVER/WIN straight back to TITLE. Held-direction flags are deliberately absent here:
+// they belong to the input layer, not to a frame.
+const TRANSIENT_INPUT = ['jumpPressed', 'start', 'pausePressed', 'mutePressed', 'restartPressed'];
+
+function endFrame() {
+  for (const flag of TRANSIENT_INPUT) input[flag] = false;
+}
+
+// try/finally instead of an endFrame() call on each of the state machine's return paths
+// (dead branch, R04's death-frame return, onGate/onBossDown, every state branch), so a new
+// early return cannot reintroduce a leak.
 function update(dt) {
+  try {
+    updateState(dt);
+  } finally {
+    endFrame();
+  }
+}
+
+function updateState(dt) {
   if (consumeMute()) {
     audio.toggleMute();
     G.muted = audio.muted;
