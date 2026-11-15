@@ -83,6 +83,7 @@ Done — README.md merged (run instructions, controls table cross-checked agains
 - `src/audio.js` — lazy `init()` on first Enter (autoplay policy); every call must no-op safely when not initialized.
 
 ## Verification
+**Status (2026-11-15, paused by user decision):** item 1 PASS; item 2 PASS; item 3 PARTIAL — 9 of 12 checkpoints PASS (CP 1–5, 7, 8-observed, 10, 12 + GAME OVER), CP6 + CP9 deferred with handoff in `RESUME.md` "Restart prompt"; item 4 done (servers killed, lsof-verified). 1-3 map: sealed boss arena fixed by user-approved 2-tile door, commit `8adc78e0`.
 
 All from repo root `/Users/jasonjordan/repos/veggie_bros`.
 

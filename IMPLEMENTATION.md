@@ -41,4 +41,4 @@ For each plan step, in order, until all are Done:
 
 ## Current state
 - Steps 1–12 Done: `architecture.md`; `index.html` + `src/config.js`; `src/sprites.js`; `src/input.js`; `src/audio.js`; `src/levels.js` + `src/level.js`; `src/items.js`; `src/enemy.js`; `src/player.js`; `src/camera.js` + `src/render.js`; `src/main.js`; `README.md`.
-- Next: plan §Verification (syntax sweep → /tmp level smoke test → browser E2E → kill server). Build complete — no worker/reviewer rounds remain. Full state, approved deviations, incident log, and restart prompt: see `RESUME.md`.
+- Verification: **PAUSED by user decision 2026-11-15 (partial)** — syntax sweep PASS; level smoke PASS; browser E2E **9 of 12 checkpoints PASS** (CP 1–5, 7, 8-observed, 10, 12 + GAME OVER); CP6 + CP9 (1-2 pit, boss/WIN) deferred with full handoff. 1-3 sealed-arena fixed via user-approved door commit `8adc78e0`. Build complete — no worker/reviewer rounds remain. Resume per `RESUME.md` "Restart prompt"; full state, incident log, and handoff artifacts there.
