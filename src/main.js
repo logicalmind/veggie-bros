@@ -1,4 +1,4 @@
-import { SCORE, START_LIVES, STEP, STOMP_BOUNCE, VIEW_H, VIEW_W } from './config.js';
+import { ROWS, SCORE, START_LIVES, STEP, STOMP_BOUNCE, TILE, VIEW_H, VIEW_W } from './config.js';
 import { LEVELS } from './levels.js';
 import { parseLevel } from './level.js';
 import { makeBoss, makeTurnip, updateBoss, updateTurnip } from './enemy.js';
@@ -271,7 +271,9 @@ function update(dt) {
       }
     }
 
-    if (p.y > VIEW_H + 32) {
+    // tileAt() reports solid ground below the map, so pit death is an explicit
+    // height check: any player whose feet reach the map's bottom row has fallen in.
+    if (p.y + p.h >= ROWS * TILE) {
       killPlayer(p, true);
       G.dyingT = 0;
       audio.musicStop();
