@@ -229,6 +229,9 @@ function update(dt) {
         e.squashT = 0;
         addScore(SCORE.stomp, e.x, e.y);
         audio.sfx('stomp');
+        // separate before bouncing: one bounce step lifts less than the deepest
+        // first-frame overlap, so the boxes would still touch next frame with p.vy < 0
+        p.y = e.y - p.h;
         p.vy = STOMP_BOUNCE;
         p.onGround = false;
       } else if (hurtPlayer(p)) {
@@ -247,6 +250,8 @@ function update(dt) {
         boss.hurtT = 1.0;
         addScore(SCORE.bossHit, boss.x, boss.y);
         audio.sfx('bossHit');
+        // place the player on top of the boss before bouncing, same as the stomps above
+        p.y = boss.y - p.h;
         p.vy = STOMP_BOUNCE;
         if (boss.hp <= 0) {
           boss.defeated = true;
