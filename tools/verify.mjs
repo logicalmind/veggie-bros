@@ -714,7 +714,11 @@ check('R03', () => {
 check('R04', () => {
   const level = flatLevel({ gate: [C.ROWS - 3, 20], turnip: [C.ROWS - 3, 21] });
   newGame();
-  installLevel(level);
+  // camX = steady-state camera for the player's start x (332-96): the turnip at x=338
+  // must be ACTIVE on frame 1, else the gate legitimately fires while the player is
+  // still alive (turnip activation needs e.x < camX + VIEW_W + 32) and the scenario
+  // tests nothing (found by the R04 worker; see §11)
+  installLevel(level, { camX: 236 });
   const p = G.player;
   const lives0 = G.lives;
   p.x = 20 * C.TILE + 12;
