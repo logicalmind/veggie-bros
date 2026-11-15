@@ -33,7 +33,7 @@ fit();
 setupKeyboard();
 setupTouch();
 
-const G = {
+export const G = {
   state: 'TITLE',
   score: 0,
   fruitCount: 0,
