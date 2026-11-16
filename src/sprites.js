@@ -35,9 +35,9 @@ export function drawHero(ctx, x, y, facing, big, pose, frame) {
     px(ctx, x + 9, b + 6, 1, 1, P.heroSeed);
     px(ctx, x + 4, b + 8, 1, 1, P.heroSeed);
     px(ctx, x + 7, b + 8, 1, 1, P.heroSeed);
-    const legTop = pose === 'jump' ? top + 12 : top + 10;
-    px(ctx, x + 3 + off, legTop, 2, top + 14 - legTop, P.heroDark);
-    px(ctx, x + 7 - off, legTop, 2, top + 14 - legTop, P.heroDark);
+    const legTop = pose === 'jump' ? b + 12 : b + 10;
+    px(ctx, x + 3 + off, legTop, 2, b + 14 - legTop, P.heroDark);
+    px(ctx, x + 7 - off, legTop, 2, b + 14 - legTop, P.heroDark);
   } else {
     px(ctx, x, b + 3, 12, 4, P.heroBody);
     px(ctx, x + 1, b + 7, 10, 3, P.heroBody);
@@ -52,9 +52,9 @@ export function drawHero(ctx, x, y, facing, big, pose, frame) {
     px(ctx, x + 9, b + 8, 1, 1, P.heroSeed);
     px(ctx, x + 4, b + 12, 1, 1, P.heroSeed);
     px(ctx, x + 7, b + 12, 1, 1, P.heroSeed);
-    const legTop = pose === 'jump' ? top + 22 : top + 20;
-    px(ctx, x + 3 + off, legTop, 2, top + 28 - legTop, P.heroDark);
-    px(ctx, x + 7 - off, legTop, 2, top + 28 - legTop, P.heroDark);
+    const legTop = pose === 'jump' ? b + 22 : b + 20;
+    px(ctx, x + 3 + off, legTop, 2, b + 28 - legTop, P.heroDark);
+    px(ctx, x + 7 - off, legTop, 2, b + 28 - legTop, P.heroDark);
   }
 }
 
