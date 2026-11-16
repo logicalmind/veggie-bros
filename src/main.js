@@ -360,8 +360,13 @@ function updateState(dt) {
     return;
   }
 
+  // Items keep animating outside PLAYING: the gate's +1000 popup has to rise through the
+  // whole 1.4 s clear window, and WIN/GAME_OVER have no dimming rect, so mid-flight shards
+  // and any live berry would otherwise hang there frozen. (The p.dead branch above stays a
+  // full freeze — the world is frozen during death, architecture.md:41.)
   if (G.state === 'LEVEL_CLEAR') {
     G.clearT += dt;
+    updateItems(G.items, dt, G.level);
     const p = G.player;
     const gate = G.level.gate;
     p.y = Math.min(p.y + 120 * dt, (gate.row + 1) * 16 - p.h);
@@ -376,11 +381,13 @@ function updateState(dt) {
 
   if (G.state === 'WIN') {
     G.winT += dt;
+    updateItems(G.items, dt, G.level);
     if (consumeStart()) G.state = 'TITLE';
     return;
   }
 
   G.overT += dt;
+  updateItems(G.items, dt, G.level);
   if (consumeStart()) G.state = 'TITLE';
 }
 
