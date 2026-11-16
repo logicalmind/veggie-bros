@@ -1467,10 +1467,10 @@ check('R22', () => {
     step();
     return { got: G.items.includes(b), h, a };
   };
-  const above = tryPickup(1);
-  if (above.got) bad.push(`the berry was collected with the player's feet 1px ABOVE the art's top row (art ${above.a.minY}..${above.a.maxY}, ${above.h}px tall) — the pickup rect is bigger than the art`);
-  const centre = tryPickup(above.h - 2);
-  if (!centre.got) bad.push('the berry was NOT collected when the player overlaps the middle of its art — the pickup was over-shrunk');
+  const above = tryPickup(1); // got === true means the berry is STILL in items (not collected)
+  if (!above.got) bad.push(`the berry was collected with the player's feet 1px ABOVE the art's top row (art ${above.a.minY}..${above.a.maxY}, ${above.h}px tall) — the pickup rect is bigger than the art`);
+  const centre = tryPickup(-(above.h >> 1)); // negative clearance puts the feet INSIDE the art, at its middle row
+  if (centre.got) bad.push('the berry was NOT collected when the player overlaps the middle of its art — the pickup was over-shrunk');
   // (3) behaviour must survive: walks, bounces, despawns at BERRY_LIFE
   const walker = [makeBerry(4 * C.TILE, GROUND_TOP - 10)];
   const x0 = walker[0].x;
