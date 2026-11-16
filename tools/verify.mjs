@@ -1776,12 +1776,19 @@ check('R28', () => {
 
 check('R29', () => {
   const grid = emptyMap(40);
-  groundRows(grid, 0, 10);
-  groundRows(grid, 16, 40);           // 6-column pit between cols 10..15
+  groundRows(grid);
   put(grid, 'H', C.ROWS - 3, 2);
-  put(grid, 'T', C.ROWS - 3, 12);     // turnip directly over the gap
+  put(grid, 'T', C.ROWS - 3, 12);     // turnip directly over where the gap opens
   put(grid, 'G', C.ROWS - 3, 38);
   const level = synth(toDef(grid, 'furniture'));
+  // The 6-column pit (cols 10..15) is opened AFTER parseLevel, on the parsed tiles. R30's
+  // load-time grounding clause rejects a 'T' with no solid below — correctly, that is the map
+  // typo R30 exists to catch — so a runtime-guard check cannot ask the loader to accept it.
+  // The shape being tested is unchanged: a grounded turnip whose floor disappears under it.
+  for (let tx = 10; tx < 16; tx++) {
+    level.tiles[C.ROWS - 2][tx] = '.';
+    level.tiles[C.ROWS - 1][tx] = '.';
+  }
   installLevel(level);
   clearInput();
   const enemy = G.enemies[0];
@@ -1910,8 +1917,14 @@ check('R31', () => {
   put(grid, 'H', C.ROWS - 3, 2);
   put(grid, 'T', C.ROWS - 3, 12);
   put(grid, 'G', C.ROWS - 3, 28);
-  grid[C.ROWS - 3][14] = ' ';   // non-solid, non-'.' tile in front of the turnip
   const level = synth(toDef(grid, 'ledge'));
+  // The non-solid, non-'.' tile is injected on the SUPPORTING row (row 13, the row the ledge test
+  // probes at e.y + e.h + 1) and AFTER parseLevel. Two repairs: the original put it on the
+  // turnip's own body row, where neither `=== '.'` nor `!isSolid()` can see it, so the prescribed
+  // fix could not make this check pass; and R30's legend whitelist now rejects ' ' at load time,
+  // so the loader must not be asked to build it. R31's fix is in the RUNTIME ledge test, which
+  // reads level.tiles through tileAt(), so this still discriminates it.
+  level.tiles[C.ROWS - 2][14] = ' ';
   const e = makeTurnip(level.enemies[0]);
   e.active = true;
   e.vx = C.ENEMY_SPEED;
