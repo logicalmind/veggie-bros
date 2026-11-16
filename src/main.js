@@ -117,12 +117,19 @@ function onGate() {
   G.player.vy = 0;
 }
 
-function onBossDown() {
+// Shared WIN transition. It is deliberately not the same function as onBossDown(): a gate
+// walked into on the last level also ends the run, and that player has not beaten a boss, so
+// routing them through onBossDown() would pay out SCORE.bossDown for touching an arch.
+function goWin() {
   G.state = 'WIN';
   G.winT = 0;
-  G.score += SCORE.bossDown;
   audio.musicStop();
   audio.sfx('win');
+}
+
+function onBossDown() {
+  G.score += SCORE.bossDown;
+  goWin();
 }
 
 function rectOverlap(a, b) {
@@ -371,10 +378,17 @@ function updateState(dt) {
     const gate = G.level.gate;
     p.y = Math.min(p.y + 120 * dt, (gate.row + 1) * 16 - p.h);
     if (G.clearT > 1.4) {
-      G.levelIndex += 1;
-      loadLevel(G.levelIndex);
-      G.state = 'PLAYING';
-      audio.musicStart();
+      // Bounds check first: LEVELS has a fixed length, so on the last level there is no next
+      // level to load and loadLevel() would hand parseLevel() an undefined map. The final
+      // gate ends the run instead, and levelIndex stays on the last index.
+      if (G.levelIndex + 1 >= LEVELS.length) {
+        goWin();
+      } else {
+        G.levelIndex += 1;
+        loadLevel(G.levelIndex);
+        G.state = 'PLAYING';
+        audio.musicStart();
+      }
     }
     return;
   }
