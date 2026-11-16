@@ -156,11 +156,14 @@ export function drawFruit(ctx, x, y, frame) {
 }
 
 export function drawBerry(ctx, x, y, frame) {
-  const widths = [8, 12, 14, 14, 14, 12, 8];
+  // The art is authored inside the berry's hitbox (items.js BERRY_W/BERRY_H = 14x8):
+  // body rows 2..6, with the outline generators landing on rows 1 and 7 and columns
+  // 0..13. The bottom outline row IS the hitbox's bottom row, so a berry at rest sits
+  // on the floor instead of floating above it, and the pickup rect covers the art.
+  const widths = [8, 12, 12, 12, 8];
   const cells = new Set();
-  for (let i = 0; i < 7; i++) {
-    const r = 3 + i;
-    if (frame & 1 && r === 9) continue;
+  for (let i = 0; i < widths.length; i++) {
+    const r = 2 + i;
     const l = (14 - widths[i]) / 2;
     for (let c = l; c < l + widths[i]; c++) cells.add(r * 16 + c);
   }
@@ -176,7 +179,7 @@ export function drawBerry(ctx, x, y, frame) {
   for (const k of outline) px(ctx, x + (k % 16), y + ((k / 16) | 0), 1, 1, P.berryDark);
   for (const k of cells) px(ctx, x + (k % 16), y + ((k / 16) | 0), 1, 1, P.berryBody);
   px(ctx, x + 5, y + 3, 5, 1, P.berryDark);
-  px(ctx, x + 3, y + 4, 1, 2, P.white);
+  px(ctx, x + 3, y + 4 + (frame & 1 ? 1 : 0), 1, 2, P.white);
 }
 
 export function drawGround(ctx, x, y, top) {

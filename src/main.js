@@ -2,7 +2,7 @@ import { ROWS, SCORE, START_LIVES, STEP, STOMP_BOUNCE, TILE, VIEW_H, VIEW_W } fr
 import { LEVELS } from './levels.js';
 import { parseLevel } from './level.js';
 import { makeBoss, makeTurnip, updateBoss, updateTurnip } from './enemy.js';
-import { makeBerry, makeFruit, makePop, makePopup, makeShards, updateItems } from './items.js';
+import { BERRY_H, BERRY_W, makeBerry, makeFruit, makePop, makePopup, makeShards, updateItems } from './items.js';
 import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
 import { updateCamera } from './camera.js';
 import { render } from './render.js';
@@ -226,7 +226,7 @@ function updateState(dt) {
 
     for (let i = G.items.length - 1; i >= 0; i--) {
       const it = G.items[i];
-      if (it.kind === 'berry' && rectOverlap(p, { x: it.x, y: it.y, w: 14, h: 14 })) {
+      if (it.kind === 'berry' && rectOverlap(p, { x: it.x, y: it.y, w: BERRY_W, h: BERRY_H })) {
         addScore(SCORE.berry, it.x, it.y);
         audio.sfx('power');
         if (!p.big) {
