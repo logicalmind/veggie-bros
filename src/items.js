@@ -1,11 +1,12 @@
 import { BERRY_LIFE, BERRY_SPEED, GRAVITY, MAX_FALL, SOLID, TILE } from './config.js';
 import { tileAt } from './level.js';
 
-// The berry's physics box is its art (sprites.js drawBerry draws cols 0..13 and rows
-// 1..BERRY_H-1 of it), so a berry at rest puts its outline's bottom row on the floor
-// instead of floating above it. main.js uses the same pair for the pickup rect.
+// The berry's physics box is its art exactly (sprites.js drawBerry inks cols 0..BERRY_W-1
+// and rows 0..BERRY_H-1, outline included), so a berry at rest puts its outline's bottom
+// row on the floor instead of floating above it, and nothing outside the art is collectable.
+// moveBerryX/Y use this pair for collisions and main.js uses it for the pickup rect.
 export const BERRY_W = 14;
-export const BERRY_H = 8;
+export const BERRY_H = 7;
 const EPS = 0.001; // skip tiles only touched at an exact edge
 const POP_LIFE = 0.25;
 const POPUP_LIFE = 0.6;
