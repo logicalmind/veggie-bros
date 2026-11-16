@@ -1027,7 +1027,11 @@ check('R10', () => {
   newGame();
   resetAudioSpy();
   press('t-jump');
-  step();
+  // steps(2), not step(): newGame()'s single step is consumed by the TITLE branch, so
+  // the player has had ZERO updatePlayer() calls here; spawn sits flush on the floor
+  // and onGround only becomes true on update 2 (Y-pass probe). Real play always has
+  // prior updates. (Scenario artifact found by the R10 worker; see §11)
+  steps(2);
   if (!(G.player.vy < 0 || sfx('jump') > 0)) bad.push('#t-jump did not produce a jump');
   press('t-jump', 'pointerup');
 
