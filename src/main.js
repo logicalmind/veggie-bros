@@ -395,15 +395,23 @@ let last = performance.now();
 let acc = 0;
 
 function frame(now) {
-  let dt = (now - last) / 1000;
-  last = now;
-  if (dt > 0.25) dt = 0.25;
-  acc += dt;
-  while (acc >= STEP) {
-    update(STEP);
-    acc -= STEP;
-  }
-  render(ctx, G);
+  // Re-arm before doing any work: one throw from update() or render() must not be able to
+  // stop the loop, or the canvas freezes for good with no way back but a page reload. The
+  // catch keeps the frame boundary the last line of defence — the error is logged per throw
+  // so a recurring bug still shows up in the console instead of silently repeating.
   requestAnimationFrame(frame);
+  try {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.25) dt = 0.25;
+    acc += dt;
+    while (acc >= STEP) {
+      update(STEP);
+      acc -= STEP;
+    }
+    render(ctx, G);
+  } catch (err) {
+    console.error(err);
+  }
 }
 requestAnimationFrame(frame);
