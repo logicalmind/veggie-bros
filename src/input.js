@@ -42,38 +42,45 @@ export function consumeRestart() {
 
 const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " "]);
 
+// e.key is the character the layout *labels* the key with: AZERTY's home row is
+// `a z e r t`, so the physical WASD cluster types `a z e r` and `d` never arrives;
+// Cyrillic/Greek layouts send `ф`/`α`; during IME composition everything is
+// `Process`. e.code is the physical position and is layout-independent, so every
+// letter binding tests both and a keydown can never be missed by one of them.
 function onKeyDown(e) {
   if (PREVENT_KEYS.has(e.key)) e.preventDefault();
   const k = e.key.toLowerCase();
-  if (e.key === "ArrowLeft" || k === "a") {
+  if (e.key === "ArrowLeft" || e.code === "KeyA" || k === "a") {
     input.left = true;
-  } else if (e.key === "ArrowRight" || k === "d") {
+  } else if (e.key === "ArrowRight" || e.code === "KeyD" || k === "d") {
     input.right = true;
   } else if (e.key === "Shift") {
     input.run = true;
-  } else if (e.key === " " || k === "z" || k === "w" || e.key === "ArrowUp") {
+  } else if (e.key === " " || e.code === "KeyZ" || e.code === "KeyW" || k === "z" || k === "w" || e.key === "ArrowUp") {
     if (!input.jump) input.jumpPressed = true;
     input.jump = true;
   } else if (e.key === "Enter") {
     if (!e.repeat) input.start = true;
-  } else if (k === "p" || e.key === "Escape") {
+  } else if (k === "p" || e.code === "KeyP" || e.key === "Escape") {
     if (!e.repeat) input.pausePressed = true;
-  } else if (k === "m") {
+  } else if (k === "m" || e.code === "KeyM") {
     if (!e.repeat) input.mutePressed = true;
-  } else if (k === "r") {
+  } else if (k === "r" || e.code === "KeyR") {
     if (!e.repeat) input.restartPressed = true;
   }
 }
 
+// The release side tests exactly the same compound conditions as onKeyDown, so a
+// held flag set by a code-driven keydown is always cleared by its keyup.
 function onKeyUp(e) {
   const k = e.key.toLowerCase();
-  if (e.key === "ArrowLeft" || k === "a") {
+  if (e.key === "ArrowLeft" || e.code === "KeyA" || k === "a") {
     input.left = false;
-  } else if (e.key === "ArrowRight" || k === "d") {
+  } else if (e.key === "ArrowRight" || e.code === "KeyD" || k === "d") {
     input.right = false;
   } else if (e.key === "Shift") {
     input.run = false;
-  } else if (e.key === " " || k === "z" || k === "w" || e.key === "ArrowUp") {
+  } else if (e.key === " " || e.code === "KeyZ" || e.code === "KeyW" || k === "z" || k === "w" || e.key === "ArrowUp") {
     input.jump = false;
   }
 }
