@@ -1,7 +1,6 @@
 import { PALETTE } from './config.js';
 
 const P = PALETTE;
-const textCache = new Map();
 
 function px(ctx, x, y, w, h, color) {
   ctx.fillStyle = color;
@@ -315,24 +314,101 @@ export function drawShard(ctx, x, y, k, t) {
   px(ctx, x + ox + dx * o, y + oy + dy * o, 4, 4, P.brick);
 }
 
+// Authored bitmap text (decision 4): a procedural 5x7 font blitted with fillRect.
+// No canvas text API and no offscreen canvas, so ink is identical on every platform,
+// the glyph advance can never disagree with the cell, and the renderer needs no DOM.
+// A cell is TEXT_PITCH wide (5 inked columns + 1 gap column) and TEXT_CELL_H tall;
+// the glyph is centred vertically in the cell so the baseline stays where callers
+// already place it.
+export const TEXT_PITCH = 6;
+export const TEXT_CELL_H = 12;
+const FONT_W = 5;
+const FONT_H = 7;
+const FONT_TOP = Math.round((TEXT_CELL_H - FONT_H) / 2);
+const INKED = 'X'; // glyph art marker: 'X' is ink, '.' is empty
+
+// 7 rows of 5 columns, top row first, '/' separated. Covers everything the game draws:
+// A-Z 0-9 space : . , - + / ! < > x (HUD "x03") plus the em dash in the level banner
+// and the left arrow used by touch hints. Lowercase falls back to uppercase.
+const GLYPH_ART = {
+  ' ': '...../...../...../...../...../...../.....',
+  '!': '..X../..X../..X../..X../..X../...../..X..',
+  '+': '...../..X../..X../XXXXX/..X../..X../.....',
+  '-': '...../...../...../.XXX./...../...../.....',
+  '/': '...../....X/....X/...X./..X../.X.../X....',
+  ',': '...../...../...../...../..X../..X../.X...',
+  '.': '...../...../...../...../...../..X../..X..',
+  ':': '...../..X../..X../...../..X../..X../.....',
+  '<': '...X./..X../.X.../X..../.X.../..X../...X.',
+  '>': '.X.../..X../...X./....X/...X./..X../.X...',
+  A: '.XXX./X...X/X...X/XXXXX/X...X/X...X/X...X',
+  B: 'XXXX./X...X/X...X/XXXX./X...X/X...X/XXXX.',
+  C: '.XXX./X...X/X..../X..../X..../X...X/.XXX.',
+  D: 'XXXX./X...X/X...X/X...X/X...X/X...X/XXXX.',
+  E: 'XXXXX/X..../X..../XXXX./X..../X..../XXXXX',
+  F: 'XXXXX/X..../X..../XXXX./X..../X..../X....',
+  G: '.XXX./X...X/X..../X.XXX/X...X/X...X/.XXX.',
+  H: 'X...X/X...X/X...X/XXXXX/X...X/X...X/X...X',
+  I: 'XXXXX/..X../..X../..X../..X../..X../XXXXX',
+  J: 'XXXXX/...X./...X./...X./...X./X..X./.XX..',
+  K: 'X...X/X..X./X.X../XX.../X.X../X..X./X...X',
+  L: 'X..../X..../X..../X..../X..../X..../XXXXX',
+  M: 'X...X/XX.XX/X.X.X/X.X.X/X...X/X...X/X...X',
+  N: 'X...X/XX..X/XX..X/X.X.X/X..XX/X..XX/X...X',
+  O: '.XXX./X...X/X...X/X...X/X...X/X...X/.XXX.',
+  P: 'XXXX./X...X/X...X/XXXX./X..../X..../X....',
+  Q: '.XXX./X...X/X...X/X...X/X.X.X/X..X./.XX.X',
+  R: 'XXXX./X...X/X...X/XXXX./X.X../X..X./X...X',
+  S: '.XXX./X...X/X..../.XXX./....X/X...X/.XXX.',
+  T: 'XXXXX/..X../..X../..X../..X../..X../..X..',
+  U: 'X...X/X...X/X...X/X...X/X...X/X...X/.XXX.',
+  V: 'X...X/X...X/X...X/X...X/X...X/.X.X./..X..',
+  W: 'X...X/X...X/X...X/X.X.X/X.X.X/XX.XX/X...X',
+  X: 'X...X/X...X/.X.X./..X../.X.X./X...X/X...X',
+  Y: 'X...X/X...X/.X.X./..X../..X../..X../..X..',
+  Z: 'XXXXX/....X/...X./..X../.X.../X..../XXXXX',
+  '0': '.XXX./X...X/X..XX/X.X.X/XX..X/X...X/.XXX.',
+  '1': '..X../.XX../..X../..X../..X../..X../.XXX.',
+  '2': '.XXX./X...X/....X/...X./..X../.X.../XXXXX',
+  '3': '.XXX./....X/....X/.XXX./....X/....X/.XXX.',
+  '4': '...X./..XX./.X.X./X..X./XXXXX/...X./...X.',
+  '5': 'XXXXX/X..../XXXX./....X/....X/X...X/.XXX.',
+  '6': '..XX./.X.../X..../XXXX./X...X/X...X/.XXX.',
+  '7': 'XXXXX/....X/...X./..X../..X../..X../..X..',
+  '8': '.XXX./X...X/X...X/.XXX./X...X/X...X/.XXX.',
+  '9': '.XXX./X...X/X...X/.XXXX/....X/...X./.XX..',
+  x: '...../...../X...X/.X.X./..X../.X.X./X...X',
+  '\u2014': '...../...../...../XXXXX/...../...../.....',
+  '\u2190': '...../..X../.X.../XXXXX/.X.../..X../.....',
+};
+
+const FONT = new Map();
+for (const [ch, art] of Object.entries(GLYPH_ART)) FONT.set(ch, art.split('/'));
+
+function glyphRows(ch) {
+  return FONT.get(ch) || FONT.get(ch.toUpperCase());
+}
+
+// Draws `text` one cell (TEXT_PITCH px) per character and returns the laid-out width.
 export function drawPixelText(ctx, text, x, y, color, scale = 1) {
-  const key = text + '\u0000' + color;
-  let off = textCache.get(key);
-  if (!off) {
-    if (typeof document === 'undefined') return text.length * 6 * scale;
-    off = document.createElement('canvas');
-    off.width = text.length * 12;
-    off.height = 24;
-    const c = off.getContext('2d');
-    c.font = '24px monospace';
-    c.fillStyle = color;
-    c.textBaseline = 'top';
-    for (let i = 0; i < text.length; i++) c.fillText(text[i], i * 12, 0);
-    textCache.set(key, off);
-  }
   for (let i = 0; i < text.length; i++) {
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(off, i * 12, 0, 12, 24, x + i * 6 * scale, y, 6 * scale, 12 * scale);
+    const rows = glyphRows(text[i]);
+    if (!rows) continue; // unknown glyph: keep its cell blank, never shift the pitch
+    const cellX = x + i * TEXT_PITCH * scale;
+    for (let r = 0; r < FONT_H; r++) {
+      const row = rows[r];
+      let c = 0;
+      while (c < FONT_W) {
+        if (row[c] !== INKED) {
+          c++;
+          continue;
+        }
+        let run = 1;
+        while (c + run < FONT_W && row[c + run] === INKED) run++;
+        px(ctx, cellX + c * scale, y + (FONT_TOP + r) * scale, run * scale, scale, color);
+        c += run;
+      }
+    }
   }
-  return text.length * 6 * scale;
+  return text.length * TEXT_PITCH * scale;
 }

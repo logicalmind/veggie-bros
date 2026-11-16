@@ -1,5 +1,6 @@
 import { PALETTE, SOLID, VIEW_H, VIEW_W } from './config.js';
 import {
+  TEXT_PITCH,
   drawBerry,
   drawBrick,
   drawBoss,
@@ -32,7 +33,7 @@ function hash(i) {
 }
 
 function textW(text, scale = 1) {
-  return text.length * 6 * scale;
+  return text.length * TEXT_PITCH * scale;
 }
 
 function centerText(ctx, text, y, color, scale = 1) {
@@ -196,7 +197,7 @@ function drawHud(ctx, g) {
   // lives on the right (Poppy mini icon = idle hero), MUTED far right, shifted left when shown
   const livesText = 'x' + g.lives;
   const mutedShift = g.muted ? 30 + 4 : 0;
-  const livesX = VIEW_W - 8 - (12 + 1 + livesText.length * 6) - mutedShift;
+  const livesX = VIEW_W - 8 - (12 + 1 + livesText.length * TEXT_PITCH) - mutedShift;
   drawHero(ctx, livesX, 4, 1, false, 'idle', 0);
   drawPixelText(ctx, livesText, livesX + 13, 6, INK);
   if (g.muted) drawPixelText(ctx, 'MUTED', VIEW_W - 8 - 30, 6, INK);
