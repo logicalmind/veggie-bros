@@ -1,10 +1,13 @@
 # Veggie Bros. — Architecture
 
+Citations are `file:line` as of the `R34` docs commit. When code moves, locate by expression, not by number. Numbers marked **measured** come from `tools/verify.mjs`, which steps the real modules at `dt = 1/60`.
+
 ### Tech foundation
 
 - Vanilla JS ES modules + HTML5 `<canvas>`. No dependencies, no build step.
-- Internal resolution **256×240** (16 tiles × 15 tiles of 16 px), NES-style. Canvas is CSS-scaled by an integer factor (1–4×, fit to window) with `image-rendering: pixelated` for crisp pixels.
-- Fixed-timestep simulation at **60 Hz** (accumulator + `requestAnimationFrame`), rendering every frame.
+- Internal resolution **256×240** (`VIEW_W`, `VIEW_H` — `config.js:2-3`), i.e. 16 × 15 tiles of 16 px (`TILE`, `ROWS` — `config.js:1,4`), NES-style. The canvas is CSS-scaled by `fit()` (`main.js:43-55`): the largest **whole** factor wins, but when that would drop the canvas below `CRISP_MIN_SCALE = 1.4` a **half-step** is used instead (`SCALE_STEP = 0.5`), and the result is clamped to `[SCALE_MIN, SCALE_MAX] = [1, 4]` (`main.js:36-41,50-52`). `image-rendering: pixelated` keeps the pixels crisp (`index.html:9`). **Measured** scale by viewport: 320×568 → 1 · 390×844 → 1.5 · 844×390 → 1.5 · 568×320 → 1 · 744×1133 → 2 · 1440×900 → 3.
+- On a coarse-pointer device the fixed `#touch` bar can cost the layout up to 80 px of viewport height (`TOUCH_BAR_H` — `main.js:39`); `fit()` reserves `min(TOUCH_BAR_H, innerHeight − VIEW_H × PHONE_MIN_SCALE)`, so a screen too short to spare it keeps its pixels (`PHONE_MIN_SCALE = 1.5` — `main.js:40,46-49`).
+- Fixed-timestep simulation at **60 Hz** (`STEP = 1/60` — `config.js:5`; accumulator `main.js:483-488`), rendering every frame.
 
 ### File map
 
@@ -12,6 +15,8 @@
 index.html          page shell, canvas, touch overlay, module entry
 README.md           run instructions + controls
 architecture.md     this document
+serve-local.sh      localhost http server, default port 8010, refuses 8000
+serve-network.sh    same on all interfaces (play from another device)
 src/config.js       all tunable constants (sizes, physics, scoring, palette)
 src/sprites.js      all original pixel-art as procedural fillRect draw functions
 src/input.js        keyboard + touch input state
@@ -24,92 +29,162 @@ src/items.js        Sunfruit, Mega Berry, block pops, shards, score popups
 src/camera.js       side-scroll camera
 src/render.js       background, tiles, entities, HUD, screens
 src/main.js         entry: canvas setup, fixed-timestep loop, state machine
+tools/verify.mjs    headless harness: SMOKE + one check per round (R01…R33)
 ```
 
-Only `sprites.js` (text helper) and `main.js`/`input.js`/`render.js` touch the DOM; `config.js`, `levels.js`, `level.js`, `player.js`, `enemy.js`, `items.js`, `camera.js` are DOM-free and importable in Node for testing.
+Only `main.js` and `input.js` touch the DOM. `sprites.js` has zero `document`/`window` references (its text helper became a pure-`fillRect` bitmap font in R16) and `render.js` has none either (R23 removed the last); so the ten modules `config.js`, `levels.js`, `level.js`, `sprites.js`, `audio.js`, `player.js`, `enemy.js`, `items.js`, `camera.js`, `render.js` are DOM-free and importable in Node — which is how `tools/verify.mjs` drives the real game. `audio.js` touches Web Audio only (`AudioContext`), never the DOM (`audio.js:5,127`).
 
 ### Game loop
 
 ```
-acc += min(dt, 0.25);
-while (acc >= 1/60) { update(1/60); acc -= 1/60; }
-render();
+requestAnimationFrame(frame);            // re-armed BEFORE any work — one throw must not freeze the canvas
+try {
+  acc += min(dt, 0.25);                  // dt clamp: main.js:483
+  while (acc >= 1/60) { update(1/60); acc -= 1/60; }
+  render(ctx, G);
+} catch (err) { console.error(err); }    // main.js:479-492
 ```
+
+`update()` runs its state machine inside `try { … } finally { endFrame() }` so every frame-scoped input flag is cleared even on an early return (`main.js:186-201`).
 
 ### State machine
 
-`TITLE → PLAYING ⇄ PAUSED`; `PLAYING → LEVEL_CLEAR → PLAYING` (next level); boss death in level 3 → `WIN`; 0 lives → `GAME_OVER`; `WIN`/`GAME_OVER` → `TITLE` on Enter. Death is a sub-sequence inside `PLAYING` (`player.dead`, world frozen, 1.2 s timer, then respawn at same level with 1 life lost, or `GAME_OVER`).
+`TITLE → PLAYING ⇄ PAUSED`; `PLAYING → LEVEL_CLEAR → PLAYING` (next level) or `→ WIN` (gate on the last level); boss killed → `WIN`; 0 lives → `GAME_OVER`; `WIN`/`GAME_OVER` → `TITLE` on Enter — and the touch START button sets the same flag (`input.js:218`). Death is a sub-sequence inside `PLAYING` (`player.dead`, world frozen, 1.2 s timer — `main.js:217-226` — then respawn at the same level with 1 life lost, or `GAME_OVER` — `main.js:111-120`).
 
-- TITLE: logo, subtitle, controls listing; Enter starts a new game (score 0, lives 3, level 1) and unlocks audio.
-- PAUSED: overlay; P/Esc resumes, R restarts current level (no life lost), M mutes.
-- LEVEL_CLEAR: on gate touch, player auto-slides down the Melon Gate, +1000, then next level loads (1.4 s total).
-- WIN / GAME OVER: final score + "PRESS ENTER".
+- TITLE: logo, subtitle, controls listing; Enter/START starts a new game (score 0, `START_LIVES` 3, level 1) and creates/unlocks the AudioContext (`main.js:96-104`, `render.js:234-247`).
+- PAUSED: `rgba(0,0,0,0.5)` overlay (`render.js:251-256`); P/Esc resumes, R restarts the current level with no life lost (R is consumed only in this state — `main.js:420-431`), M mutes. M is consumed once per frame before the state switch, so it works on every screen (`main.js:204-207`).
+- LEVEL_CLEAR: on gate touch, `+SCORE.gate` (1000), music stops, then the player auto-slides down the Melon Gate at 120 px/s until `(gate.row + 1) * 16 - p.h`; 1.4 s total, then the next level loads (`main.js:122-131`, `main.js:437-457`). On the last level there is no next level, so the run ends through the shared `goWin()` instead (`main.js:443-449`).
+- WIN / GAME OVER: final score + "PRESS ENTER" (`render.js:269-278`).
+- Items (popups, shards, live berries) keep animating in `LEVEL_CLEAR`/`WIN`/`GAME_OVER` so the `+1000` popup rises through the whole clear window (`main.js:433-439,461,467`); the `p.dead` branch above stays a full world freeze — that freeze is intended.
 
 ### Coordinate system & physics
 
-World coordinates in px; entity `x, y` = top-left of hitbox. Tile size 16. Player hitbox 12 wide × 12 (small) / 26 (big). Fixed-dt physics, per second units:
+World coordinates in px; entity `x, y` = top-left of hitbox. Tile size 16 (`TILE` — `config.js:1`). Player hitbox `PLAYER_W` 12 × `PLAYER_SMALL_H` 12 / `PLAYER_BIG_H` 26 (`config.js:20-22`). Fixed-dt physics, per second units:
 
 | Constant | Value | Note |
 |---|---|---|
-| GRAVITY | 2300 px/s² | |
-| MAX_FALL | 420 px/s | |
-| JUMP_VY | −640 px/s | → ~89 px (5.5 tiles) jump height |
-| WALK_MAX | 110 px/s | |
-| RUN_MAX | 190 px/s | hold Shift |
-| ACCEL / AIR_ACCEL | 800 / 600 px/s² | |
-| FRICTION | 1400 px/s² | grounded, no input |
-| COYOTE | 0.08 s | |
-| JUMP_BUFFER | 0.12 s | |
-| JUMP_CUT_VY | −200 px/s | on early release, clamp vy if rising |
-| STOMP_BOUNCE | −360 px/s | |
-| ENEMY_SPEED | 30 px/s | turnip patrol |
-| BOSS_SPEED / HOP_COOLDOWN / HOP_RANGE / HOP_VY | 40 / 1.6 s / 120 px / −380 | |
-| INVULN_TIME | 2.0 s | after shrinking, 8 Hz blink |
+| GRAVITY | 2300 px/s² | `config.js:7` |
+| MAX_FALL | 420 px/s | `config.js:8` → 7 px per step, well under a tile, so tunnelling is impossible |
+| JUMP_VY | −640 px/s | **measured** full-hold rise **83.78 px (5.24 tiles)**, airtime 0.550 s (`R33`) |
+| WALK_MAX | 110 px/s | `config.js:10` |
+| RUN_MAX | 190 px/s | `config.js:11` hold Shift |
+| ACCEL / AIR_ACCEL | 800 / 600 px/s² | `config.js:12-13` |
+| FRICTION | 1400 px/s² | `config.js:14` grounded, no input |
+| AIR_FRICTION | 200 px/s² | `player.js:22` (module-local) airborne, no input |
+| COYOTE | 0.08 s | `config.js:15` |
+| JUMP_BUFFER | 0.12 s | `config.js:16` |
+| JUMP_CUT_VY | −200 px/s | `config.js:17` on early release, clamp vy if rising |
+| STOMP_BOUNCE | −360 px/s | `config.js:18` |
+| GROW_H | 14 px | `config.js:25` = `PLAYER_BIG_H − PLAYER_SMALL_H`; the only grow/shrink height source (R32) |
+| INVULN_TIME | 2.0 s | `config.js:26` after shrinking, 8 Hz blink (`render.js:210`) |
+| ENEMY_SPEED | 30 px/s | `config.js:29` turnip patrol |
+| BOSS_SPEED / BOSS_HOP_COOLDOWN / BOSS_HOP_RANGE / BOSS_HOP_VY | 40 / 1.6 s / 120 px / −380 | `config.js:30-34`. There is **no** `BOSS_HOP_VX`: the hop's horizontal speed is `BOSS_SPEED` (`enemy.js:106`, R09) |
+| BOSS_HP | 3 | `config.js:31` |
+| BERRY_SPEED / BERRY_LIFE | 60 px/s / 15 s | `config.js:36-37` |
 
-Derived feasibility (do not retune): 3-tile gaps walkable, 4-tile gaps require running; 4-tile walls/platforms climbable; row-9 blocks (4 tiles above ground) hittable from the ground; row-5 blocks only from standing on a row-9 block.
+Derived feasibility (**measured** by `R33`, do not retune): a full-hold jump rises 83.78 px (5.24 tiles); horizontal reach during one jump is **104.5 px** running and **60.5 px** walking, so 3-column gaps clear walking and 4–6-column gaps need a run; max step-up is **5 tiles** running (any gap 0–10 columns) and 5 tiles walking only up to a 4-column gap, then 0; the widest clean pit crossing is 6 columns running / 3 walking; row-9 blocks (4 tiles above the ground surface) are hittable from the ground, row-5 blocks only from a row-9 block. Pit widths per level (columns where both ground rows are air): 1-1 `2,3,3,3` · 1-2 `3,4,3,3,6,4,2` · 1-3 `3,4,3,3`. Ground rows are 13–14, so the standing surface top is y = 208. Worst live difficulty margin is **11.0 px** on 1-2's 6-column pit (cols 120–125) against the harness's 8 px bar (`tools/verify.mjs:2073`) — that pit is kept deliberately as a skill check (R33), and the row-9 `======` ledge above it gives a shorter alternative crossing. Reachability, running: 171/180 columns in 1-1, 180/200 in 1-2, 144/160 in 1-3.
 
 ### Collision model
 
-Axis-separated AABB vs tile grid: move x, resolve against solid tiles (clamp, zero vx); move y, resolve (set `onGround`; head-bump detection for upward motion). Solid chars: `X S B P Q U = |`. Out-of-range tiles: solid on left/right/below, air above. Turnips reverse at walls and cliff edges (grounded && no solid below front foot). Enemies are inactive until `x < cam.x + 288` (view + 32 px), then always active.
+Axis-separated AABB vs tile grid: move x, resolve against solid tiles (clamp, zero vx — `player.js:102-124`); move y, resolve (set `onGround`; head-bump detection for upward motion — `player.js:126-161`). Solid chars: `X S B P Q U = |` (`SOLID` — `config.js:41`), and `isSolid()` (`level.js:7-9`) is the **single solid authority**: every solid test in `player.js`, `enemy.js`, `items.js`, `main.js` and `level.js` routes through it (R31), so `.` and the non-legend `' '` are air to exactly the same code path. Out-of-range tiles: solid on left/right/below, air above (`tileAt` — `level.js:11-16`). Pit death is therefore **not** an out-of-bounds tile: it is an explicit height check `p.y + p.h >= ROWS * TILE` in `main.js:404` (R01), mirrored for enemies at `main.js:256` and for berries at `items.js:96`. Turnips reverse at walls (`enemy.js:25-28`) and at cliff edges — grounded and no solid tile under the front foot, asked through `isSolid()` (`enemy.js:74-81`). Enemies wake when they enter view + 32 px (`x < cam.x + VIEW_W + 32`, `enemy.js:63,91`) and then stay active, except that one trailing the ratcheted camera by more than `CULL_BEHIND = 32` px stops being simulated (`enemy.js:17,62,90`, R20).
 
-Block interaction (head-bump): `P` → becomes `U`, Sunfruit pop visual, +100; `Q` → becomes `U`, Mega Berry walks out; `B` + big player → tile removed, 4 shard particles, +50; `B` + small → 0.15 s bump animation, thud SFX.
+Block interaction (head-bump, `main.js:306-333`): `P` → becomes `U`, Sunfruit pop visual, fruit count +1, `+SCORE.fruit` (100) awarded **on the bump**; `Q` → becomes `U`, `+SCORE.berry` (1000) **on the bump** and a Mega Berry walks out — collecting that berry pays `SCORE.berry` again (`main.js:291-303`), so a full `Q` cycle is worth 2000; `B` + big player → tile removed, 4 shard particles, `+SCORE.block` (50); `B` + small → 0.15 s bump animation (`main.js:238-239`, `-4·sin(π·t/0.15)` px of lift — `render.js:95-100`), thud SFX.
 
 ### Level format
 
-`levels.js` exports `LEVELS = [{ label, name, map: [15 strings] }]`. Char legend:
+`levels.js` exports `LEVELS = [{ label, name, map: [15 strings] }]` (`levels.js:1-65`). Char legend:
 
 - `.` air
-- `X` ground (dirt; grass top rendered when tile above is non-solid)
+- `X` ground (dirt; grass top rendered when the tile above is non-solid — `render.js:112-116`)
 - `S` stone block (unbreakable)
-- `B` Pebble Brick (breakable from below by big player)
-- `P` / `Q` Pumpkin Block → Sunfruit / Mega Berry; become `U` (used, solid) after pop
+- `B` Pebble Brick (breakable from below by a big player)
+- `P` / `Q` Pumpkin Block → Sunfruit / Mega Berry; become `U` (used, solid) after the pop
 - `=` melon-slice platform (solid)
-- `|` melon pipe tile (solid; renderer draws cap on top row of a pipe run)
-- `H` hero spawn · `T` turnip spawn · `F` boss spawn · `C` floating Sunfruit · `G` Melon Gate base tile (gate drawn 2 wide × 7 tall; trigger rect `x*16, 7*16, 32, 80`)
+- `|` melon pipe tile (solid; renderer draws the cap on the top row of a pipe run and the left edge of a run — `render.js:133-137`)
+- `H` hero spawn · `T` turnip spawn · `F` boss spawn · `C` floating Sunfruit · `G` Melon Gate base tile
 
-`parseLevel(def)` validates: 15 rows, equal row length, exactly one `H`, exactly one `G` or `F` — throws `Error` with the level label otherwise. Returns `{ label, name, widthPx, tiles (mutable 2D char array), playerSpawn, enemies[], boss|null, fruits[], gate|null }` plus runtime state `bumps: [{x,y,t}]`. Marker tiles are converted to `.`.
+`G` marks the gate's **ground** tile (`level.js:101-104`). `drawGate()` draws a 32 px-wide gate whose posts run `gate.y − 64 … gate.y + 16` (`sprites.js:273-278`); the trigger band is that same arch, from the constants `GATE_W = TILE * 2`, `GATE_TRIGGER_TOP = TILE * 4`, `GATE_TRIGGER_BOTTOM = TILE` (`main.js:176-178`, used at `main.js:392-399`) — i.e. 32 wide, `gate.y − 64 … gate.y + 16`. The arch art continues up to `gate.y − 103`, and that decorative top is deliberately not part of the trigger.
+
+`parseLevel(def)` validates the map and throws an `Error` naming the level label (and row, column where it applies) otherwise: 15 rows (`level.js:46-48`), equal row length (`:50-54`), exactly one `H` (`:64-66`), exactly one `G` or `F` (`:67-69`) — plus R30's three clauses (`validateMap`, `level.js:21-42`): every character must be in the legend `SOLID + "HTFCG" + "."` (`level.js:3-5`, error at `:31`) — **a stray space is fatal**, even though `' '` would render and collide as air; `H`/`T`/`F` must have a solid tile below (`level.js:4,34-36`); and no marker may sit between two solid horizontal neighbours (`level.js:37-39`). Returns `{ label, name, widthPx, tiles (mutable 2D char array), playerSpawn, enemies[], boss|null, fruits[], gate|null }` plus runtime state `bumps: [{x,y,t}]` (`level.js:73-84`). Marker tiles are converted to `.` (`level.js:86-106`). Spawns are derived from the marker cell: hero `x·16+2, (y+1)·16−12`, turnip the same, boss `x·16+4, (y+1)·16−28`, fruit `x·16+4, y·16+4` (`level.js:89-100`).
 
 ### Entities
 
-- **Player** (small 12×12 / big 12×26): runs, jumps, variable height; damage: big → small + invuln, small → death; pit (y > 272) → instant death sequence.
-- **Turnip Trooper** (12×12): gravity patrol, reverses at walls/edges; stomp → 0.4 s squashed corpse, +200, player bounces; side contact → damage.
-- **Bromely** (28×28, 3 HP): walks arena, hops toward player (range/cooldown above); stomp on top 10 px → 1 HP, +500, 1 s white flash, player bounces; HP 0 → 1.5 s defeat anim → `WIN`, +2000.
-- **Sunfruit** (8×8): 4-frame spin, static, +100 on overlap.
-- **Mega Berry** (14×14): walks right at 60 px/s, gravity, wall bounce, falls off edges, despawns after 15 s; +1000; grows small player (feet stay planted: `y -= 14`).
-- Effects: block pop (0.25 s rise), 4 shards (0.5 s), score popup (0.6 s, rises 20 px).
+- **Player** (12×12 small / 12×26 big): runs, jumps, variable height (`JUMP_CUT_VY` on early release — `player.js:94-97`). Damage: big → small (`h` back to `PLAYER_SMALL_H`, `y += GROW_H` so the feet stay planted, `INVULN_TIME` starts — `player.js:168-176`), small → death with a `vy = −400` hop (`player.js:177-180`). Pit death is the explicit bottom-edge check `p.y + p.h >= ROWS * TILE` (= 240) — `main.js:401-409`; it calls `killPlayer(p, true)`, which skips the hop and hides the hero (`player.js:183-190`, `render.js:209`).
+- **Turnip Trooper** (12×12 — `enemy.js:51`): gravity patrol, reverses at walls and cliff edges; stomp → 0.4 s squashed corpse (`SQUASH_LIFE` — `enemy.js:16`), `+SCORE.stomp` (200), player bounces; side contact → damage. The stomp test is the **prev-frame rule** (R02/R03): `p.vy > 0 && p.prevBottom <= e.y + 0.5` (`main.js:338-340`) — the feet were above the enemy's top on the *previous* frame, so walking into a flank can never squash it. The old "top 10 px" window is gone, and `prevBottom` is captured before the frame's physics pass (`player.js:65-67,165`). A stomp also places the hero on the enemy's top and clears `onGround` before bouncing (`main.js:345-349`).
+- **Bromely** (28×28, `BOSS_HP` 3 — `enemy.js:55`): walks the arena at `BOSS_SPEED`, hops toward the player when grounded, off cooldown, within `BOSS_HOP_RANGE` horizontally and 48 px vertically (`enemy.js:102-107`); the same prev-frame rule makes a stomp (`main.js:361`) cost 1 HP, pay `+SCORE.bossHit` (500) and flash the boss sprite white for 1 s (`hurtT = 1.0` — `main.js:363`, white body/hatch/face in `sprites.js:90-92`); HP 0 → 1.5 s defeat spin (`main.js:274`, 3-frame flip — `render.js:181-183`) → `WIN`, `+SCORE.bossDown` (2000). A boss that reaches the map bottom is retired exactly as a stomp at HP 0 would be, because 1-3 has no gate and a silently removed boss would make the run unwinnable (`main.js:256-270`, R29).
+- **Sunfruit** (8×8 — `main.js:281`): 4-frame spin at 8 Hz, static, `+SCORE.fruit` (100) and count +1 on overlap (`main.js:279-287`, `render.js:147-149`).
+- **Mega Berry** (**14×7** — `BERRY_W`/`BERRY_H`, `items.js:8-9`): the physics box, the art and the pickup rect are the same box, and its bottom outline row *is* the floor (`sprites.js:158-164`, R22). Walks right at `BERRY_SPEED` 60 px/s, gravity, wall bounce, falls off edges, despawns after `BERRY_LIFE` 15 s, and is dropped when its feet reach `ROWS * TILE` (`items.js:86-98`, R29). Collecting it pays `+SCORE.berry` (1000) and grows the hero **only if the grown box fits**: `hasGrowHeadroom()` inspects the band `[y − GROW_H, y)` and a blocked pickup awards no score, no sound and no removal — the berry stays in play for later, with no sideways eject and no teleport (`main.js:152-170,291-303`, R28). Growth keeps the feet planted (`y -= GROW_H`, `main.js:300`).
+- Effects: block pop (0.25 s rise of 16 px — `items.js:11`, `render.js:153-158`), 4 shards (0.5 s — `items.js:13-16,61-67`), score popup (0.6 s, rises 20 px — `items.js:12`, `render.js:162-168`).
 
 ### Scoring & HUD
 
-Sunfruit 100 · stomp 200 · brick break 50 · Mega Berry 1000 · Melon Gate 1000 · boss hit 500 · boss down 2000. HUD top bar: `SCORE 000000`, Sunfruit icon ×NN, `WORLD 1-1`, Poppy icon ×lives, `MUTED` when muted. Level name banner fades for 1.5 s at level start.
+`SCORE = { fruit: 100, stomp: 200, block: 50, berry: 1000, gate: 1000, bossHit: 500, bossDown: 2000 }` (`config.js:39`) — Sunfruit 100 · stomp 200 · brick break 50 · Mega Berry 1000 · Melon Gate 1000 · boss hit 500 · boss down 2000. `P` blocks pay on the bump; a `Q` block pays on the bump *and* its berry pays again on pickup (see Block interaction). Gate touch pays `SCORE.gate` once per level (`gateScored` — `main.js:93,125,392`); the boss's death pays `SCORE.bossDown` (`main.js:143-146`), and a gate walked into on the final level pays only `SCORE.gate`, never `SCORE.bossDown` (`main.js:133-146`, R27). Every award also spawns a `+n` score popup (`main.js:106-109`).
+
+HUD (`drawHud`, `render.js:216-232`, drawn in `PLAYING`/`PAUSED`/`LEVEL_CLEAR` — `render.js:299-301`): `SCORE 000000` (6-digit zero-padded) at x = 8, y = 6; Sunfruit icon at (8, 18) with `x00` (2-digit, zero-padded) at x = 18; `WORLD 1-1` centred at y = 6; a Poppy mini-icon (idle hero, 12×12) plus `xN` lives on the right; `MUTED` far right when muted. The badge width has one source, `MUTED_W = textW('MUTED')` (5 chars × `TEXT_PITCH` 6 = 30 px), separated from the lives cluster by `MUTED_GAP` 4, and the icon sits at `LIVES_ICON_Y` 6 because it draws 2 px of leaf above its y — **measured** worst case: rightmost ink at x = 248, 8 px of margin, minimum gap between rects 1 px (`R24`). The level-name banner (`WORLD 1-1 — STRAWBERRY FIELDS`, y = 60) is set to 1.5 s at load (`main.js:92`), decays by dt (`main.js:411`) and draws at `globalAlpha = Math.min(1, bannerT)` (`render.js:303-309`) — so it is **fully opaque for the first 0.5 s and fades out over the last 1.0 s**.
 
 ### Audio
 
-AudioContext created lazily on first user gesture (Enter on title); if unavailable, all audio calls no-op. Master gain 0.5. SFX via square/triangle oscillators + exponential decay; brick break uses a short noise buffer. Music: 4-bar I–V–vi–IV loop at 132 BPM eighth notes (lookahead scheduler, 30 ms timer, 0.12 s ahead): melody (square, gain 0.16) — bar1 `C5 – E5 – G5 – E5 –`, bar2 `G5 – B5 – D5 – B5 –`, bar3 `A5 – C6 – E5 – C6 –`, bar4 `F5 – A5 – C6 – A5 –` (`–` = rest); bass (triangle, gain 0.2) root+fifth per bar: `C2 G2 · G2 D3 · A2 E3 · F2 C3` (4 eighths each). Music runs in PLAYING; stops in PAUSED/WIN/GAME_OVER; jingles: die, level-clear, win.
+AudioContext created lazily on the first user gesture (`audio.init()` from `startGame` — `main.js:102`); `audio.js:126-134`. If `AudioContext` is unavailable every method is a no-op (`audio.js:127,143,186`). Master gain `MASTER_LEVEL` 0.5 (`audio.js:7`). SFX (`audio.js:142-181`) use square/triangle oscillators plus one sawtooth (`hurt`), a 0.005 s linear attack and an exponential decay to 0.0001 (`audio.js:8-10,56-76`), and brick break uses a short low-passed white-noise buffer (`audio.js:79-105,159-161`). Music: 4-bar I–V–vi–IV loop at 132 BPM in eighth notes, lookahead scheduler on a 30 ms timer scheduled 0.12 s ahead (`BPM`/`LOOKAHEAD_MS`/`SCHEDULE_AHEAD` — `audio.js:12-15,185-208`): melody (square, gain `MELODY_PEAK` 0.16) — bar1 `C5 – E5 – G5 – E5 –`, bar2 `G5 – B5 – D5 – B5 –`, bar3 `A5 – C6 – E5 – C6 –`, bar4 `F5 – A5 – C6 – A5 –` (`–` = rest, `audio.js:32-37`); bass (triangle, gain `BASS_PEAK` 0.2) root+fifth per bar: `C2 G2 · G2 D3 · A2 E3 · F2 C3`, 4 eighths each (`audio.js:39-45,200-203`). Music runs in `PLAYING`; it stops in `PAUSED`, `WIN`, `GAME_OVER`, on death and for the `LEVEL_CLEAR` window, restarting on the next load (`main.js:116,127,139,354,383,415,423,428,453`). A suspended context is resumed on `init()`/`musicStart()` (`audio.js:110-114,133,187`), a throttled scheduler tick resyncs to the audio clock instead of firing a burst of past-dated notes (`audio.js:192-194`), and muting before `init()` is remembered and applied to the master gain (`audio.js:130,136-140`). Jingles: `die`, `clear`, `win` (`audio.js:168-176`).
 
 ### Input
 
-Keyboard: ←/→ or A/D move · Shift run · Space/Z/W/↑ jump (edge-buffered) · Enter start · P/Esc pause · R restart (paused) · M mute. Arrows/Space call `preventDefault`. Touch: on `(pointer: coarse)`, show 3 fixed buttons (◀ ▶ left, A right) that drive the same state.
+Keyboard (`onKeyDown`/`onKeyUp`, `input.js:61-104`): ←/→ or A/D move · Shift run (hold) · Space/Z/W/↑ jump (edge-buffered into `jumpPressed`) · Enter start · P/Esc pause · M mute · R restart (paused only). Every letter binding tests **both** `e.key` and the layout-independent physical position `e.code` (`KeyA`/`KeyD`/`KeyZ`/`KeyW`/`KeyP`/`KeyM`/`KeyR`), so AZERTY/Dvorak/Cyrillic layouts and IME compositions (`e.key === "Process"`) cannot miss a keypress (`input.js:56-71`, R13); the release side mirrors the same compound conditions (`input.js:93-104`). Cmd/Ctrl/Alt chords are dropped outright (Shift is exempt — it is the run key) (`input.js:50-62`, R14), and `PREVENT_KEYS` also covers `Enter` and `Tab` on top of the arrows and Space — `preventDefault` suppresses the browser default, never the game action (`input.js:43-48,63`). Held one-shot flags are frame-scoped: `main.js`'s `endFrame()` clears anything it did not consume (`input.js:6-11,13-41`, `main.js:186-201`, R05), and `resetInput()` clears the four held flags on `blur` and on a hidden tab so a missed keyup can never latch a direction or a jump (`input.js:110-128`, R06). A document-level `contextmenu` preventer stops Android's long-press menu from covering the bar (`input.js:130-134`, R12).
+
+Touch: on `(any-pointer: coarse)` — *any* pointer, so a touchscreen laptop whose primary device is a trackpad gets the bar too — `applyTouchBar()` shows `#touch` and re-decides on every media `change`, releasing any direction a touch pointer still holds when the bar is hidden (`input.js:156-251`, R15). `index.html:26-30` ships **six** buttons — `t-left` ◀, `t-right` ▶, `t-start` START, `t-pause` PAUSE, `t-run` B, `t-jump` A — all `type="button" tabindex="-1"` and blurred on pointerdown so nothing in the bar can take an Enter/Space activation (`input.js:172-178`, R10/R14). Directions and run are holds tracked per `pointerId`, so a release elsewhere on the page still frees them (`input.js:106-149`); START/PAUSE are one-shot taps that also answer the keyboard/assistive-tech `click` path without double-firing (`input.js:199-219`). Touch players have no keyboard, hence the on-screen START and PAUSE; there is still **no** on-screen Mute or Restart-Level button (a gap, not an oversight).
 
 ### Rendering pipeline
 
-Sky → parallax hills (0.25×) → clouds/bushes (0.5×, deterministic hash positions) → visible tiles (17 columns) → gate → items → enemies → player → particles/popups → HUD → state overlays (title / pause / game-over / win / clear slide / level banner). Text uses a crisp `pixelText` helper: draw at 24 px monospace into a cached offscreen canvas, draw back at 1/3 with smoothing off. All character art is procedural `fillRect` pixel drawing (integer coords) — original, no asset files.
+Sky → far/near parallax hills at 0.25× (`render.js:66-76`) → clouds (128 px steps) and bushes (160 px steps) at 0.5×, positioned by a deterministic integer hash with no `Math.random` (`render.js:46-50,78-93`) → visible tiles, 17 columns from `floor(camX/16)` (`render.js:102-141`) → gate → items, particles and score popups → enemies → player → HUD → level banner → state overlays (pause / clear flash / game-over / win; TITLE is drawn instead of the world, `render.js:283-286`). The camera target is `player.x − 96` with a `CAMERA_LERP` 10 lerp and a **one-way ratchet** (`cam.x = max(cam.x, …)`), clamped to `[0, levelW − VIEW_W]` (`camera.js:9-21`, R20). Text is an **authored 5×7 procedural bitmap font** blitted with `fillRect`: advance `TEXT_PITCH = 6` px × scale (5 inked columns + 1 gap), cell height `TEXT_CELL_H = 12` × scale with the glyph vertically centred (`FONT_TOP = 3`) (`sprites.js:325-335,401-422`). There is no canvas text API and no offscreen canvas anywhere in `src/` — the advance can never disagree with the ink, and the output is identical on every platform (R16). Unknown glyphs keep their blank cell instead of shifting the pitch (`sprites.js:403-404`). Score popups draw an INK backing pass 1 px down-right before the white text so they stay legible over sky and stone (`POPUP_BACKING_DX/DY` — `render.js:28-30,162-168`, R18). The `LEVEL_CLEAR` white flash is clamped to `CLEAR_FLASH_MAX_ALPHA = 0.6` and drawn **before** the overlay text and HUD stay on top (`render.js:31-32,257-267`, R19). A squashed turnip corpse is drawn directly as a 4-row `turnipBody` band with a 1-row `turnipTip` root strip, bottom-anchored on the hitbox floor — `ctx.scale(1, 4/14)` used to land the art on fractional rows and `fillRect` antialiases those, which rendered the corpse as a faint blur (`render.js:33-38,189-199`, R23). All character art is procedural `fillRect` pixel drawing — original, no asset files. Turnip and boss art stays inside the hitbox rows and the walk-bob moves only the crown spikes above the box, because the physics box is held still by `moveY` (`sprites.js:61-64,85-96`, R21).
+
+## Deviations
+
+The behaviour below was changed after the design above was first written (queue `fixes/review-2026-11-15`, entries R01–R33). Each line is the shipped rule; `file:line` is where it lives. It is recorded here so nobody re-derives it or "restores" the old behaviour.
+
+**World & physics**
+- **Pit death is a height check, not an out-of-bounds tile** (R01): `tileAt()` reports solid ground below the map, so the old `y > 272` pit rule could never fire and a fallen hero patrolled a hidden floor. Shipped rule: `p.y + p.h >= ROWS * TILE` (= 240) → `killPlayer(p, true)` (`main.js:401-409`). The old "phantom pit floor" is still what `tileAt()` returns; the check is what makes it fatal.
+- **Stomp uses the prev-frame rule** (R02/R03): `p.vy > 0 && p.prevBottom <= e.y + 0.5`, with `prevBottom` captured before the physics pass (`main.js:338-340,361`, `player.js:65-67,165`). The old "overlap within the top 10 px" window is gone. The `<14` contingency pre-approved at `RESUME.md:53` (widen the window to the stomp-bounce lift of 5.36 px) is **withdrawn** — the prev-frame rule supersedes it and needs no threshold. Known cost, measured in review: of 36 legal-at-onset over-the-top contacts on a boss hop's first frame, ~15 now hurt instead of stomping, because the feet were not above the boss's top on the previous frame.
+- **Camera is a one-way ratchet** (R20): `cam.x = max(cam.x, cam.x + (target − cam.x) · min(1, CAMERA_LERP · dt))`, so cleared ground stays cleared and retreating never scrolls the world back (`camera.js:14-21`). The old backward rate 14 is deleted, not tuned — the ratchet discards any backward step, so that branch was dead code (`camera.js:9-12`). Do not "restore" it.
+- **Behind-camera cull** (R20): an entity trailing the camera by more than `CULL_BEHIND = 32` px stops being simulated (`enemy.js:17,62,90`); squashed turnips and defeated bosses keep ticking so they can still be retired, and `render.js` draws culled entities regardless. **Known, user-DEFERRED issue (R35, NOT fixed here):** a live boss stopped dead behind the ratcheted camera can be stomped uncontested. R33 measured the mechanism (freeze point `camX − 60`, ratchet-dependent) and the user deferred the fix.
+
+**Entities**
+- **Boss speed is `BOSS_SPEED` everywhere** (R09), including the hop's horizontal component (`enemy.js:55,106`). `BOSS_HOP_VX` was **not** added; the constant does not exist.
+- **Berry box is 14×7** (R22): `BERRY_W`/`BERRY_H` (`items.js:8-9`) are the physics box, the art and the pickup rect all at once, with the bottom outline row on the floor. The old 14×14 box was ~10 px of art in a bigger hitbox.
+- **Growth is refused, not forced** (R28): a berry collected with less than `GROW_H` (14 px) of headroom awards nothing and stays in `G.items`; there is no sideways eject and no silent teleport (`main.js:152-170,291-303`). This supersedes the old always-grow-and-`y -= 14` behaviour.
+- **`GROW_H` is the only grow/shrink height source** (R32): `config.js:25`, used by the grow (`main.js:300`) and the shrink (`player.js:173`); the bare `26`/`14` literals are gone from `main.js`/`player.js`.
+- **Pit parity for enemies and berries** (R29): the same bottom-edge line kills turnips and drops berries (`main.js:250-271`, `items.js:90-96`). Consequence, recorded on purpose: a **boss** reaching that line is retired as if stomped at HP 0 → `WIN` + `SCORE.bossDown`. R33 confirmed by sweep that the shipped 1-3 boss cannot reach it (live minimum x 1846.7 vs ≤ 1780 required), so this is not reachable as a cheese today.
+- **Items animate outside `PLAYING`** (R25): popups, shards and berries keep updating through `LEVEL_CLEAR`/`WIN`/`GAME_OVER` (`main.js:433-439,461,467`). The `p.dead` branch remains a full world freeze — that freeze is intended (`architecture.md` State machine, and `main.js:433-436` says so).
+- **One-shot input flags are frame-scoped** (R05): `endFrame()` clears `jumpPressed`/`start`/`pausePressed`/`mutePressed`/`restartPressed` every frame inside a `try/finally`, so a jump pressed while paused no longer fires on the resume frame and a held Enter cannot snap `GAME_OVER` straight back to TITLE (`main.js:180-201`).
+- **`resetInput()` on `blur`/`visibilitychange`** (R06): all four held flags plus the touch pointer map are released, because a lost focus drops every pending keyup (`input.js:110-128`).
+- **`isSolid()` is the single solid authority** (R31): the turnip's cliff-edge test asks `isSolid(tileAt(...))` instead of comparing against `'.'`, so any other non-solid character is air to the collision code too (`enemy.js:74-81`).
+- **`updateTurnip(e, dt, level, camX)`** is a 4-argument signature (R32): the unused `player` parameter is gone because only `updateBoss` reads the hero (for its hop) (`enemy.js:59,87`). A boss stomp now also clears `p.onGround` so the stale landing of this frame cannot refresh coyote time (`main.js:366-372`).
+
+**Module hygiene & test seams**
+- **`makeCamera()` is the one definition of a fresh camera** (R32): `camera.js:5-7`, used both for the initial `G.cam` and on every `loadLevel()` (`main.js:74,91`), so a level can no longer start with a stale scroll position.
+- **`export const G` in `main.js:62-82` is a permanent, documented test seam**: `tools/verify.mjs` imports it and drives the game by reading and writing it. Do not un-export it, and do not treat it as an API — its own comment says so.
+
+**Level loading**
+- **The gate trigger follows the art** (R08): the trigger band is built from `GATE_W = TILE * 2`, `GATE_TRIGGER_TOP = TILE * 4`, `GATE_TRIGGER_BOTTOM = TILE` (`main.js:176-178`, applied at `main.js:392-399`), i.e. 32 wide over `gate.y − 64 … gate.y + 16` — the arch `drawGate()` actually paints. The old hardcoded rect (`x*16, 7*16, 32, 80`) hung 64 px below the floor and caught only the bottom of the art.
+- **Loader validation replaces the `/tmp` map checker** (R30, the checker it retires is recorded at `RESUME.md:50`): `validateMap()` rejects out-of-legend characters — a stray space included — ungrounded `H`/`T`/`F`, and markers embedded between solid neighbours, throwing with the level label and `row,col` (`level.js:18-42`). Loosening it is not an option; it is what keeps silent map typos from shipping.
+- **Map data, R33**: 1-3 cols 156–158 are `S` on all 15 rows, sealing the dead air pocket behind the right wall (45 unreachable air cells and a phantom 3-column "pit" floor became boundary wall). No other map edit: every pit/gap/rise measured ≥ 11.0 px against the 8 px bar, so 1-2's 6-column pit (cols 120–125, margin 11.0 px) is kept as a deliberate skill check — with the row-9 `======` ledge above it as a second, gentler crossing. 1-3's door at col 115 rows 11–12 gives 32 px, which admits the 26 px big hero with no sideways shove.
+
+**Rendering & text**
+- **Authored bitmap font** (R16): a procedural 5×7 font blitted with `fillRect`, pitch `TEXT_PITCH = 6` × scale and cell height `TEXT_CELL_H = 12` × scale (`sprites.js:325-335,401-422`). This supersedes the old "draw at 24 px monospace into a cached offscreen canvas, draw back at 1/3" *and* the platform-dependent `24px monospace` metrics — including the 12×24 cell / 12 px advance deviation recorded at `RESUME.md:13`. There is no `fillText` and no text canvas in `src/`.
+- **Score popups get an INK backing pass** 1 px down-right under the white text (R18) (`render.js:28-30,162-168`).
+- **`LEVEL_CLEAR` flash is clamped to `CLEAR_FLASH_MAX_ALPHA = 0.6` and drawn before the overlay text** so `STAGE CLEAR` and the HUD stay legible through it (R19) (`render.js:31-32,257-267`).
+- **Squashed-turnip corpse is drawn directly**, 4 integer rows, with no fractional transform (R23) (`render.js:33-38,189-199`).
+- **HUD geometry has named sources** (R24): `MUTED_W = textW('MUTED')` and `LIVES_ICON_Y = 6` (`render.js:39-43,222-231`), so the lives cluster and the MUTED badge cannot drift into each other; measured worst case is 8 px of right margin and a 1 px minimum gap.
+- **Art vs hitbox** (R21): turnip and boss art rows stay inside the hitbox and the walk-bob moves only the crown rows above it, so the drawn sprite cannot drift out of sync with the box the physics resolved (`sprites.js:61-64,85-96`).
+
+**Input & layout**
+- **Touch control set is six buttons** (R10/R11/R12/R14/R15): `t-left` ◀, `t-right` ▶, `t-start` START, `t-pause` PAUSE, `t-run` B, `t-jump` A (`index.html:26-30`, bound at `input.js:215-223`), replacing the old "3 fixed buttons that cover the same state". Start and Pause are on-screen because a touch player has no keyboard. **Gap, still open:** there is no on-screen Mute and no on-screen Restart-Level button, so those two actions need a keyboard. The visibility query is `(any-pointer: coarse)` with a live `change` listener, not `(pointer: coarse)` once-evaluated (R15), and the bar's buttons are `type="button" tabindex="-1"` and blurred on pointerdown (R14).
+- **`e.code` physical-key matching** (R13) and the **`metaKey`/`ctrlKey`/`altKey` guard with `PREVENT_KEYS += Enter/Tab`** (R14) (`input.js:43-62`). The guard is deliberately not mirrored in `onKeyUp`: always releasing avoids latching a direction when a modifier arrives on the way out (`input.js:85-92`).
+- **Fractional canvas scale** (R11): whole factor preferred, half-step when the whole factor would fall below 1.4×, clamped to [1, 4] (`main.js:36-55`). The old "integer factor 1–4× only" left phones at 1× with a ~2 mm hero.
+
+**Flow, audio & resilience**
+- **`goWin()` is the single WIN path** (R27), shared by the boss kill (`onBossDown`, pays `SCORE.bossDown`) and the final-level gate (pays only the `SCORE.gate` already awarded by `onGate`) — so a gate touched on the last level pays **0 extra**, not `SCORE.bossDown` (`main.js:122-146,443-449`). It also removes the `loadLevel(undefined)` throw on the last level.
+- **The loop survives a throw** (R26): `requestAnimationFrame(frame)` is re-armed before any work and the body is wrapped in `try/catch`, so a throw can no longer freeze the canvas forever — at the cost that a *recurring* throw now logs once per frame, up to ~60 lines/s, which is intentional (a silent repeat would hide the bug instead) (`main.js:474-494`).
+- **Audio drift-resync, resume and mute-before-init** (R07): a throttled scheduler tick resyncs `musicNextTime` to the audio clock instead of firing a burst of past-dated notes, a `suspended` context is resumed on `init()`/`musicStart()`, and muting before `init()` is remembered and applied to the master gain (`audio.js:110-114,130,136-140,187,192-194`).
+
+**Reference numbers (§6 corrections)**
+- Jump rise is **83.78 px (5.24 tiles)**, not "~89 px (5.5 tiles)"; a full-hold jump covers **104.5 px** horizontally running and **60.5 px** walking, not 101.33 / 58.67; max step-up is 5 tiles. All three are printed by `node tools/verify.mjs` (check `R33`) — treat that output as the source of truth, not this document.
+- Art-vs-hitbox bboxes changed with R21/R22: the turnip's art starts 1 px left of the box (`sprites.js:63`), the boss's art no longer hangs below its hitbox, and the berry's 14×7 art fills its box edge-to-edge (`sprites.js:158-164`). The pre-R21 "✗" rows in the old measurement table no longer describe the shipped art.
