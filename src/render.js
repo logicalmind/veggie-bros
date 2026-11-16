@@ -27,6 +27,8 @@ const ROWS = 15;
 // offset of the INK backing pass behind the white score popups, in source pixels
 const POPUP_BACKING_DX = 1;
 const POPUP_BACKING_DY = 1;
+// ceiling for the LEVEL_CLEAR white flash so the screen never goes full-strength white
+const CLEAR_FLASH_MAX_ALPHA = 0.6;
 
 // deterministic pure-integer hash of i (no Math.random)
 function hash(i) {
@@ -235,15 +237,16 @@ function drawOverlay(ctx, g) {
       centerText(ctx, 'P RESUME  R RESTART  M MUTE', 140, '#ffffff');
       break;
     case 'LEVEL_CLEAR':
-      centerText(ctx, 'STAGE CLEAR', 96, INK, 2);
-      centerText(ctx, '+1000', 124, INK);
+      // white flash first, clamped, so the overlay text and the HUD stay on top of the fade
       if (g.clearT > 0.9) {
         ctx.save();
-        ctx.globalAlpha = Math.min(1, (g.clearT - 0.9) / 0.5);
+        ctx.globalAlpha = Math.min(CLEAR_FLASH_MAX_ALPHA, (g.clearT - 0.9) / 0.5);
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, VIEW_W, VIEW_H);
         ctx.restore();
       }
+      centerText(ctx, 'STAGE CLEAR', 96, INK, 2);
+      centerText(ctx, '+1000', 124, INK);
       break;
     case 'WIN':
       centerText(ctx, 'HARVEST SAVED!', 80, INK, 2);
