@@ -104,6 +104,15 @@ function scheduleNoise(t0, dur, filterHz) {
   };
 }
 
+// Browsers may hand back a suspended context (no user gesture yet, or the tab
+// was hidden); without resume() nothing ever sounds. Swallow the rejection so
+// a blocked resume can't produce an unhandled promise error.
+function resumeCtx() {
+  if (!ctx || ctx.state !== "suspended") return;
+  const p = ctx.resume();
+  if (p && typeof p.catch === "function") p.catch(() => {});
+}
+
 // Sequential square jingle: one note per step, each step long.
 function scheduleJingle(freqs, step, t0) {
   for (let i = 0; i < freqs.length; i += 1) {
@@ -118,15 +127,16 @@ export const audio = {
     if (inited || typeof AudioContext === "undefined") return;
     ctx = new AudioContext();
     master = ctx.createGain();
-    master.gain.value = MASTER_LEVEL;
+    master.gain.value = this.muted ? 0 : MASTER_LEVEL;
     master.connect(ctx.destination);
     inited = true;
+    resumeCtx();
   },
 
+  // Muting before init() is remembered: init() applies it to the master gain.
   toggleMute() {
-    if (!inited) return;
     this.muted = !this.muted;
-    master.gain.value = this.muted ? 0 : MASTER_LEVEL;
+    if (inited) master.gain.value = this.muted ? 0 : MASTER_LEVEL;
   },
 
   sfx(name) {
@@ -174,10 +184,14 @@ export const audio = {
   // pattern loops (slot wraps at 32) until musicStop().
   musicStart() {
     if (!inited) return;
+    resumeCtx();
     clearInterval(musicTimer);
     musicSlot = 0;
     musicNextTime = ctx.currentTime + 0.05;
     musicTimer = setInterval(() => {
+      // A throttled tick (backgrounded tab) lets musicNextTime fall far behind
+      // the audio clock; resync instead of firing a burst of past-dated notes.
+      if (musicNextTime < ctx.currentTime) musicNextTime = ctx.currentTime + 0.05;
       while (musicNextTime < ctx.currentTime + SCHEDULE_AHEAD) {
         const mel = MELODY[musicSlot];
         if (mel !== null) {
