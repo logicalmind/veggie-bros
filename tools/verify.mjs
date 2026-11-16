@@ -1380,13 +1380,13 @@ check('R19', () => {
   assert(flash, 'no full-screen white flash rect was drawn at clearT=1.39');
   const bad = [];
   if (!(flash[5] <= 0.9)) bad.push(`the flash alpha is ${flash[5].toFixed(2)} (> 0.9 clamp) — the last frames are a pure white screen`);
-  const stage = rec.textInk.filter((q) => q.y >= 90 && q.y < 120);
-  const plus = rec.textInk.filter((q) => q.y >= 120 && q.y < 150);
-  assert(stage.length > 0 && plus.length > 0, `STAGE CLEAR/+1000 ink not found (stage ${stage.length}, plus ${plus.length} pixels)`);
-  const firstText = Math.min(stage[0].seq, plus[0].seq);
-  if (flash[6] < firstText) bad.push(`the flash (draw #${flash[6]}) is issued BEFORE 'STAGE CLEAR'/'${"'"}+1000${"'"}' (draw #${firstText}) — expected the flash first, then the text on top`);
-  const hud = rec.textInk.filter((q) => q.y < 30);
-  if (hud.length && hud.every((q) => q.seq < flash[6]) && flash[5] > 0.9) bad.push('the HUD is drawn under a full-strength flash');
+  const stage = rec.rects.filter((q) => q[4] === C.PALETTE.black && q[1] >= 90 && q[1] < 120 && q[3] === 2 && q[2] >= 2 && q[2] <= 12); // scale-2 text runs (post-R16: overlay text is fillRect runs, not fillText)
+  const plus = rec.rects.filter((q) => q[4] === C.PALETTE.black && q[1] >= 120 && q[1] < 150 && q[3] === 1 && q[2] >= 1 && q[2] <= 6); // scale-1 text runs
+  assert(stage.length > 0 && plus.length > 0, `STAGE CLEAR/+1000 text runs not found (stage ${stage.length}, plus ${plus.length} rects)`);
+  const firstText = Math.min(stage[0][6], plus[0][6]); // rects carry seq at index 6
+  if (flash[6] > firstText) bad.push(`the flash (draw #${flash[6]}) is issued AFTER 'STAGE CLEAR'/'+1000' (draw #${firstText}) — draw the flash first so the text sits on top of the fade`);
+  const hud = rec.rects.filter((q) => q[4] === C.PALETTE.black && q[1] < 30 && q[3] === 1 && q[2] >= 1 && q[2] <= 6);
+  if (hud.length && hud.every((q) => q[6] < flash[6]) && flash[5] > 0.9) bad.push('the HUD is drawn under a full-strength flash');
   assert(bad.length === 0, bad.join(' | '));
   return `flash alpha ${flash[5].toFixed(2)} (clamped) and drawn before the overlay text (draw #${flash[6]} vs #${firstText})`;
 });
