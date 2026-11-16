@@ -1,6 +1,17 @@
-import { ROWS, SCORE, START_LIVES, STEP, STOMP_BOUNCE, TILE, VIEW_H, VIEW_W } from './config.js';
+import {
+  PLAYER_BIG_H,
+  PLAYER_SMALL_H,
+  ROWS,
+  SCORE,
+  START_LIVES,
+  STEP,
+  STOMP_BOUNCE,
+  TILE,
+  VIEW_H,
+  VIEW_W,
+} from './config.js';
 import { LEVELS } from './levels.js';
-import { parseLevel } from './level.js';
+import { isSolid, parseLevel, tileAt } from './level.js';
 import { makeBoss, makeTurnip, updateBoss, updateTurnip } from './enemy.js';
 import { BERRY_H, BERRY_W, makeBerry, makeFruit, makePop, makePopup, makeShards, updateItems } from './items.js';
 import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
@@ -136,6 +147,27 @@ function rectOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+// A berry only grows the hero when the taller box actually fits. The extra height it needs
+// beyond the small box is the band [y - GROW_H, y), so if any tile there is solid the grown
+// box is buried, the next X pass ejects the hero a whole tile sideways to untangle it, and no
+// headBump is ever reported. In a 1-tile-high tunnel the grown box can never fit and the only
+// way back down is taking a hit, so refusing the pickup is the one honest option.
+const GROW_H = PLAYER_BIG_H - PLAYER_SMALL_H;
+const GROW_EPS = 0.001; // skip tiles only touched at an exact edge, as player.js does
+
+function hasGrowHeadroom(p, level) {
+  const tx0 = Math.floor(p.x / TILE);
+  const tx1 = Math.floor((p.x + p.w - GROW_EPS) / TILE);
+  const ty0 = Math.floor((p.y - GROW_H) / TILE);
+  const ty1 = Math.floor((p.y - GROW_EPS) / TILE);
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (isSolid(tileAt(level, tx, ty))) return false;
+    }
+  }
+  return true;
+}
+
 // The gate's trigger band is the arch its art actually draws, so these numbers come from
 // sprites.js drawGate(): a 2-tile-wide gate whose posts run from gate.y - 64 to gate.y + 16.
 // gate.y is the top of the gate's ground tile, not the top of the arch, so the old rect
@@ -234,6 +266,9 @@ function updateState(dt) {
     for (let i = G.items.length - 1; i >= 0; i--) {
       const it = G.items[i];
       if (it.kind === 'berry' && rectOverlap(p, { x: it.x, y: it.y, w: BERRY_W, h: BERRY_H })) {
+        // No headroom, no growth: the berry stays in G.items so it can still be picked up
+        // later under a real gap in the ceiling, instead of burying the hero in the block above.
+        if (!p.big && !hasGrowHeadroom(p, G.level)) continue;
         addScore(SCORE.berry, it.x, it.y);
         audio.sfx('power');
         if (!p.big) {
