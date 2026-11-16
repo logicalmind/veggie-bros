@@ -35,6 +35,11 @@ const CORPSE_H = 4;
 const CORPSE_TIP_H = 1;
 // width of the sprite's root column, centred inside the band (sprites draw at x - 1)
 const CORPSE_TIP_W = 2;
+// gap between the lives cluster and the MUTED badge on the right of the HUD row 1
+const MUTED_GAP = 4;
+// the 12x12 lives icon draws from y-2 (2 px leaf overhang), so y=6 puts its leaf at the
+// top of the 6 px text row instead of floating 2 px above the text it labels
+const LIVES_ICON_Y = 6;
 
 // deterministic pure-integer hash of i (no Math.random)
 function hash(i) {
@@ -215,11 +220,14 @@ function drawHud(ctx, g) {
   centerText(ctx, world, 6, INK);
   // lives on the right (Poppy mini icon = idle hero), MUTED far right, shifted left when shown
   const livesText = 'x' + g.lives;
-  const mutedShift = g.muted ? 30 + 4 : 0;
-  const livesX = VIEW_W - 8 - (12 + 1 + livesText.length * TEXT_PITCH) - mutedShift;
-  drawHero(ctx, livesX, 4, 1, false, 'idle', 0);
+  // the MUTED badge width has ONE source so the lives cluster and the badge can never
+  // drift into each other: textW('MUTED') = 5 chars * TEXT_PITCH = 30 px at scale 1.
+  const MUTED_W = textW('MUTED');
+  const mutedShift = g.muted ? MUTED_W + MUTED_GAP : 0;
+  const livesX = VIEW_W - 8 - (12 + 1 + textW(livesText)) - mutedShift;
+  drawHero(ctx, livesX, LIVES_ICON_Y, 1, false, 'idle', 0);
   drawPixelText(ctx, livesText, livesX + 13, 6, INK);
-  if (g.muted) drawPixelText(ctx, 'MUTED', VIEW_W - 8 - 30, 6, INK);
+  if (g.muted) drawPixelText(ctx, 'MUTED', VIEW_W - 8 - MUTED_W, 6, INK);
 }
 
 function drawTitle(ctx) {
