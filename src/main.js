@@ -1,6 +1,6 @@
 import {
+  GROW_H,
   PLAYER_BIG_H,
-  PLAYER_SMALL_H,
   ROWS,
   SCORE,
   START_LIVES,
@@ -15,7 +15,7 @@ import { isSolid, parseLevel, tileAt } from './level.js';
 import { makeBoss, makeTurnip, updateBoss, updateTurnip } from './enemy.js';
 import { BERRY_H, BERRY_W, makeBerry, makeFruit, makePop, makePopup, makeShards, updateItems } from './items.js';
 import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
-import { updateCamera } from './camera.js';
+import { makeCamera, updateCamera } from './camera.js';
 import { render } from './render.js';
 import {
   consumeJumpPressed,
@@ -59,6 +59,8 @@ fit();
 setupKeyboard();
 setupTouch();
 
+// The single mutable game state. It is exported as a deliberate test seam: tools/verify.mjs
+// imports { G } and drives the game by reading and writing it, so do not un-export it.
 export const G = {
   state: 'TITLE',
   score: 0,
@@ -69,7 +71,7 @@ export const G = {
   player: null,
   enemies: [],
   items: [],
-  cam: { x: 0 },
+  cam: makeCamera(),
   clearT: 0,
   bannerT: 0,
   winT: 0,
@@ -86,7 +88,7 @@ function loadLevel(i) {
   if (G.level.boss) G.enemies.push(makeBoss(G.level.boss));
   G.items = G.level.fruits.map((f) => makeFruit(f.x, f.y));
   G.player = makePlayer(G.level.playerSpawn.x, G.level.playerSpawn.y);
-  G.cam = { x: 0 };
+  G.cam = makeCamera();
   G.bannerT = 1.5;
   G.gateScored = false;
 }
@@ -152,7 +154,6 @@ function rectOverlap(a, b) {
 // box is buried, the next X pass ejects the hero a whole tile sideways to untangle it, and no
 // headBump is ever reported. In a 1-tile-high tunnel the grown box can never fit and the only
 // way back down is taking a hit, so refusing the pickup is the one honest option.
-const GROW_H = PLAYER_BIG_H - PLAYER_SMALL_H;
 const GROW_EPS = 0.001; // skip tiles only touched at an exact edge, as player.js does
 
 function hasGrowHeadroom(p, level) {
@@ -244,14 +245,14 @@ function updateState(dt) {
         boss = e;
         updateBoss(e, dt, G.level, camX, p);
       } else {
-        updateTurnip(e, dt, G.level, camX, p);
+        updateTurnip(e, dt, G.level, camX);
       }
       // The same line the player's pit check uses below: tileAt() reports solid ground
-      // below the map, so anything whose feet reach the bottom row has fallen into a gap
-      // and would otherwise patrol that hidden floor forever — on the last drawn row, and
-      // lethal. Checked after the update (updateTurnip/updateBoss return early once an
-      // entity trails the camera, so a pre-update check could never run again) and before
-      // the dead-filter, so the squashed/defeated retirement above still gets its frames.
+      // below the map, so anything whose feet reach the bottom edge line (ROWS * TILE) has
+      // fallen into a gap and would otherwise patrol that hidden floor forever — on the last
+      // drawn row, and lethal. Checked after the update (updateTurnip/updateBoss return early
+      // once an entity trails the camera, so a pre-update check could never run again) and
+      // before the dead-filter, so the squashed/defeated retirement above still gets its frames.
       if (e.y + e.h >= ROWS * TILE) {
         if (e.type === 'boss') {
           // A boss must not simply vanish: 1-3 has no gate, so a boss removed here could
@@ -295,8 +296,8 @@ function updateState(dt) {
         audio.sfx('power');
         if (!p.big) {
           p.big = true;
-          p.h = 26;
-          p.y -= 14;
+          p.h = PLAYER_BIG_H;
+          p.y -= GROW_H;
         }
         G.items.splice(i, 1);
       }
@@ -362,9 +363,13 @@ function updateState(dt) {
         boss.hurtT = 1.0;
         addScore(SCORE.bossHit, boss.x, boss.y);
         audio.sfx('bossHit');
-        // place the player on top of the boss before bouncing, same as the stomps above
+        // place the player on top of the boss before bouncing, same as the stomps above, and
+        // clear onGround to match them: the landing that set it this frame is over, and
+        // leaving it set would refresh coyoteT next frame and hand out a free jump off a box
+        // the hero is no longer standing on
         p.y = boss.y - p.h;
         p.vy = STOMP_BOUNCE;
+        p.onGround = false;
         if (boss.hp <= 0) {
           boss.defeated = true;
           boss.defeatT = 0;
@@ -394,7 +399,8 @@ function updateState(dt) {
     }
 
     // tileAt() reports solid ground below the map, so pit death is an explicit
-    // height check: any player whose feet reach the map's bottom row has fallen in.
+    // height check: any player whose feet reach the map's bottom edge line
+    // (ROWS * TILE) has fallen in.
     if (p.y + p.h >= ROWS * TILE) {
       killPlayer(p, true);
       G.dyingT = 0;

@@ -55,7 +55,8 @@ export function makeBoss(spawn) {
   return { type: 'boss', x: spawn.x, y: spawn.y, vx: BOSS_SPEED, vy: 0, w: 28, h: 28, onGround: false, active: false, hp: BOSS_HP, hurtT: 0, hopT: 0, defeated: false, defeatT: 0, t: 0 };
 }
 
-export function updateTurnip(e, dt, level, camX, player) {
+// No `player` parameter: a turnip never reads the hero (updateBoss does, for its hop).
+export function updateTurnip(e, dt, level, camX) {
   // Well behind the ratcheted camera: a live turnip stops being simulated. A squashed
   // one keeps ticking so main.js can still retire it; render.js draws either way.
   if (!e.squashed && e.x + e.w < camX - CULL_BEHIND) return;

@@ -73,6 +73,11 @@ export function makePopup(x, y, text) {
 export function updateItems(list, dt, level) {
   const keep = [];
   for (const it of list) {
+    // No `default:` branch and that is deliberate: the rebuild below keeps only what a case
+    // pushed, so an unknown kind is dropped instead of throwing. Cosmetic items must never be
+    // able to abort the update — main.js's frame boundary catches a throw, but everything
+    // after updateItems() in that frame (enemies, pickups, the pit check) would lose it. So
+    // please do not "fix" this by adding a throw.
     switch (it.kind) {
       case 'fruit':
         it.t += dt;

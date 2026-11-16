@@ -20,6 +20,9 @@ export const STOMP_BOUNCE = -360;
 export const PLAYER_W = 12;
 export const PLAYER_SMALL_H = 12;
 export const PLAYER_BIG_H = 26;
+// The hero grows upward: the feet stay put, so the box gains this much height above the
+// old small box. main.js spends it on the grow band, player.js on the shrink back down.
+export const GROW_H = PLAYER_BIG_H - PLAYER_SMALL_H;
 export const INVULN_TIME = 2.0;
 export const START_LIVES = 3;
 

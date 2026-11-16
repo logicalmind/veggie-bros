@@ -1,4 +1,4 @@
-import { PALETTE, SOLID, VIEW_H, VIEW_W } from './config.js';
+import { PALETTE, ROWS, SOLID, VIEW_H, VIEW_W } from './config.js';
 import {
   TEXT_PITCH,
   drawBerry,
@@ -21,9 +21,10 @@ import {
 } from './sprites.js';
 
 const P = PALETTE;
-const INK = '#1a1a1a';
-const RED = '#e8434f';
-const ROWS = 15;
+// the HUD/title ink and the title/GameOver red are the palette's own black/red — alias them
+// so a palette edit in config.js reaches the text too
+const INK = P.black;
+const RED = P.red;
 // offset of the INK backing pass behind the white score popups, in source pixels
 const POPUP_BACKING_DX = 1;
 const POPUP_BACKING_DY = 1;

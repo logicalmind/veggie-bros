@@ -4,6 +4,7 @@ import {
   COYOTE,
   FRICTION,
   GRAVITY,
+  GROW_H,
   INVULN_TIME,
   JUMP_BUFFER,
   JUMP_CUT_VY,
@@ -169,7 +170,7 @@ export function hurtPlayer(p) {
   if (p.big) {
     p.big = false;
     p.h = PLAYER_SMALL_H;
-    p.y += 14;
+    p.y += GROW_H; // the feet stay on the floor: the box loses only the band it grew by
     p.invulnT = INVULN_TIME;
     return true;
   }
