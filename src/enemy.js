@@ -15,6 +15,7 @@ import { tileAt } from './level.js';
 
 const EPS = 0.001; // skip tiles only touched at an exact edge
 const SQUASH_LIFE = 0.4;
+const CULL_BEHIND = 32; // how far past the left edge an entity may trail the camera
 
 function moveX(e, dt, level) {
   e.x += e.vx * dt;
@@ -56,6 +57,9 @@ export function makeBoss(spawn) {
 }
 
 export function updateTurnip(e, dt, level, camX, player) {
+  // Well behind the ratcheted camera: a live turnip stops being simulated. A squashed
+  // one keeps ticking so main.js can still retire it; render.js draws either way.
+  if (!e.squashed && e.x + e.w < camX - CULL_BEHIND) return;
   if (!e.squashed && !e.active && e.x < camX + VIEW_W + 32) {
     e.active = true;
   }
@@ -79,6 +83,9 @@ export function updateTurnip(e, dt, level, camX, player) {
 }
 
 export function updateBoss(b, dt, level, camX, player) {
+  // Well behind the ratcheted camera: a live boss stops being simulated. A defeated one
+  // keeps ticking so main.js can still finish the fight off; render.js draws either way.
+  if (!b.defeated && b.x + b.w < camX - CULL_BEHIND) return;
   if (!b.defeated && !b.active && b.x < camX + VIEW_W + 32) {
     b.active = true;
   }
