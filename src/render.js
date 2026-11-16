@@ -29,6 +29,12 @@ const POPUP_BACKING_DX = 1;
 const POPUP_BACKING_DY = 1;
 // ceiling for the LEVEL_CLEAR white flash so the screen never goes full-strength white
 const CLEAR_FLASH_MAX_ALPHA = 0.6;
+// squashed turnip corpse: the flattened sprite is a turnipBody band this tall, with a
+// turnipTip root strip CORPSE_TIP_H rows tall along its bottom edge
+const CORPSE_H = 4;
+const CORPSE_TIP_H = 1;
+// width of the sprite's root column, centred inside the band (sprites draw at x - 1)
+const CORPSE_TIP_W = 2;
 
 // deterministic pure-integer hash of i (no Math.random)
 function hash(i) {
@@ -175,13 +181,16 @@ function drawEnemies(ctx, enemies, camX) {
     } else {
       const frame = e.frame || 0;
       if (e.squashed) {
-        // 12x4 flat at the bottom of the hitbox: squash the sprite toward the hitbox floor
-        ctx.save();
-        ctx.translate(0, e.y + e.h);
-        ctx.scale(1, 4 / 14);
-        ctx.translate(0, -(e.y + e.h));
-        drawTurnip(ctx, ex, e.y, frame, facing);
-        ctx.restore();
+        // Corpse: draw the flattened sprite directly — a turnipBody band with the
+        // turnipTip root strip on its bottom edge, bottom-anchored at the hitbox floor.
+        // Squashing with ctx.scale(1, 4 / 14) instead landed the art on fractional rows
+        // (8.29..12.29 of the 14 px-tall art), and fillRect antialiases fractional
+        // geometry, so the corpse came out as a faint blurry band.
+        const top = e.y + e.h - CORPSE_H;
+        ctx.fillStyle = P.turnipBody;
+        ctx.fillRect(ex - 1, top, e.w, CORPSE_H);
+        ctx.fillStyle = P.turnipTip;
+        ctx.fillRect(ex - 1 + (e.w - CORPSE_TIP_W) / 2, top + CORPSE_H - CORPSE_TIP_H, CORPSE_TIP_W, CORPSE_TIP_H);
       } else {
         drawTurnip(ctx, ex, e.y, frame, facing);
       }
