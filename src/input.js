@@ -78,6 +78,45 @@ function onKeyUp(e) {
   }
 }
 
+// Which direction field each live touch pointer is holding, so a release can
+// clear exactly the direction that pointer pressed and nothing else.
+const touchPointers = new Map();
+
+// Losing focus drops every pending keyup, which latched the held flags: alt-tab
+// while holding right and Poppy runs into a wall forever. A latched `jump` is
+// worse, because onKeyDown only sets jumpPressed when jump was false — jumping
+// stopped responding entirely and player.js's jump-cut never applied.
+// The one-shot flags belong to main.js's endFrame(), so they are left alone.
+export function resetInput() {
+  input.left = false;
+  input.right = false;
+  input.run = false;
+  input.jump = false;
+  touchPointers.clear();
+}
+
+window.addEventListener("blur", resetInput);
+
+// A hidden tab sees no key events at all. Auto-pausing the game itself is R07.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) resetInput();
+});
+
+// Mouse and pen pointers get no implicit capture on a hybrid device, so a
+// pointerdown on a direction button released somewhere else on the page never
+// reaches the button's own pointerup and the direction latches. The window
+// handler only releases the pointerId that is actually ending, so a finger
+// still held on another button (right + tapping jump) is left alone.
+function onPointerRelease(e) {
+  const field = touchPointers.get(e.pointerId);
+  if (field === undefined) return;
+  touchPointers.delete(e.pointerId);
+  input[field] = false;
+}
+
+window.addEventListener("pointerup", onPointerRelease);
+window.addEventListener("pointercancel", onPointerRelease);
+
 export function setupKeyboard() {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
@@ -92,8 +131,13 @@ export function setupTouch() {
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
   };
-  bind("t-left", () => { input.left = true; }, () => { input.left = false; });
-  bind("t-right", () => { input.right = true; }, () => { input.right = false; });
+  const dir = (id, field) => {
+    bind(id,
+      (e) => { touchPointers.set(e.pointerId, field); input[field] = true; },
+      (e) => { touchPointers.delete(e.pointerId); input[field] = false; });
+  };
+  dir("t-left", "left");
+  dir("t-right", "right");
   bind("t-jump", () => {
     if (!input.jump) input.jumpPressed = true;
     input.jump = true;
