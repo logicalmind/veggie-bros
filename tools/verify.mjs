@@ -1230,6 +1230,7 @@ function inkColumns(r) {
 
 function renderTextToBuffer(text, scale) {
   const buf = mkOffscreen();
+  buf._rec.inkRects = true; // post-R16 text is pure fillRect; without ink recording the ink model would be blind to it (same flag as spriteRecorder()). Pre-R16 code still fails on the createElement assert, so this cannot un-red the check.
   const ctx = mkCtx(buf._rec);
   const before = createElementCount;
   const claimed = drawPixelText(ctx, text, 4, 4, '#1a1a1a', scale);
