@@ -1,4 +1,4 @@
-import { BERRY_LIFE, BERRY_SPEED, GRAVITY, MAX_FALL, SOLID, TILE } from './config.js';
+import { BERRY_LIFE, BERRY_SPEED, GRAVITY, MAX_FALL, ROWS, SOLID, TILE } from './config.js';
 import { tileAt } from './level.js';
 
 // The berry's physics box is its art exactly (sprites.js drawBerry inks cols 0..BERRY_W-1
@@ -82,6 +82,13 @@ export function updateItems(list, dt, level) {
         moveBerryX(it, dt, level);
         moveBerryY(it, dt, level);
         it.t += dt;
+        // Parity with the player's and the enemies' pit checks (main.js): moveBerryY() lands
+        // on the solid tile tileAt() reports below the map, so a berry over a gap would
+        // otherwise keep walking on that hidden floor until BERRY_LIFE expires, visible on the
+        // last drawn row and collectable there. Dropped here so all four updateItems() call
+        // sites get it. Cosmetic items (shard/pop/popup) fall through untouched and fruit
+        // never moves; only berries are ever at risk of reaching this line.
+        if (it.y + BERRY_H >= ROWS * TILE) break;
         if (it.t <= BERRY_LIFE) keep.push(it);
         break;
       case 'shard':

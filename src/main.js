@@ -246,6 +246,28 @@ function updateState(dt) {
       } else {
         updateTurnip(e, dt, G.level, camX, p);
       }
+      // The same line the player's pit check uses below: tileAt() reports solid ground
+      // below the map, so anything whose feet reach the bottom row has fallen into a gap
+      // and would otherwise patrol that hidden floor forever — on the last drawn row, and
+      // lethal. Checked after the update (updateTurnip/updateBoss return early once an
+      // entity trails the camera, so a pre-update check could never run again) and before
+      // the dead-filter, so the squashed/defeated retirement above still gets its frames.
+      if (e.y + e.h >= ROWS * TILE) {
+        if (e.type === 'boss') {
+          // A boss must not simply vanish: 1-3 has no gate, so a boss removed here could
+          // never be beaten again and the run would be unwinnable. Retire it exactly as a
+          // stomp at hp 0 does (and only once — resetting defeatT every frame would stall
+          // the win path below forever) so falling in a pit still ends the fight.
+          if (!e.defeated) {
+            e.defeated = true;
+            e.defeatT = 0;
+            e.vx = 0;
+          }
+        } else {
+          e.dead = true;
+        }
+        continue;
+      }
     }
     G.enemies = G.enemies.filter((e) => !e.dead);
     if (boss && boss.defeated && boss.defeatT > 1.5) {
