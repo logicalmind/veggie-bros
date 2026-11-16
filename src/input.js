@@ -40,7 +40,18 @@ export function consumeRestart() {
   return v;
 }
 
-const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " "]);
+// Space scrolls the page and activates a focused button; Tab moves focus into the control
+// bar, which arms the Enter/Space activation path; Enter activates whatever is focused.
+// preventDefault only suppresses the *browser* default, never the game action below, so
+// Enter still reaches the start branch. The bar's buttons are tabindex="-1" and blur
+// themselves on pointerdown, so by the time Enter is pressed there is nothing to activate.
+const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " ", "Enter", "Tab"]);
+
+// Cmd/Ctrl/Alt chords belong to the browser, not to the game: Cmd/Ctrl+P was pausing the
+// game *and* opening Print, Cmd+M muted on the way to minimising, Cmd+R fed
+// restartPressed on the way to a reload, Cmd+A set input.left while selecting the page,
+// Cmd+W set jump on the way to closing the tab. Shift is exempt — it is the run key, and
+// Shift+Arrow still reports e.key === 'ArrowLeft'.
 
 // e.key is the character the layout *labels* the key with: AZERTY's home row is
 // `a z e r t`, so the physical WASD cluster types `a z e r` and `d` never arrives;
@@ -48,6 +59,7 @@ const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
 // `Process`. e.code is the physical position and is layout-independent, so every
 // letter binding tests both and a keydown can never be missed by one of them.
 function onKeyDown(e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (PREVENT_KEYS.has(e.key)) e.preventDefault();
   const k = e.key.toLowerCase();
   if (e.key === "ArrowLeft" || e.code === "KeyA" || k === "a") {
@@ -72,6 +84,12 @@ function onKeyDown(e) {
 
 // The release side tests exactly the same compound conditions as onKeyDown, so a
 // held flag set by a code-driven keydown is always cleared by its keyup.
+// The modifier guard is deliberately NOT mirrored here: a keydown carrying a modifier
+// never sets anything, so its keyup can only be releasing a flag that a modifier-free
+// keydown set — hold right, then press Cmd and the release arrives as Cmd+ArrowRight.
+// Returning early on modifiers there would drop a real release and latch the direction
+// until the next blur (resetInput()), while releasing a flag that is already false costs
+// nothing: always release on the way up.
 function onKeyUp(e) {
   const k = e.key.toLowerCase();
   if (e.key === "ArrowLeft" || e.code === "KeyA" || k === "a") {
@@ -138,9 +156,15 @@ export function setupKeyboard() {
 export function setupTouch() {
   if (!window.matchMedia("(pointer: coarse)").matches) return;
   document.getElementById("touch").style.display = "flex";
+  // A tapped button keeps focus forever and nothing here styles :focus, so nobody can see
+  // which one is focused and the next Tab press activates it — and Enter on top of that
+  // could reach the game twice. Every button is tabindex="-1" in the markup; blurring on
+  // the way down covers a tap that never leaves the button. blur is optional-chained so
+  // an element without it cannot throw in the middle of a pointerdown.
+  const onFocusDown = (el, down) => (e) => { el.blur?.(); down(e); };
   const bind = (id, down, up) => {
     const el = document.getElementById(id);
-    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointerdown", onFocusDown(el, down));
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
   };
@@ -152,8 +176,23 @@ export function setupTouch() {
   // One-shot flags only: endFrame() clears anything main.js did not consume, so a
   // pointerup that never arrives (flicked off the button, cancelled) cannot latch a
   // second start or pause the way a held direction would.
+  // click is the keyboard / assistive-tech path. A finger tap ends in a synthetic click
+  // too, but by then a frame has already consumed the pointerdown, so counting that
+  // trailing click again would start a second game (or pause and instantly un-pause).
+  // A pointerdown therefore owns the click that follows it: that one is dropped.
   const tap = (id, field) => {
-    document.getElementById(id).addEventListener("pointerdown", () => { input[field] = true; });
+    const el = document.getElementById(id);
+    let ownedByPointer = false;
+    el.addEventListener("pointerdown", onFocusDown(el, () => {
+      ownedByPointer = true;
+      input[field] = true;
+    }));
+    el.addEventListener("click", () => {
+      if (ownedByPointer) { ownedByPointer = false; return; }
+      input[field] = true;
+    });
+    // a cancelled gesture is never followed by a click, so the pointer stops owning one
+    el.addEventListener("pointercancel", () => { ownedByPointer = false; });
   };
   dir("t-left", "left");
   dir("t-right", "right");

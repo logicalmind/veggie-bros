@@ -20,10 +20,13 @@
 </head>
 <body>
   <canvas id="game" width="256" height="240"></canvas>
+  <!-- type="button" so a button can never submit anything; tabindex="-1" keeps the whole
+       bar out of the tab order, because a focused button would also take Enter/Space
+       activations on top of the game's own key handling (see src/input.js). -->
   <div id="touch">
-    <div class="g"><button id="t-left">◀</button><button id="t-right">▶</button></div>
-    <div class="g"><button id="t-start" class="wide">START</button><button id="t-pause" class="wide">PAUSE</button></div>
-    <div class="g"><button id="t-run">B</button><button id="t-jump">A</button></div>
+    <div class="g"><button id="t-left" type="button" tabindex="-1">◀</button><button id="t-right" type="button" tabindex="-1">▶</button></div>
+    <div class="g"><button id="t-start" type="button" tabindex="-1" class="wide">START</button><button id="t-pause" type="button" tabindex="-1" class="wide">PAUSE</button></div>
+    <div class="g"><button id="t-run" type="button" tabindex="-1">B</button><button id="t-jump" type="button" tabindex="-1">A</button></div>
   </div>
   <script type="module" src="src/main.js"></script>
 </body>
