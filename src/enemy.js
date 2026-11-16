@@ -93,7 +93,8 @@ export function updateBoss(b, dt, level, camX, player) {
   if (b.onGround && b.hopT > BOSS_HOP_COOLDOWN && !player.dead &&
       Math.abs(player.x - b.x) < BOSS_HOP_RANGE && Math.abs(player.y - b.y) < 48) {
     b.vy = BOSS_HOP_VY;
-    b.vx = Math.sign(player.x - b.x) * 60 || BOSS_SPEED;
+    const dir = Math.sign(player.x - b.x) || Math.sign(b.vx) || 1;
+    b.vx = dir * BOSS_SPEED;
     b.hopT = 0;
   }
   b.hurtT = Math.max(0, b.hurtT - dt);
