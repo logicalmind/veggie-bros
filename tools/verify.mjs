@@ -1718,7 +1718,12 @@ check('R27', () => {
 // requested index is loaded (LEVEL_CLEAR advances one level per 1.4 s).
 function loadLevelForCheck(index) {
   if (!G.player) newGame();
-  G.levelIndex = index;
+  // Entering LEVEL_CLEAR advances levelIndex by one, so to land ON `index` we have to be
+  // standing on the level before it. This was `= index`, which made the helper's own exit
+  // condition (`levelIndex === index && PLAYING`) unreachable for every index — it lands on
+  // index + 1 instead and the helper throws a harness Fail. (Also note the final level can
+  // never be reached by clearing a level at all since R27 — index - 1 keeps that out of it.)
+  G.levelIndex = Math.max(0, index - 1);
   G.state = 'LEVEL_CLEAR';
   G.clearT = 0;
   G.level = G.level || parseLevel(LEVELS[0]);
@@ -1780,12 +1785,24 @@ check('R29', () => {
   installLevel(level);
   clearInput();
   const enemy = G.enemies[0];
-  let phantom = null;
+  // The defect is PERMANENCE: it rests there, stays simulated, stays lethal, forever. A single
+  // frame of contact is not the defect and must not fail a correct fix — R01's accepted player
+  // fix moves the body first (tileAt still reports solid 'X' below the map, so onGround is true
+  // for that frame) and then applies the height check in the same frame. So measure how long it
+  // sits on the phantom floor while still live in G.enemies: unfixed code rests ~112 of 120
+  // steps; any fix that kills it in the crossing frame or the next rests for 0-1. The two
+  // asserts below still require it to be gone from G.enemies entirely.
+  const REST_GRACE = 30;
+  let resting = 0;
+  let firstRest = null;
   for (let i = 0; i < 120; i++) {
     step();
-    if (enemy.onGround && enemy.y + enemy.h >= C.ROWS * C.TILE && phantom === null) phantom = i;
+    if (enemy.onGround && enemy.y + enemy.h >= C.ROWS * C.TILE && G.enemies.includes(enemy)) {
+      resting++;
+      if (firstRest === null) firstRest = i;
+    }
   }
-  if (phantom !== null) assert(false, `the turnip over the gap came to rest on the phantom floor at y=${enemy.y} (feet ${enemy.y + enemy.h}) at step ${phantom} and is still in G.enemies (${G.enemies.length}) — entities reaching y+h >= ROWS*TILE must die`);
+  if (resting > REST_GRACE) assert(false, `the turnip over the gap came to rest on the phantom floor at y=${enemy.y} (feet ${enemy.y + enemy.h}) from step ${firstRest}, resting there ${resting} of 120 steps while still in G.enemies (${G.enemies.length}) — entities reaching y+h >= ROWS*TILE must die`);
   assert(!G.enemies.includes(enemy), `the turnip that fell in the gap is still in G.enemies (y=${enemy.y})`);
   assert(G.enemies.length === 0, `G.enemies did not shrink (${G.enemies.length})`);
   // a berry over a gap must be dropped too
