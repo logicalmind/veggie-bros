@@ -22,8 +22,23 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
+const SCALE_MIN = 1;
+const SCALE_MAX = 4;
+const SCALE_STEP = 0.5; // phones fall back to half-steps, desktop keeps whole scales
+const TOUCH_BAR_H = 80; // the fixed #touch bar covers this much height on touch devices
+const PHONE_MIN_SCALE = 1.5; // below this a phone gets a ~2mm hero, so the bar yields instead
+const CRISP_MIN_SCALE = 1.4; // a whole scale this big is always preferred over a half-step
+
 function fit() {
-  const s = Math.min(4, Math.max(1, Math.floor(Math.min(innerWidth / VIEW_W, innerHeight / VIEW_H))));
+  // On touch devices the canvas must not compete with the control bar, but a short
+  // landscape screen cannot spare the whole bar — then it just overlays it.
+  const bar = matchMedia('(any-pointer: coarse)').matches
+    ? Math.min(TOUCH_BAR_H, Math.max(0, innerHeight - VIEW_H * PHONE_MIN_SCALE))
+    : 0;
+  const r = Math.min(innerWidth / VIEW_W, (innerHeight - bar) / VIEW_H);
+  const whole = Math.floor(r);
+  const halfStep = Math.floor(r / SCALE_STEP) * SCALE_STEP;
+  const s = Math.min(SCALE_MAX, Math.max(SCALE_MIN, whole >= CRISP_MIN_SCALE ? whole : halfStep));
   canvas.style.width = VIEW_W * s + 'px';
   canvas.style.height = VIEW_H * s + 'px';
 }
