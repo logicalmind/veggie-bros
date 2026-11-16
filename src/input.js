@@ -102,6 +102,12 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) resetInput();
 });
 
+// A long-press on Android fires contextmenu and pops the copy/paste menu over the
+// control bar (iOS shows the same menu for text, which -webkit-touch-callout in
+// index.html suppresses). Nothing on this page is selectable text, so the menu is
+// never wanted — the guard belongs at document level, not per button.
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 // Mouse and pen pointers get no implicit capture on a hybrid device, so a
 // pointerdown on a direction button released somewhere else on the page never
 // reaches the button's own pointerup and the direction latches. The window
