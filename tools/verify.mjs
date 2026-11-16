@@ -1348,20 +1348,20 @@ check('R17', () => {
 check('R18', () => {
   installLevel(flatLevel());
   const p = G.player;
-  const it = makePopup(p.x, p.y - 8, '+100');
+  const it = makePopup(p.x + 40, p.y - 8, '+100'); // clear of the player sprite: with inkRects on the zone must hold popup ink only
   G.items.push(it);
   renderFrames(1);
   const y0 = Math.floor(it.y - 20 * (it.t / 0.6)) - 2;
   const y1 = y0 + 14;
   const x0 = Math.floor(it.x - G.cam.x) - 4;
   const x1 = x0 + 6 * it.text.length + 8;
-  const ink = rec.textInk.filter((q) => q.y >= y0 && q.y < y1 && q.x >= x0 && q.x < x1);
+  const ink = rec.rects.filter((q) => q[1] >= y0 && q[1] < y1 && q[0] >= x0 && q[0] < x1 && q[3] === 1 && q[2] <= 6); // 1-row runs ≤ pitch: text ink; sky/ground/player rects cannot match
   assert(ink.length > 0, `no ink was drawn where the '+100' popup should be (x ${x0}..${x1}, y ${y0}..${y1}) — the popup is not rendering at all`);
   const first = ink[0];
-  const whites = ink.filter((q) => q.color === C.PALETTE.white).length;
-  assert(first.color !== C.PALETTE.white,
-    `the popup's first inked pixel is PALETTE.white (${whites}/${ink.length} white pixels over sky ${C.PALETTE.sky} / stone ${C.PALETTE.stone}) — draw it in INK or blit an INK backing pass first`);
-  return `popup ink leads with ${first.color} (${whites} white of ${ink.length} pixels)`;
+  const whites = ink.filter((q) => q[4] === C.PALETTE.white).length;
+  assert(first[4] !== C.PALETTE.white,
+    `the popup's first inked rect is PALETTE.white (${whites}/${ink.length} white runs over sky ${C.PALETTE.sky} / stone ${C.PALETTE.stone}) — draw it in INK or draw an INK backing pass first`);
+  return `popup ink leads with ${first[4]} (${whites} white of ${ink.length} runs)`;
 });
 
 // ---------------------------------------------------------------------------
