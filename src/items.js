@@ -1,5 +1,5 @@
-import { BERRY_LIFE, BERRY_SPEED, GRAVITY, MAX_FALL, ROWS, SOLID, TILE } from './config.js';
-import { tileAt } from './level.js';
+import { BERRY_LIFE, BERRY_SPEED, GRAVITY, MAX_FALL, ROWS, TILE } from './config.js';
+import { isSolid, tileAt } from './level.js';
 
 // The berry's physics box is its art exactly (sprites.js drawBerry inks cols 0..BERRY_W-1
 // and rows 0..BERRY_H-1, outline included), so a berry at rest puts its outline's bottom
@@ -21,7 +21,7 @@ function moveBerryX(b, dt, level) {
   const ty0 = Math.floor(b.y / TILE);
   const ty1 = Math.floor((b.y + BERRY_H - EPS) / TILE);
   for (let ty = ty0; ty <= ty1; ty++) {
-    if (SOLID.includes(tileAt(level, tx, ty))) {
+    if (isSolid(tileAt(level, tx, ty))) {
       b.x = b.vx > 0 ? tx * TILE - BERRY_W : (tx + 1) * TILE;
       b.vx = -b.vx;
       break;
@@ -37,7 +37,7 @@ function moveBerryY(b, dt, level) {
   const tx0 = Math.floor(b.x / TILE);
   const tx1 = Math.floor((b.x + BERRY_W - EPS) / TILE);
   for (let tx = tx0; tx <= tx1; tx++) {
-    if (SOLID.includes(tileAt(level, tx, ty))) {
+    if (isSolid(tileAt(level, tx, ty))) {
       b.y = ty * TILE - BERRY_H;
       b.vy = 0;
       b.onGround = true;

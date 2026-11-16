@@ -12,11 +12,10 @@ import {
   PLAYER_SMALL_H,
   PLAYER_W,
   RUN_MAX,
-  SOLID,
   TILE,
   WALK_MAX,
 } from './config.js';
-import { tileAt } from './level.js';
+import { isSolid, tileAt } from './level.js';
 
 const EPS = 0.001; // skip tiles only touched at an exact edge
 const AIR_FRICTION = 200;
@@ -106,7 +105,7 @@ export function updatePlayer(p, dt, input, level) {
   if (p.vx > 0) {
     const tx = Math.floor((p.x + p.w - EPS) / TILE);
     for (let ty = ty0; ty <= ty1; ty++) {
-      if (SOLID.includes(tileAt(level, tx, ty))) {
+      if (isSolid(tileAt(level, tx, ty))) {
         p.x = tx * TILE - p.w;
         p.vx = 0;
         break;
@@ -115,7 +114,7 @@ export function updatePlayer(p, dt, input, level) {
   } else if (p.vx < 0) {
     const tx = Math.floor(p.x / TILE);
     for (let ty = ty0; ty <= ty1; ty++) {
-      if (SOLID.includes(tileAt(level, tx, ty))) {
+      if (isSolid(tileAt(level, tx, ty))) {
         p.x = (tx + 1) * TILE;
         p.vx = 0;
         break;
@@ -131,7 +130,7 @@ export function updatePlayer(p, dt, input, level) {
     const tx0 = Math.floor(p.x / TILE);
     const tx1 = Math.floor((p.x + p.w - EPS) / TILE);
     for (let tx = tx0; tx <= tx1; tx++) {
-      if (SOLID.includes(tileAt(level, tx, ty))) {
+      if (isSolid(tileAt(level, tx, ty))) {
         p.y = ty * TILE - p.h;
         p.vy = 0;
         p.onGround = true;
@@ -145,7 +144,7 @@ export function updatePlayer(p, dt, input, level) {
     let bumpX = -1;
     let bestOverlap = 0;
     for (let tx = tx0; tx <= tx1; tx++) {
-      if (SOLID.includes(tileAt(level, tx, ty))) {
+      if (isSolid(tileAt(level, tx, ty))) {
         const overlap = Math.min(p.x + p.w, (tx + 1) * TILE) - Math.max(p.x, tx * TILE);
         if (overlap > bestOverlap) {
           bestOverlap = overlap;
