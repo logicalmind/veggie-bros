@@ -1,5 +1,9 @@
 import { ROWS, SOLID } from './config.js';
 
+const MARKER = 'HTFCG';
+const NEEDS_GROUND = 'HTF';
+const LEGEND = `${SOLID}${MARKER}.`;
+
 export function isSolid(ch) {
   return SOLID.includes(ch);
 }
@@ -9,6 +13,32 @@ export function tileAt(level, tx, ty) {
   const cols = level.tiles[0].length;
   if (tx < 0 || tx >= cols || ty >= ROWS) return 'X';
   return level.tiles[ty][tx];
+}
+
+// Rejects map typos that would otherwise load as silent, invisible bugs: characters outside
+// the legend, hangers/enemies/gates left floating, and markers painted onto solid tiles.
+// Runs on the raw map strings, before any marker is cleared out of the tile grid.
+function validateMap(label, map, cols) {
+  const at = (ty, tx) => {
+    if (ty < 0) return '.';
+    if (tx < 0 || tx >= cols || ty >= ROWS) return 'X';
+    return map[ty][tx];
+  };
+  for (let ty = 0; ty < map.length; ty++) {
+    for (let tx = 0; tx < cols; tx++) {
+      const ch = map[ty][tx];
+      if (!LEGEND.includes(ch)) {
+        throw new Error(`level ${label}: unknown character '${ch}' at ${ty},${tx}`);
+      }
+      if (!MARKER.includes(ch)) continue;
+      if (NEEDS_GROUND.includes(ch) && !isSolid(at(ty + 1, tx))) {
+        throw new Error(`level ${label}: '${ch}' at ${ty},${tx} has no solid tile below`);
+      }
+      if (isSolid(at(ty, tx - 1)) && isSolid(at(ty, tx + 1))) {
+        throw new Error(`level ${label}: '${ch}' at ${ty},${tx} is embedded in solid tiles`);
+      }
+    }
+  }
 }
 
 export function parseLevel(def) {
@@ -37,6 +67,7 @@ export function parseLevel(def) {
   if (gateOrBossCount !== 1) {
     throw new Error(`level ${def.label}: expected exactly one G or F, got ${gateOrBossCount}`);
   }
+  validateMap(def.label, map, cols);
 
   const tiles = map.map((row) => row.split(''));
   const level = {
