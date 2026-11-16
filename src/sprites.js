@@ -78,20 +78,23 @@ export function drawTurnip(ctx, x, y, frame, facing) {
   px(ctx, sx + 4 + e, sy + 5, 1, 1, P.black);
   px(ctx, sx + 9 + e, sy + 5, 1, 1, P.black);
   const off = frame & 1 ? 1 : -1;
-  px(ctx, sx + 4 + off, sy + 12, 2, 2, P.turnipBody);
-  px(ctx, sx + 8 - off, sy + 12, 2, 2, P.turnipBody);
+  px(ctx, sx + 4 + off, sy + 11, 2, 2, P.turnipBody);
+  px(ctx, sx + 8 - off, sy + 11, 2, 2, P.turnipBody);
 }
 
 export function drawBoss(ctx, x, y, frame, facing, hurt) {
   const fx = dir(facing);
   const sx = x - 2;
-  const sy = y - 2 + (frame & 1 ? -1 : 0);
+  const sy = y - 2;
+  const bob = frame & 1 ? -1 : 0;
   const bodyC = hurt ? P.white : P.pineapple;
   const hatchC = hurt ? P.white : P.pineappleDark;
   const faceC = hurt ? P.white : P.black;
 
-  for (const c of [4, 9, 15, 21, 26]) px(ctx, sx + c, sy, 1, 1, P.heroLeaf);
-  for (const c of [3, 8, 14, 19, 25]) px(ctx, sx + c, sy + 1, 2, 1, P.heroLeaf);
+  // Only the crown spikes bob (they live above the hitbox top); the body must
+  // stay glued to the box because moveY holds the physics box still.
+  for (const c of [4, 9, 15, 21, 26]) px(ctx, sx + c, sy + bob, 1, 1, P.heroLeaf);
+  for (const c of [3, 8, 14, 19, 25]) px(ctx, sx + c, sy + 1 + bob, 2, 1, P.heroLeaf);
   px(ctx, sx + 2, sy + 2, 28, 1, P.heroLeaf);
 
   const rows = [
@@ -99,8 +102,8 @@ export function drawBoss(ctx, x, y, frame, facing, hurt) {
     [5, 7, 4, 27],
     [8, 24, 2, 29],
     [25, 27, 4, 27],
-    [28, 30, 7, 24],
-    [31, 31, 10, 21],
+    [28, 28, 7, 24],
+    [29, 29, 10, 21],
   ];
   for (const [r0, r1, l, r] of rows) px(ctx, sx + l, sy + r0, r - l + 1, r1 - r0 + 1, bodyC);
   for (const [r0, r1, l, r] of rows) {
