@@ -114,6 +114,14 @@ function rectOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+// The gate's trigger band is the arch its art actually draws, so these numbers come from
+// sprites.js drawGate(): a 2-tile-wide gate whose posts run from gate.y - 64 to gate.y + 16.
+// gate.y is the top of the gate's ground tile, not the top of the arch, so the old rect
+// (gate.y .. gate.y + 80) caught only the bottom of the art and hung 64 px below the floor.
+const GATE_W = TILE * 2;
+const GATE_TRIGGER_TOP = TILE * 4;
+const GATE_TRIGGER_BOTTOM = TILE;
+
 // The one-shot flags on `input` are frame-scoped: the consume*() helpers stay the authority
 // for reads, and endFrame() only guarantees that a flag never survives a frame it was not
 // consumed in. Otherwise a jump pressed while paused fires on the resume frame, a single R
@@ -299,7 +307,8 @@ function updateState(dt) {
 
     if (G.level.gate && !G.gateScored) {
       const gate = G.level.gate;
-      if (!p.dead && p.x + p.w > gate.x && p.x < gate.x + 32 && p.y + p.h > gate.y && p.y < gate.y + 80) {
+      if (!p.dead && p.x + p.w > gate.x && p.x < gate.x + GATE_W &&
+          p.y + p.h > gate.y - GATE_TRIGGER_TOP && p.y < gate.y + GATE_TRIGGER_BOTTOM) {
         onGate();
         return;
       }
