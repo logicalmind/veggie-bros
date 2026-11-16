@@ -153,9 +153,23 @@ export function setupKeyboard() {
   window.addEventListener("keyup", onKeyUp);
 }
 
-export function setupTouch() {
-  if (!window.matchMedia("(pointer: coarse)").matches) return;
-  document.getElementById("touch").style.display = "flex";
+// (pointer: …) describes the PRIMARY pointing device, not the device. A touchscreen
+// laptop whose primary input is the trackpad answers "fine", so setupTouch() returned
+// early and there were no on-screen buttons on a screen you can actually press.
+// any-pointer asks about every pointer attached — which is also the question main.js's
+// fit() already asks when it reserves the bar's height, so the two must not disagree.
+const coarsePointer = window.matchMedia("(any-pointer: coarse)");
+
+// The answer is volatile: plugging a mouse in or docking a keyboard fires a change
+// event, so visibility is re-decided on every change. The bindings cannot be re-run
+// that way, so they are claimed once per element. A duplicate copy does not double a
+// boolean flag, but it does make #t-jump's `if (!input.jump)` guard and tap()'s
+// pointer-owns-a-click bookkeeping depend on how many copies happen to be registered,
+// and each change would add another. WeakSet rather than a flag, so a bar rebuilt
+// after setup() still gets bound.
+const touchBound = new WeakSet();
+
+function bindTouchControls() {
   // A tapped button keeps focus forever and nothing here styles :focus, so nobody can see
   // which one is focused and the next Tab press activates it — and Enter on top of that
   // could reach the game twice. Every button is tabindex="-1" in the markup; blurring on
@@ -164,6 +178,8 @@ export function setupTouch() {
   const onFocusDown = (el, down) => (e) => { el.blur?.(); down(e); };
   const bind = (id, down, up) => {
     const el = document.getElementById(id);
+    if (touchBound.has(el)) return;
+    touchBound.add(el);
     el.addEventListener("pointerdown", onFocusDown(el, down));
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
@@ -182,6 +198,8 @@ export function setupTouch() {
   // A pointerdown therefore owns the click that follows it: that one is dropped.
   const tap = (id, field) => {
     const el = document.getElementById(id);
+    if (touchBound.has(el)) return;
+    touchBound.add(el);
     let ownedByPointer = false;
     el.addEventListener("pointerdown", onFocusDown(el, () => {
       ownedByPointer = true;
@@ -203,4 +221,31 @@ export function setupTouch() {
     if (!input.jump) input.jumpPressed = true;
     input.jump = true;
   }, () => { input.jump = false; });
+}
+
+// Boot and every media change run this same decision, and it reads the live query
+// rather than the event payload so there is only ever one answer to act on.
+function applyTouchBar() {
+  const bar = document.getElementById("touch");
+  if (coarsePointer.matches) {
+    bindTouchControls();
+    bar.style.display = "flex"; // the bar's CSS lays the groups out with justify-content
+    return;
+  }
+  bar.style.display = "none";
+  // display:none takes the buttons out of the hit-test tree, so a finger still on
+  // #t-right loses its implicit pointer capture and its pointerup may never arrive:
+  // the direction latches exactly the way blur used to (R06). Only the fields a touch
+  // pointer actually set are released, so a direction held on the keyboard survives.
+  for (const field of touchPointers.values()) input[field] = false;
+  touchPointers.clear();
+}
+
+let touchBarWatched = false;
+
+export function setupTouch() {
+  applyTouchBar();
+  if (touchBarWatched) return; // one listener for the life of the page
+  touchBarWatched = true;
+  coarsePointer.addEventListener("change", applyTouchBar);
 }
