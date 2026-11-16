@@ -136,8 +136,17 @@ export function setupTouch() {
       (e) => { touchPointers.set(e.pointerId, field); input[field] = true; },
       (e) => { touchPointers.delete(e.pointerId); input[field] = false; });
   };
+  // One-shot flags only: endFrame() clears anything main.js did not consume, so a
+  // pointerup that never arrives (flicked off the button, cancelled) cannot latch a
+  // second start or pause the way a held direction would.
+  const tap = (id, field) => {
+    document.getElementById(id).addEventListener("pointerdown", () => { input[field] = true; });
+  };
   dir("t-left", "left");
   dir("t-right", "right");
+  dir("t-run", "run"); // run is a hold, so it shares the pointerId bookkeeping above
+  tap("t-start", "start");
+  tap("t-pause", "pausePressed");
   bind("t-jump", () => {
     if (!input.jump) input.jumpPressed = true;
     input.jump = true;
