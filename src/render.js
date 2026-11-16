@@ -24,6 +24,9 @@ const P = PALETTE;
 const INK = '#1a1a1a';
 const RED = '#e8434f';
 const ROWS = 15;
+// offset of the INK backing pass behind the white score popups, in source pixels
+const POPUP_BACKING_DX = 1;
+const POPUP_BACKING_DY = 1;
 
 // deterministic pure-integer hash of i (no Math.random)
 function hash(i) {
@@ -142,9 +145,14 @@ function drawItems(ctx, items, camX) {
       case 'shard':
         drawShard(ctx, ix, it.y, it.k, it.t);
         break;
-      case 'popup':
-        drawPixelText(ctx, it.text, ix, it.y - 20 * (it.t / 0.6), '#ffffff');
+      case 'popup': {
+        const py = it.y - 20 * (it.t / 0.6);
+        // INK backing pass first (offset down-right), then the white text on top,
+        // so the popup stays legible over the light sky and stone tiles
+        drawPixelText(ctx, it.text, ix + POPUP_BACKING_DX, py + POPUP_BACKING_DY, INK);
+        drawPixelText(ctx, it.text, ix, py, P.white);
         break;
+      }
     }
   }
 }
