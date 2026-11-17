@@ -2250,6 +2250,161 @@ check('R33', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CAMERA FLOOR CONTRACT — shared by R36 and R44 (read this before "tightening" either)
+//
+// The left bound reaches the camera in two different shapes, and only one of them is legal:
+//   target = clamp(p.x - CAMERA_FOLLOW_X, floor, max)  BEFORE the follow lerp   (correct)
+//   cam.x  = floor                                     AFTER the lerp            (the bug)
+// The second one was the shipped behaviour and it is the reason the hero's screen position
+// jumped 11–19 px the frame it banked a flag: the camera always trails the hero by its steady-state
+// follow lag, so when the floor moved forward the camera was sitting exactly `lag` px BELOW it and
+// got ASSIGNED to it in one frame. The hero cannot observe that jump — it is clamped to the same
+// floor by player.js — so the pop bought nothing the lerp does not already deliver a few frames
+// later. See camera.js:31-41 (the same contract, in the shipped file) and architecture.md's
+// "Camera follows both ways, floored at the checkpoint" bullet.
+//
+// What that leaves to assert, and what it costs. The camera may now be under its floor for a short
+// window — by at most the follow lag it was already carrying — so a bare `minCam >= floor` sampled
+// across a window that includes the convergence frames is no longer a true statement about the
+// game. It is replaced by three claims that are, and that a hard clamp does NOT satisfy for free:
+//   1. the excursion below the floor is bounded by the lag measured on the frame the floor moved;
+//   2. it CONVERGES: the distance to the floor only ever shrinks, and once the camera has arrived it
+//      never falls back under it (arriving from above counts, and has to — the camera chases the
+//      sliding hero past the floor, then settles back down onto it, which is a backward step that
+//      is convergence and not a retreat, and the old wall was structurally incapable of one);
+//   3. it comes to REST on the floor: after CAM_SETTLE_FRAMES it is never below it, and it settles
+//      exactly on it (`cam.x === floor`, CAM_REST_EPS), which is the float-hygiene half of the job.
+// The per-step spike teeth live in assertFollowStep, called by R44 (real crossings, both speeds, and
+// the shipped maps) and by R36's shove clause: a pop of the whole lag in one frame cannot hide
+// behind a lag-bounded minimum, and it CANNOT hide here — see the proof table on R44.
+// ---------------------------------------------------------------------------
+
+// The window after which the camera MUST already be on its floor, in frames. RE-DERIVED 2026-11-16
+// from the shipped lerp instead of from the old hand-wave: the exponential closes FOLLOW_RATE = 1/6 of
+// the remaining gap per frame, so d px of depth reaches CAM_REST_EPS after log(1e-6/d)/log(5/6) frames
+// — and that closed form is a measurement, verified by stepping the real updateCamera from a pinned
+// hero at 544: 88 frames from a walk-lag seed (9.167 px), 91 from a run-lag seed (15.833), 101 from
+// the deepest seed any trace here has (87.506), 111 from the 544 px shove. Earlier notes published 56
+// (the continuous v/L form, wrong for a discrete step: the lag is v dt (1−r)/r = v/12) and 90, which
+// had no margin against the 91 it had to cover. GAMEPLAY traces top out at 91 frames, so the window
+// is 150: the worst legitimate gameplay figure plus ~60 frames (1 s) of margin, which comfortably
+// covers even the 544 px shove's 111 — that seed is not gameplay and gets its own budget at the call
+// site anyway. Widening this further buys nothing; narrowing it under ~100 starts failing on
+// legitimate seeds instead of on bugs.
+const CAM_SETTLE_FRAMES = 150;
+const CAM_REST_EPS = 1e-6;
+
+// How much of the remaining distance to its target the follow closes in one frame, measured off the
+// shipped updateCamera the same way measureFollowLag measures the lag — so a lerp constant that moves
+// in camera.js moves this too, rather than leaving a stale formula behind. Measured 1/6.
+const FOLLOW_RATE = (() => {
+  const cam = { x: 0 };
+  const p = { x: 4000 };
+  updateCamera(cam, C.STEP, p, 400 * C.TILE);
+  return cam.x / (p.x - CAMERA_FOLLOW_X);
+})();
+// The lerp step is an equality on every frame of a legitimate follow (assertFollowStep states it), so
+// this factor is not slack for a bug to hide in: measured on the shipped code the worst overshoot
+// over all four camera traces in this file is exactly 0 px, while a re-added hard clamp lands 2.3–3.0x
+// over the bound (8.278 vs 3.667, 15.833 vs 5.278) and CAM_EPS = 40 lands 3.0x over it — both are a
+// full snap-to-target, which is 1/FOLLOW_RATE = 6 lerp steps compressed into one frame, so anything
+// below 6.0 catches them and 2.0 keeps that margin while still allowing a follow that closes twice as
+// briskly as today's without being called a cut.
+const STEP_FACTOR = 2;
+const STEP_TOL = 1e-4; // px/frame; CAM_EPS (1e-6) and float drift both live far under this
+
+// The camera's one-frame step is the follow's own step, or it is not a follow. This is the assertion
+// that separates the smooth floor from the old wall: the wall ASSIGNS the camera to the floor, which
+// is a step of the whole distance the follow could only have covered in six frames.
+//
+// `frames` is loop-order camera/player state, taken AFTER each step() so the player x is the one the
+// camera actually chased, and each floor is what checkpointBounds() handed updateCamera on that same
+// frame (main.js reads it at the top of updateState, so it is one arm behind the arming frame — a
+// stale-low floor only ever loosens this bound, never tightens it, and the arming frame is the one
+// this check is aimed at). Frame 0 is the seed and is not diffed. The bound is two-sided: a follow
+// cannot jump PAST its target either, and one that could has the same visible symptom.
+function assertFollowStep(what, frames, levelW) {
+  const max = Math.max(0, levelW - C.VIEW_W);
+  let worst = 0;
+  let worstAt = -1;
+  let maxStep = 0;
+  for (let i = 1; i < frames.length; i++) {
+    let target = frames[i].x - CAMERA_FOLLOW_X;
+    if (target < frames[i].floor) target = frames[i].floor;
+    else if (target > max) target = max;
+    const step = frames[i].cam - frames[i - 1].cam;
+    maxStep = Math.max(maxStep, Math.abs(step));
+    const allowed = Math.abs((target - frames[i - 1].cam) * FOLLOW_RATE) * STEP_FACTOR + STEP_TOL;
+    const over = Math.abs(step) - allowed;
+    if (over > worst) { worst = over; worstAt = i; }
+    assert(over <= 0, `${what}: at frame ${i} the camera moved ${step.toFixed(3)}px in one frame when its target at ${target.toFixed(2)} (hero x ${frames[i].x.toFixed(2)}, floor ${frames[i].floor}) could produce at most ${allowed.toFixed(3)}px — ${(step / ((target - frames[i - 1].cam) * FOLLOW_RATE)).toFixed(1)} frames of follow compressed into one, which is a camera cut, not a follow`);
+  }
+  return { worst, worstAt, maxStep, rate: FOLLOW_RATE };
+}
+
+// The camera's steady-state lag behind a hero moving at a constant `vmax`, measured off the real
+// updateCamera on a floor-free level rather than from CAMERA_LERP (which camera.js keeps to
+// itself), so it tracks the shipped lerp instead of a formula that can go stale. This is how far
+// below `p.x - CAMERA_FOLLOW_X` the camera legitimately runs in normal play, therefore the deepest
+// it may ever be under a floor that just moved — and, before the smooth-floor fix, exactly how far
+// the camera TELEPORTED forward on the frame a flag banked (measured: 9.17 px walking, 15.83 px
+// running, i.e. v/12 rather than the continuous approximation v/10). R44 pins both halves.
+function measureFollowLag(vmax, steps = 600) {
+  const cam = { x: 0 };
+  const p = { x: 0 };
+  const w = 400 * C.TILE;
+  for (let i = 0; i < steps; i++) {
+    p.x = Math.min(p.x + vmax * C.STEP, w - 16);
+    updateCamera(cam, C.STEP, p, w);
+  }
+  return p.x - CAMERA_FOLLOW_X - cam.x;
+}
+
+// Asserts what a camera must do when a floor moves forward from underneath it. `lag` is the follow
+// lag measured off the shipped lerp — the deepest the camera may be under the floor, and exactly the
+// size of the one-frame pop this contract forbids. Pass a bigger `lag` when the camera was FORCED to
+// a position, because then its depth under the floor is not lag at all and the other three claims are
+// the ones carrying the weight: R36's shove clause passes the whole gap, and its per-step bound is
+// carried by assertFollowStep at the call site rather than by anything here.
+function assertFloorConvergence(what, trace, floor, lag, settleFrames = CAM_SETTLE_FRAMES) {
+  assert(trace.length > settleFrames + 10, `${what}: only ${trace.length} frames of camera trace, the settle window needs ${settleFrames}`);
+  let maxUnder = 0;
+  let maxStep = 0;
+  let maxBack = 0;
+  let prevUnder = Infinity; // frame 0 is the seed: the frame the floor moved, nothing has converged yet
+  let reached = -1;
+  for (let i = 0; i < trace.length; i++) {
+    const x = trace[i];
+    assert(Number.isFinite(x), `${what}: cam.x became ${x}`);
+    assert(x >= 0, `${what}: cam.x went negative (${x}) while converging onto the floor at ${floor}`);
+    const under = Math.max(0, floor - x);
+    maxUnder = Math.max(maxUnder, under);
+    if (i > 0) {
+      const d = x - trace[i - 1];
+      maxStep = Math.max(maxStep, d);
+      maxBack = Math.max(maxBack, -d);
+    }
+    // Convergence, not oscillation. Until the camera first arrives, its distance to the floor may
+    // only shrink; from the frame it arrives, it never leaves. (Arriving from ABOVE counts, and has
+    // to: the camera chases the sliding hero past the floor and then settles back down onto it,
+    // which is a converging step backwards — the old wall could only ever step forwards.)
+    if (reached < 0) {
+      if (under <= CAM_REST_EPS) reached = i;
+      else assert(under <= prevUnder + CAM_REST_EPS, `${what}: at frame ${i} the camera was ${under.toFixed(4)}px under the floor at ${floor}, having been ${prevUnder.toFixed(4)}px on the previous frame — it is drifting AWAY from its bound instead of converging onto it`);
+    } else {
+      assert(under <= CAM_REST_EPS, `${what}: cam.x fell back to ${x.toFixed(4)}px, ${under.toFixed(4)}px below the floor at ${floor}, after first arriving at frame ${reached} — the camera oscillates through its own bound`);
+    }
+    prevUnder = under;
+    if (i >= settleFrames) {
+      assert(x >= floor - CAM_REST_EPS, `${what}: the camera came to rest at ${x.toFixed(6)}, left of its own checkpoint floor at ${floor}`);
+    }
+  }
+  assert(reached >= 0, `${what}: the camera never arrived at the floor at ${floor} in ${trace.length} frames (ended at ${trace[trace.length - 1].toFixed(4)})`);
+  assert(maxUnder <= lag + CAM_REST_EPS, `${what}: the camera dipped ${maxUnder.toFixed(3)}px below the floor at ${floor} — more than the ${lag.toFixed(3)}px of follow lag it carried when the floor moved, so the floor outran the hero instead of the camera easing up to it`);
+  return { maxUnder, maxStep, maxBack, reached };
+}
+
+// ---------------------------------------------------------------------------
 // R36 — the checkpoint is a hard left bound for the hero AND the camera
 //
 // DISCRIMINATION PROOF (all of these re-run 2026-11-16, messages quoted from the actual FAIL):
@@ -2270,6 +2425,13 @@ check('R33', () => {
 // is deliberately a safety net rather than a proven-separate one: the only mutation that can break
 // a camera floor (no floor at all) trips clause 2 first, so it is credited with the real-geometry
 // coverage, not with a failure of its own.
+//
+// CLAUSES 2b AND 4's STEP BOUND (added 2026-11-16) ARE proven-separate, and they are the reason this
+// file has any camera-cut teeth on real gameplay at all — until then the only red-on-a-hard-clamp leg
+// was clause 3's FORCED cam.x = 0, which its own comment calls "not gameplay". With everything else
+// in this check switched off, re-adding the pre-fix `if (cam.x < lo) cam.x = lo;` fails 2b on the
+// flagLevel and clause 4 on shipped 1-2, quoted verbatim at each assert. R44 is the same bound on a
+// live crossing, both speeds, and is the check the contract comment above points at.
 //
 // CLAUSE 1 ALSO OWNS THE CHECKPOINT POPUP (added 2026-11-16). Before this, nothing in the suite
 // asserted that the `CHECKPOINT` popup ever gets pushed: the only other popup clause (R41) asserts
@@ -2300,7 +2462,7 @@ check('R36', () => {
   p.vx = 0;
   p.vy = 0;
   input.right = true;
-  const armed = until(120, () => (G.checkpointIndex === 0 ? { x: p.x } : null));
+  const armed = until(120, () => (G.checkpointIndex === 0 ? { x: p.x, cam: G.cam.x } : null));
   input.right = false;
   assert(armed, `walking right through the flag at x=${cp.x} never armed it (checkpointIndex=${G.checkpointIndex}, hero only reached ${(p.x).toFixed(1)})`);
   eq(G.checkpointX, cp.x, 'arming a flag raises the left bound to that flag');
@@ -2318,40 +2480,153 @@ check('R36', () => {
   eq(pops[0].x, cp.x, 'the CHECKPOINT popup does not appear at the post that was just banked');
   eq(pops[0].y, cp.y - C.TILE, 'the CHECKPOINT popup does not appear above that post');
 
-  // (2) hold left, forever: the hero cannot get past the flag and the camera cannot get past
+  // (2) hold left, forever: the hero cannot get past the flag, the camera cannot come to rest past
   // its floor, and the hero is held where the player can actually see it.
+  //
+  // REPLACED ASSERTION (was: `assert(minCam >= FLOOR)` + a clause 3 requiring the floor to be
+  // recovered "within the frame"). Both pinned the floor as a WALL the camera is assigned to. That
+  // wall is the bug: the camera trails the hero by its follow lag, so when a flag banks the floor
+  // moves forward from under it and the assignment teleports the camera 9–16 px in one frame — the
+  // jerk. The trace is seeded with the camera's position on the banking frame, which is already
+  // `lag` px short of the new floor, and assertFloorConvergence states what is then true: the
+  // excursion below the floor is bounded by that lag, the approach is monotone, and it comes to
+  // REST on the floor. R44 carries the per-step spike teeth this clause deliberately does not.
   input.left = true;
+  const LAG_WALK = measureFollowLag(C.WALK_MAX);
+  const LAG_RUN = measureFollowLag(C.RUN_MAX);
+  const trace = [armed.cam];
   let minX = Infinity;
-  let minCam = Infinity;
   let minScreen = Infinity;
   for (let i = 0; i < 240; i++) {
     step();
     minX = Math.min(minX, p.x);
-    minCam = Math.min(minCam, G.cam.x);
+    trace.push(G.cam.x);
     minScreen = Math.min(minScreen, p.x - Math.floor(G.cam.x));
   }
   input.left = false;
   assert(minX >= cp.x, `the hero walked to x=${minX.toFixed(2)}, past the checkpoint at ${cp.x} — updatePlayer must clamp accepted x to the bound`);
   eq(p.x, cp.x, 'the hero is pinned exactly on the flag');
-  assert(minCam >= FLOOR, `the camera scrolled to ${minCam.toFixed(2)}, left of the checkpoint floor at ${FLOOR}`);
+  const conv = assertFloorConvergence('checkpoint floor (hero pinned after a walk-right bank)', trace, FLOOR, LAG_WALK);
   near(G.cam.x, FLOOR, 1e-6, 'the camera settles on its checkpoint floor');
   assert(minScreen > 60, `a hero pinned at a checkpoint was pushed to screen x=${minScreen.toFixed(1)} — the floor must keep it centred on the CAMERA_FOLLOW_X lead (${CAMERA_FOLLOW_X}), not jammed at the edge`);
   assert(p.x - Math.floor(G.cam.x) + p.w < C.VIEW_W, 'the pinned hero is not fully inside the view');
 
-  // (3) the floor is a clamp, not a lerp: even a camera shoved back to the start of the level is
-  // back on the floor within the frame.
+  // (2b) THE SAME SHOVE, SEEDED BY PLAY. Clause 3 forces cam.x = 0 and is credited with that in its
+  // own comment: it proves the recovery is a convey, not a cut, on a state the game cannot generate.
+  // It is also the ONLY thing in this file's camera work that was ever red on the old hard clamp,
+  // which is the wrong thing to be red on. So the identical depth is reached the way play reaches
+  // it — the hero leaves the flag at RUN_MAX and turns back, so the camera parks exactly one run lag
+  // under a floor it cannot cross — and the same trace is then judged by assertFollowStep, which
+  // states the bound the follow could actually produce. Re-adding `if (cam.x < lo) cam.x = lo;` turns
+  // frame 1 of THIS trace into a 15.833 px assignment against a 5.278 px bound, measured, and it is
+  // the first R36 clause to go red.
+  G.cam.x = FLOOR - LAG_RUN;
+  const turn = [{ cam: G.cam.x, x: p.x, floor: FLOOR }];
+  let turnMinScreen = Infinity;
+  let turnMaxScreen = -Infinity;
+  input.right = true;
+  input.run = true;
+  let turnArmed = 0;
+  for (let i = 0; i < 240 && turnArmed < 90; i++) {
+    if (Math.abs(p.x - cp.x) < 2) {
+      input.right = false;
+      input.left = true;
+      turnArmed++;
+    }
+    step();
+    turn.push({ cam: G.cam.x, x: p.x, floor: FLOOR });
+    const sx = p.x - Math.floor(G.cam.x);
+    turnMinScreen = Math.min(turnMinScreen, sx);
+    turnMaxScreen = Math.max(turnMaxScreen, sx);
+  }
+  input.right = false;
+  input.left = false;
+  assert(turnArmed >= 90, `the hero never completed its turn-around sweep at the flag (${turnArmed}/90 pinned frames) — this clause needs the camera parked under its floor for a full second`);
+  assertFollowStep('flagLevel turn-around at RUN_MAX (camera seeded one run lag under the floor, by play)', turn, level.widthPx);
+  assert(turnMinScreen > 60 && turnMaxScreen + p.w < C.VIEW_W, `the turn-around sweep put the hero at screen x ${turnMinScreen.toFixed(1)}…${turnMaxScreen.toFixed(1)} — it must stay well inside the view on every frame`);
+
+  // (3) a camera shoved back to the start of the level — a state no follow can generate, so this is
+  // the safety-clamp case and not gameplay — still has to be CONVEYED to the floor, not cut to it.
+  // The first frame may not arrive: closing the whole gap at once is exactly the visible pop.
   G.cam.x = 0;
   step();
-  assert(G.cam.x >= FLOOR, `a camera forced to 0 recovered only to ${G.cam.x.toFixed(2)} (< the floor ${FLOOR}) — the bound has to be a clamp`);
+  assert(G.cam.x > 0 && G.cam.x < FLOOR, `a camera forced to 0 was put at ${G.cam.x.toFixed(2)} by one step (floor ${FLOOR}) — it must start moving toward the floor, not land on it: covering the gap in one frame is what the player sees as a camera cut`);
+  const shove = [G.cam.x];
+  let onScreenAt = -1;
+  for (let i = 1; i < 240; i++) {
+    step();
+    shove.push(G.cam.x);
+    const sx = p.x - G.cam.x;
+    if (onScreenAt < 0 && sx >= 0 && sx + p.w < C.VIEW_W) onScreenAt = i;
+  }
+  // `lag` is the whole gap here: a FORCED camera position is not follow lag, so its depth under the
+  // floor carries no information — the convergence shape, the rest state and the step bound below do.
+  // The default settle window is enough even for this 544 px seed (it needs ~111 frames of the 150;
+  // the deepest GAMEPLAY seed here needs 91 — see CAM_SETTLE_FRAMES).
+  const rec = assertFloorConvergence('shoved camera (forced to 0)', shove, FLOOR, FLOOR, CAM_SETTLE_FRAMES);
+  // The lerp's biggest possible step across this gap is its FIRST one — (floor − 0) · FOLLOW_RATE =
+  // 90.667 px — because the remaining distance only ever shrinks; measured maxStep here is 75.556 px
+  // (the first step is the seed and is not diffed). Every later frame must do strictly better, so a
+  // step larger than the first one's budget is a cut. This replaces `rec.maxStep < FLOOR / 2`, i.e.
+  // 272 px, which would have let a 250 px single-frame jump through and was only ever red on the
+  // mutation that also trips the assert above it — a bound with no teeth of its own.
+  assert(rec.maxStep <= FLOOR * FOLLOW_RATE * STEP_FACTOR + STEP_TOL, `a camera forced to 0 closed ${rec.maxStep.toFixed(1)}px of the ${FLOOR}px gap in one frame — the follow's largest possible step over this gap is ${(FLOOR * FOLLOW_RATE).toFixed(1)}px (its first), so anything past ${(FLOOR * FOLLOW_RATE * STEP_FACTOR).toFixed(1)}px is a cut, not a recovery`);
+  assert(onScreenAt >= 0, `${shove.length} frames after the camera was forced to 0 the hero pinned at x=${cp.x} was still offscreen (cam.x=${G.cam.x.toFixed(2)})`);
+  near(shove[shove.length - 1], FLOOR, CAM_REST_EPS, 'the shoved camera ends up exactly on the floor');
+
+  // (3b) and the excursion that IS reachable in play — the camera sitting under its floor by the
+  // follow lag — must never put the hero out of the view, on any frame, at either edge. This is the
+  // guarantee the deleted `minCam >= FLOOR` was reaching for; it is stated about the hero, which is
+  // what the player looks at, instead of about a bound the camera is allowed to be under briefly.
+  G.cam.x = FLOOR - LAG_WALK;
+  const lagTrace = [G.cam.x];
+  let lagWorstScreen = -Infinity;
+  let lagBestScreen = Infinity;
+  for (let i = 0; i < 240; i++) {
+    step();
+    lagTrace.push(G.cam.x);
+    const sx = p.x - Math.floor(G.cam.x);
+    lagWorstScreen = Math.max(lagWorstScreen, sx);
+    lagBestScreen = Math.min(lagBestScreen, sx);
+  }
+  assertFloorConvergence('camera under its floor by exactly one follow lag', lagTrace, FLOOR, LAG_WALK);
+  assert(lagBestScreen >= 0 && lagWorstScreen + p.w < C.VIEW_W, `a camera lagging its own floor by the follow lag (${LAG_WALK.toFixed(2)}px) put the pinned hero at screen x ${lagBestScreen.toFixed(1)}…${lagWorstScreen.toFixed(1)} — it must stay inside [0, ${C.VIEW_W}) on every frame`);
 
   // (4) the same bound asserted on the SHIPPED maps. A flagpost is map data, so an edit to
   // src/levels.js can move one anywhere on its own — onto a ledge the hero cannot walk to, or into
   // a corner the camera floor cannot hold — and clauses 1-3 would never notice, because they run on
   // a level this check builds itself. Here every shipped flag is armed by WALKING right into it
-  // (which also proves the post is reachable on foot), then the hero runs back into the bound at
-  // speed and must stay bounded, on screen, and in its own view.
+  // (which also proves the post is reachable on foot), the hero runs a few steps further along the
+  // run-up ground it then has to come back down, and runs back into the bound at speed; it must stay
+  // bounded, on screen, and in its own view throughout, and its camera must never take a step the
+  // shipped follow could not have produced.
+  //
+  // THE SEED, and why its budget is measured rather than assumed. assertFloorConvergence's `lag`
+  // budget used to be the run lag alone, on the premise that the trace starts on the frame the flag
+  // banked with the camera exactly one follow lag under the new floor. That premise is false twice
+  // over: the post arms on BOX contact, so the hero is up to PLAYER_W short of post.x when the floor
+  // moves, and the trace is then seeded at the harness's own run-up teleport, which moves the hero
+  // 32-200 px without moving the camera at all. Measured deepest dip per shipped flag: 14.445 (1-1
+  // f0) / 20.366 (1-1 f1) / 19.007 (1-2 f0) / 87.506 (1-2 f1) / 37.024 (1-3 f0) / 13.835 (1-3 f1)
+  // against a 15.833 budget — four false failures, all of them the seed frame, with the frames after
+  // it only ever getting shallower (87.506 → 52.959 → 24.243 → 0.425 on 1-2 f1): the product was
+  // converging the whole time. CHOSEN FIX: charge each trace its own seed, `max(LAG_RUN, floorX -
+  // trace[0])`. LAG_RUN stays the floor of the budget, so a trace seeded at or near the floor is still
+  // held to one lag, and the claim becomes "the floor may never outrun the camera deeper than the
+  // state the trace started in" — which is what the assert was always reaching for. NOT chosen, and
+  // why: dropping the teleport and walking the run-up instead. That was measured, and the reason
+  // usually given for the teleport does NOT survive measurement — with 1-2's post moved onto the pipe
+  // at col 108, the `nowhere to walk right after banking` assert fires in BOTH variants (`up=null`,
+  // because walkableFar() reads the pipe, not the hero), so the geometry teeth are not what the
+  // teleport buys. What it buys is that every shipped flag gets an identical full-speed retreat: the
+  // run-ups are 32-200 px, and a hero that has to walk one of them starts the retreat at walking pace
+  // on the short ones, which is a different clause than "runs back into the bound at RUN_MAX". The
+  // frame-0 dip is also NOT excluded from the max — the same carve-out would let clause 3's 544 px
+  // seed walk through a "never below the floor" assert.
   const shipped = [];
   let worstScreen = Infinity;
+  let deepestSeed = 0;
+  let worstLerp = 0;
   for (const def of LEVELS) {
     const level = synth(def);
     for (const [ci, post] of level.checkpoints.entries()) {
@@ -2381,25 +2656,228 @@ check('R36', () => {
       p.vy = 0;
       input.run = true;
       input.left = true;
+      const frames = [{ cam: G.cam.x, x: p.x, floor: Math.max(0, G.checkpointX - CAMERA_FOLLOW_X) }];
       let minX = Infinity;
-      let minCam = Infinity;
       let minScreen = Infinity;
       for (let i = 0; i < 240; i++) {
         step();
         minX = Math.min(minX, p.x);
-        minCam = Math.min(minCam, G.cam.x);
+        frames.push({ cam: G.cam.x, x: p.x, floor: Math.max(0, G.checkpointX - CAMERA_FOLLOW_X) });
         minScreen = Math.min(minScreen, p.x - Math.floor(G.cam.x));
       }
       input.left = false;
+      const trace = frames.map((f) => f.cam);
+      const seed = Math.max(0, floorX - trace[0]);
+      deepestSeed = Math.max(deepestSeed, seed);
       worstScreen = Math.min(worstScreen, minScreen);
       assert(minX >= post.x, `${def.label} flag ${ci}: the hero walked to x=${minX.toFixed(2)}, past that map's own checkpoint at ${post.x}`);
-      assert(minCam >= floorX, `${def.label} flag ${ci}: the camera scrolled to ${minCam.toFixed(2)}, left of that map's own floor at ${floorX}`);
+      // same smooth-floor contract as clause 2, asserted per shipped map: the hero runs LEFT into the
+      // bound at RUN_MAX, so the trace is seeded with the camera under the floor the bank just raised
+      // (by `seed`, measured above) and it has to be carried onto it and stay there.
+      assertFloorConvergence(`${def.label} flag ${ci} camera floor`, trace, floorX, Math.max(LAG_RUN, seed));
+      // and every one of those frames has to be the follow's own step. This is the leg of R36 with
+      // teeth on the old wall: measured on a copy with every other camera-cut clause in this file
+      // switched off, re-adding `if (cam.x < lo) cam.x = lo;` fails here on shipped geometry —
+      // `FAIL R36 1-2 flag 0 camera follow step: at frame 1 the camera moved 19.007px in one frame
+      // when its target at 1167.78 (hero x 1263.78, floor 1136) could produce at most 16.928px` (the
+      // wall's assignment is 1.12x over the bound on that flag; 1-1's two posts are shallower seeds and
+      // pass, which is why this leg is the last line of defence and not the first).
+      const lerp = assertFollowStep(`${def.label} flag ${ci} camera follow step`, frames, level.widthPx);
+      worstLerp = Math.max(worstLerp, lerp.maxStep);
       assert(minScreen > 60, `${def.label} flag ${ci}: a hero pinned at a shipped checkpoint was driven to screen x=${minScreen.toFixed(1)} — it must stay well inside the view`);
       assert(p.x - Math.floor(G.cam.x) + p.w < C.VIEW_W, `${def.label} flag ${ci}: the pinned hero is not fully inside the view`);
       shipped.push(`${def.label}@${post.x}`);
     }
   }
-  return `flag armed by walking (x=${cp.x}); hero pinned at ${p.x.toFixed(0)} with screen x >= ${minScreen.toFixed(0)}, camera floored at ${minCam.toFixed(0)}; same on all ${shipped.length} shipped flags (${shipped.join(' ')}, worst screen x ${worstScreen.toFixed(0)})`;
+  return `flag armed by walking (x=${cp.x}); hero pinned at ${p.x.toFixed(0)} with screen x >= ${minScreen.toFixed(0)}, camera floored at ${FLOOR} and carried onto it from ${conv.maxUnder.toFixed(2)}px of lag (crosses back over its own floor on frame ${conv.reached}, exact by the settle window) (deepest shipped seed ${deepestSeed.toFixed(2)}px); same on all ${shipped.length} shipped flags (${shipped.join(' ')}), every frame within ${STEP_FACTOR}x the follow's own step (largest shipped step ${worstLerp.toFixed(2)}px), worst screen x ${worstScreen.toFixed(0)}`;
+});
+
+// ---------------------------------------------------------------------------
+// R44 — the frame a running hero banks a flag must not cost the camera a step
+//
+// WHY THIS EXISTS. R36 pins the floor contract as a SHAPE (bounded excursion, monotone approach, rest
+// on the bound), and every one of those claims is a statement about a minimum or an endpoint. A hard
+// clamp — `if (cam.x < lo) cam.x = lo;` after the lerp, the behaviour shipped until 2026-11-16 — makes
+// all four of them TRUE: it never lets the camera under the floor at all, its approach is monotone by
+// construction, and it lands exactly on the bound. What it does instead is take the whole recovery in
+// ONE FRAME, and nothing in the suite measured a per-frame camera delta on a real crossing, so for
+// most of this pass the only leg of the contract with teeth was R36 clause 3, which FORCES cam.x to 0
+// — a state its own comment calls "not gameplay". R44 is the missing leg: a hero at WALK_MAX and at
+// RUN_MAX crossing a live flagpost in the real loop, with the camera step itself asserted, frame by
+// frame, against the step the shipped follow could actually produce (assertFollowStep), plus the
+// symptom the player reported stated directly: the banking frame may not be a spike relative to its
+// neighbours.
+//
+// DISCRIMINATION PROOF (measured 2026-11-16, four throwaway copies of the tree under the session
+// temp; the repo was never mutated. Full table in WORKFLOW_STATE.md, FIX PASS 4):
+//   unmodified tree              -> PASS. 42/42, exit 0. The bank window peaks at exactly the hero's
+//                                    own per-frame advance — 1.833 px walking, 3.167 px running — i.e.
+//                                    ratio 1.00 against everywhere else in the run, and
+//                                    assertFollowStep's worst overshoot over all 1079 traced frames is
+//                                    0.000 px.
+//   `if (cam.x < lo) cam.x = lo;` re-added after the lerp (the pre-fix behaviour) -> **R44 FAILS**,
+//     40/42, exit 1:
+//     `FAIL R44 WALK_MAX: in the 31-frame window that starts on the frame the flag at x=640 banked
+//     (frame 336), the camera stepped 8.278px in one frame (frame 337, from cam 535.722 to 544.000
+//     with its floor at 544) while the largest step anywhere else in the run was 1.833px — a
+//     checkpoint banking under a running hero teleported the camera its whole 9.17px follow lag in 1
+//     frame(s) after the crossing, which is the jerk the smooth floor replaced (the hero's screen x on
+//     that frame: 98.7 of 256)`
+//     RUN_MAX fails identically on the same mutation with 15.444 px against 3.167 (measured with the
+//     WALK leg removed: `FAIL R44 RUN_MAX: … the camera stepped 15.444px in one frame (frame 200,
+//     from cam 528.556 to 544.000 …)`, also 40/42). And with the spike-ratio assert switched OFF
+//     entirely the check STILL fails, on the follow-step clause: `FAIL R44 WALK_MAX live bank at
+//     x=640: at frame 337 the camera moved 8.278px in one frame when its target at 546.72 (hero x
+//     642.72, floor 544) could produce at most 3.667px — 4.5 frames of follow compressed into one,
+//     which is a camera cut, not a follow` (40/42), so the result does not rest on one tuned ratio.
+//     R36 goes red on the same mutation at the SAME time, and now fails on real play first: `FAIL R36
+//     flagLevel turn-around at RUN_MAX (camera seeded one run lag under the floor, by play): at frame
+//     1 the camera moved 15.833px in one frame when its target at 544.00 (hero x 640.00, floor 544)
+//     could produce at most 5.278px …` — clause 2b, before the synthetic forced-0 shove that used to
+//     be the only camera-cut teeth in the file.
+//   CAM_EPS = 40 (a 40px snap radius — strictly worse than the bug being fixed: it deletes the follow
+//     lag outright, so the camera stops easing at all) -> **R44 FAILS**, 40/42, exit 1, on the very
+//     first frame the follow has anything to close, long before the flag:
+//     `FAIL R44 WALK_MAX live bank at x=640: at frame 39 the camera moved 0.389px in one frame when
+//     its target at 0.39 (hero x 96.39, floor 0) could produce at most 0.130px — 6.0 frames of follow
+//     compressed into one, which is a camera cut, not a follow`
+//     (the same mutation makes R36 fail too, and there the pop is a big one: `FAIL R36 1-1 flag 0
+//     camera follow step: at frame 1 the camera moved 38.389px … could produce at most 12.796px`).
+//
+// WHAT THE BOUND IS, and why it is not a magic number. STEP_FACTOR is applied to the shipped follow's
+// own step for that frame (FOLLOW_RATE · (target − cam), both measured off updateCamera), so the
+// legitimate worst case sits at 1/STEP_FACTOR of the allowance — measured 0.000 px of overshoot on
+// every frame of all four traces — while the wall sits 2.3–3.0x over it and the snap 3.0x. The spike
+// clause is relative for the same reason: 2x the largest step elsewhere in the run, where the shipped
+// code's ratio is 1.00 and the wall's is 4.52 (walk) / 4.88 (run).
+// ---------------------------------------------------------------------------
+
+check('R44', () => {
+  const SPIKE = 2;  // bank-window step, as a multiple of the largest step anywhere else in the run
+  const MIN_RUN = 30; // frames of full-speed running required before the flag may bank
+  const lines = [];
+
+  for (const [speed, run] of [['WALK_MAX', false], ['RUN_MAX', true]]) {
+    const vmax = C[speed];
+    const lag = measureFollowLag(vmax);
+    const level = flagLevel({ cols: 120, flag: [C.ROWS - 3, 40] });
+    installLevel(level);
+    const p = G.player;
+    const cp = level.checkpoints[0];
+    const FLOOR = cp.x - CAMERA_FOLLOW_X;
+    clearInput();
+    p.x = 2 * C.TILE;
+    p.y = GROUND_TOP - p.h;
+    p.vx = 0;
+    p.vy = 0;
+    p.invulnT = 120;
+    input.right = true;
+    input.run = run;
+
+    // (1) run into an UNBANKED flag in the real loop until it banks, then keep running for AFTER more
+    // frames, tracing camera + hero + the floor the loop actually handed updateCamera. Nothing is
+    // teleported and the camera is never touched: this is the crossing a player performs, and the
+    // flag is live.
+    //
+    // AND WHY THE TRACE DOES NOT STOP AT THE FLAG. main.js reads checkpointBounds() at the TOP of
+    // updateState, before updatePlayer can arm anything, so the frame on which a post arms is still
+    // running on the PREVIOUS frame's floor: the measured bank frame here steps 3.167px, exactly like
+    // every other frame, and the wall's assignment lands on the frame after it (cam 528.556 -> 544.000
+    // = 15.444px, measured on the same mutation). A check that stops at the crossing frame — which is
+    // what this one did until it was measured — is blind to the exact bug it exists to catch.
+    const AFTER = 30; // frames of running to give the new floor time to arrive (a lag needs ~15)
+    const frames = [{ cam: G.cam.x, x: p.x, floor: Math.max(0, G.checkpointX - CAMERA_FOLLOW_X) }];
+    let bank = -1;
+    for (let i = 0; i < 400; i++) {
+      step();
+      frames.push({ cam: G.cam.x, x: p.x, floor: Math.max(0, G.checkpointX - CAMERA_FOLLOW_X) });
+      if (bank < 0 && G.checkpointIndex === 0) bank = frames.length - 1;
+      if (bank >= 0 && frames.length > bank + AFTER) break;
+    }
+    assert(bank > MIN_RUN, `${speed}: the flag at x=${cp.x} banked at frame ${bank} — the scenario needs the hero already at full speed, so it must run for at least ${MIN_RUN} frames first (hero reached x=${p.x.toFixed(1)})`);
+    assert(frames.length > bank + AFTER, `${speed}: only ${frames.length} frames of trace after banking at ${bank}; the floor-change window needs ${AFTER}`);
+    const d = frames.slice(1).map((f, j) => f.cam - frames[j].cam); // d[i] is the step onto frame i+1
+    const at = (i) => d[i - 1];
+
+    // (2) THE BANK WINDOW: the frame the post arms and the AFTER frames it takes the new floor to
+    // arrive. No frame in it may step further than SPIKE times the largest step anywhere else in the
+    // run — the hero is at full speed on both sides, so the legitimate answer is 1.00, and a
+    // checkpoint that teleports the camera is the only way to get more. Measured on the shipped code:
+    // the window's worst step IS the hero's own per-frame advance (1.833 / 3.167 px), i.e. ratio 1.00.
+    const winLo = bank;
+    const winHi = frames.length - 1;
+    let spike = 0;
+    let spikeAt = -1;
+    let quiet = 0;
+    let quietHero = 0;
+    for (let i = 1; i < frames.length; i++) {
+      const s = Math.abs(at(i));
+      if (i >= winLo && i <= winHi) {
+        if (s > spike) { spike = s; spikeAt = i; }
+      } else {
+        quiet = Math.max(quiet, s);
+        quietHero = Math.max(quietHero, frames[i].x - frames[i - 1].x);
+      }
+    }
+    const bankStep = at(bank);
+    const heroStep = frames[bank].x - frames[bank - 1].x;
+    assert(heroStep > vmax * C.STEP * 0.95, `${speed}: the hero was moving ${heroStep.toFixed(3)}px/frame on the bank frame, not the ${(vmax * C.STEP).toFixed(3)}px of ${speed} — the scenario degenerated (hero x=${frames[bank].x.toFixed(1)})`);
+    assert(quietHero > vmax * C.STEP * 0.95, `${speed}: nothing to compare against — the hero never reached ${speed} outside the bank window (max hero step ${quietHero.toFixed(3)}px/frame)`);
+    assert(spike > 0, `${speed}: the camera never moved in ${frames.length} frames, so the spike comparison below could not fail`);
+    assert(spike <= quiet * SPIKE + STEP_TOL, `${speed}: in the ${AFTER + 1}-frame window that starts on the frame the flag at x=${cp.x} banked (frame ${bank}), the camera stepped ${spike.toFixed(3)}px in one frame (frame ${spikeAt}, from cam ${frames[spikeAt - 1].cam.toFixed(3)} to ${frames[spikeAt].cam.toFixed(3)} with its floor at ${FLOOR}) while the largest step anywhere else in the run was ${quiet.toFixed(3)}px — a checkpoint banking under a running hero teleported the camera its whole ${lag.toFixed(2)}px follow lag in ${(spikeAt - bank)} frame(s) after the crossing, which is the jerk the smooth floor replaced (the hero's screen x on that frame: ${(frames[spikeAt].x - Math.floor(frames[spikeAt].cam)).toFixed(1)} of ${C.VIEW_W})`);
+
+    // (3) and every one of those frames, plus all the others, against the follow's own step: no frame
+    // may move the camera further than the lerp could have carried it, in either direction.
+    const follow = assertFollowStep(`${speed} live bank at x=${cp.x}`, frames, level.widthPx);
+
+    // (4) the excursion the bank leaves behind, and the hero's own visibility. On the bank frame the
+    // camera sits exactly `lag − (hero x − cp.x)` under the floor — measured 15.444 px at RUN_MAX
+    // (15.833 − 0.389) and 8.278 px at WALK_MAX (9.167 − 0.889) — because the post arms on BOX
+    // contact, so the hero is a hair past the post when the floor moves and the target the lag was
+    // measured against is that much ahead of it. On the shipped maps that deficit grows to a whole
+    // PLAYER_W (1-1 flag 0 seeds 14.445 px and flag 1 20.366 px against a 15.833 lag), which is
+    // harness geometry, not camera slack. Both terms are measured, not assumed.
+    const boxDeficit = Math.max(0, cp.x - frames[bank].x);
+    let maxUnder = 0;
+    let minScreen = Infinity;
+    let maxScreen = -Infinity;
+    for (let i = bank; i < frames.length; i++) {
+      maxUnder = Math.max(maxUnder, FLOOR - frames[i].cam);
+      const sx = frames[i].x - Math.floor(frames[i].cam);
+      minScreen = Math.min(minScreen, sx);
+      maxScreen = Math.max(maxScreen, sx);
+    }
+    assert(maxUnder <= lag + boxDeficit + CAM_REST_EPS, `${speed}: after banking, the camera sat ${maxUnder.toFixed(3)}px under the floor at ${FLOOR} — more than the ${lag.toFixed(3)}px of ${speed} lag it was carrying plus the ${boxDeficit.toFixed(3)}px the hero's box was short of the post, so the bound outran the camera instead of the camera easing up to it`);
+    assert(minScreen >= 0 && maxScreen + p.w < C.VIEW_W, `${speed}: the crossing put the hero at screen x ${minScreen.toFixed(1)}…${maxScreen.toFixed(1)} — it must stay inside [0, ${C.VIEW_W}) on every frame`);
+
+    // (5) the half the clamp got "for free" and this check still requires: with the hero still running
+    // the camera is well clear of the floor, run it back into the bound and require the SAME rest
+    // state — monotone approach, never back below the floor, and exactly on it, from the follow and
+    // not from an assignment.
+    let runUp = 0;
+    while (p.x < cp.x + 250 && runUp < 600) { step(); runUp++; }
+    assert(p.x >= cp.x + 200, `${speed}: the hero never ran clear of the flag (${runUp} frames, x=${p.x.toFixed(1)}, target ${cp.x + 250}) — the run back needs the camera above its floor first`);
+    clearInput();
+    input.left = true;
+    input.run = run;
+    const back = [{ cam: G.cam.x, x: p.x, floor: FLOOR }];
+    let minBackX = Infinity;
+    for (let i = 0; i < 240; i++) {
+      step();
+      back.push({ cam: G.cam.x, x: p.x, floor: FLOOR });
+      minBackX = Math.min(minBackX, p.x);
+    }
+    input.left = false;
+    input.run = false;
+    assert(minBackX >= cp.x, `${speed}: the run back put the hero at x=${minBackX.toFixed(2)}, through the checkpoint at ${cp.x}`);
+    const backFollow = assertFollowStep(`${speed} run back onto the floor`, back, level.widthPx);
+    assertFloorConvergence(`${speed} run back onto the checkpoint floor`, back.map((f) => f.cam), FLOOR, lag);
+    eq(G.cam.x, FLOOR, `${speed}: the camera does not come to rest EXACTLY on its floor — the follow must collapse the last sub-representable sliver (CAM_EPS), which the old wall got by assigning the bound outright`);
+    const restScreen = p.x - Math.floor(G.cam.x);
+    assert(restScreen > 60 && restScreen + p.w < C.VIEW_W, `${speed}: at rest on the floor the hero sat at screen x=${restScreen.toFixed(1)} — the ${CAMERA_FOLLOW_X}px lead is what keeps it centred`);
+    lines.push(`${speed}: bank frame ${bank} steps ${bankStep.toFixed(3)}px and the ${AFTER}-frame window after it peaks at ${spike.toFixed(3)}px (frame ${spikeAt}) against ${quiet.toFixed(3)}px everywhere else, lag ${lag.toFixed(2)}, deepest ${maxUnder.toFixed(2)}px under; ${frames.length}+${back.length} frames all within ${STEP_FACTOR}x the follow's own step (largest ${follow.maxStep.toFixed(2)}px / ${backFollow.maxStep.toFixed(2)}px back); rests exactly on ${FLOOR}`);
+  }
+  return lines.join(' | ');
 });
 
 // ---------------------------------------------------------------------------

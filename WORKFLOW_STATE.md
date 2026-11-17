@@ -11,14 +11,17 @@ updated in the same change to match the shipped code, and harness check `R20` is
 Active worktree: none (main workspace) — `/Users/jasonjordan/repos/veggie_bros`
 
 Suite: baseline before any edit **34/34 pass, 0 fail**; after the checkpoint feature **37/37**; after
-**FIX PASS 1** 40/40; after **FIX PASS 2** 41/41; **FIX PASS 3 added no ids and stays 41/41 pass, 0
-fail, exit 0** — byte-identical across consecutive runs and stable in every subset combination tried.
-Registered ids: `SMOKE` + `R01`–`R33` + `R36`/`R37`/`R38` + `R40`/`R41`/`R42`/`R43` = **41, no
-duplicates** (`grep -c "^check(" tools/verify.mjs` → 41). **`R34`, `R35` and `R39` are NOT registered**
+**FIX PASS 1** 40/40; after **FIX PASS 2** 41/41; **FIX PASS 3** stays 41/41; **after FIX PASS 4 42/42
+pass, 0 fail, exit 0** (new id `R44`; the pass-4 baseline it was handed was **40/41, exit 1** — see
+that section's Blockers) — byte-identical across consecutive runs and stable in every subset combination
+tried.
+Registered ids: `SMOKE` + `R01`–`R33` + `R36`/`R37`/`R38` + `R40`/`R41`/`R42`/`R43`/`R44` = **42, no
+duplicates** (`grep -c "^check(" tools/verify.mjs` → 42). **`R34`, `R35` and `R39` are NOT registered**
 — `R34` is the docs-only queue entry, `R35` stays RESERVED for the deferred boss-freeze item, `R39`
 stays RESERVED for the `Q` double-award candidate that `docs/REVIEW-2026-11-15.md` had first floated as
 `R36`. Ids used by this work: `R36`/`R37`/`R38` (checkpoint feature), `R40`/`R41`/`R42` (fix pass 1),
-`R43` (fix pass 2). **FIX PASS 3 added no ids** — it hardened `R36` and `R43` in place.
+`R43` (fix pass 2), `R44` (fix pass 4 — the per-frame camera-step bound on a live checkpoint crossing).
+**FIX PASS 3 added no ids** — it hardened `R36` and `R43` in place.
 
 ## Checklist
 
@@ -27,15 +30,20 @@ stays RESERVED for the `Q` double-award candidate that `docs/REVIEW-2026-11-15.m
 > amended by **F2/F3/F4/F5.2/F5.3** (forward-crossing arming, the trigger loop moved above the
 > dead-return, respawn grace, banner suppression, index guard), item **8**'s flag columns by **F1**, and
 > item **9**'s `R38` by **C1** (clearance band restored) and **C3**. Each of those items carries an
-> inline pointer. The authoritative current record is **FIX PASS 3** at the end of this file (then FIX
-> PASS 2 and 1) plus the live `src/` and `tools/verify.mjs`. These facts are restated in as many as
+> inline pointer. The authoritative current record is **FIX PASS 4** at the end of this file (then FIX
+> PASS 3, 2 and 1) plus the live `src/` and `tools/verify.mjs`. These facts are restated in as many as
 > four places (here, FIX PASS 1, FIX PASS 2, and — for anything about `R43`'s numbers, which pass 3
-> superseded — `docs/REVIEW-2026-11-15.md` §11) — if you change one copy, check them all.
+> superseded — `docs/REVIEW-2026-11-15.md` §11) — if you change one copy, check them all. Note that
+> **pass 4 inverts the camera invariant passes 1–3 assert** (see its "invariant inversion" section):
+> anything below this line that says the camera "is clamped to" the floor is describing the deleted
+> wall, not the shipped code.
 
 - [x] 1. `src/camera.js` — two-sided lerp + two-sided clamp; `minX` is a **parameter**
       (default 0), never a field on `cam`; `CAMERA_FOLLOW_X = 96` named and exported;
       `makeCamera()` still returns exactly `{ x: 0 }`; the ratchet comment AND the stale
       "second rate (14)" comment are gone. Camera stays a float; consumers still floor it.
+      **[THE "TWO-SIDED CLAMP" HALF IS SUPERSEDED BY FIX PASS 4: the bounds are applied to the
+      TARGET before the lerp, never to `cam.x` after it — see that section's invariant inversion.]**
 - [x] 2. `src/level.js` — `K` added to `MARKER` (`'HTFCKG'`) and `NEEDS_GROUND` (`'HTFK'`),
       `level.checkpoints` of `{ x, y, row, taken }` in the gate's style, tile cleared to `.`,
       list sorted by ascending x.
@@ -705,3 +713,208 @@ and its "col 117 still PASSES" claim each annotated as superseded with the re-me
   to stop. They are progress indicators; the honest fix was labelling, not tuning.
 - `src/` untouched, so the two pre-existing doc-drift items in "Known-unfixed" above (`architecture.md:141`'s
   font citation, `src/main.js:540` → `architecture.md:41`) are still open and still unaddressed.
+
+---
+
+# FIX PASS 4 — 2026-11-16 (B-1/B-2/B-3, F-2…F-6: the camera fix had no test with teeth)
+
+Suite handed to this pass: **40/41 pass, 1 fail, exit 1** —
+`FAIL R36 shoved camera (forced to 0): the camera came to rest at 543.999966, left of its own
+checkpoint floor at 544`. Suite handed back: **42/42 pass, 0 fail, exit 0**, byte-identical across
+three consecutive full runs (`md5` equal) and order-independent in every subset tried (`R44`;
+`R36 R44`; `R20 R36 R44`; `R44 R37 R43`; `R44 R40 R41 R42`; `R33 R36 R44 R20`; `R44 R44`).
+`grep -c "^check(" tools/verify.mjs` → **42**, no duplicates; `R34`/`R35`/`R39` still unregistered.
+`node --check` clean on `tools/verify.mjs` and `src/camera.js`.
+
+## Goal
+
+Repair the harness and docs around the camera smoothness fix, which an independent audit confirmed to
+be **correct and not the problem**: `src/camera.js` was not touched behaviourally by this pass (two
+comment corrections only). The test work around it was broken (two blockers made the suite red and one
+of them masked the other), incomplete (`R44` cited four times, never registered), and in one place
+built on a false premise.
+
+## The invariant inversion, restated for the record
+
+**Passes 1–3 pinned the checkpoint floor as a WALL and asserted it as such**: `assert(minCam >= FLOOR)`
+across a window, plus a clause requiring the floor to be recovered "within the frame".
+**This pass (and the code it tests) pins it as a TARGET BOUND the camera is carried up to**: the bounds
+are applied to `target = clamp(p.x − CAMERA_FOLLOW_X, floor, levelW − VIEW_W)` **before** the follow
+lerp and never to `cam.x` after it.
+
+The guarantee is **not weakened**, and it is important that the record says why rather than leaving the
+change looking like a loosened threshold:
+
+- The deleted assert was never observable by the player. The hero is clamped to the same floor by
+  `player.js`, so the only way `cam.x` can be under the floor is the follow lag it is already carrying,
+  and the only thing the wall bought was a one-frame 9–16 px teleport of the whole viewport — the jerk
+  the user reported. Everything the wall guaranteed about the hero (`minX >= cp.x`, `p.x === cp.x`,
+  screen x ≥ 60, fully inside the view) is still asserted, unchanged, in `R36` clauses 1/2/4.
+- What replaced the minimum is **four** claims where the wall had one, three of them about the SHAPE of
+  the recovery (`R36`: bounded excursion ≤ the lag, monotone approach, never back below the floor after
+  arriving, rest EXACTLY on it — `eq(cam.x, FLOOR)`, not a tolerance), plus a **per-frame delta** bound
+  (`R44`) that the wall cannot satisfy. A hard clamp satisfies every minimum trivially and the delta
+  bound not at all, which is exactly why the delta bound is the one that had to be added.
+- Both floor safety clamps that are NOT about lag are untouched: a camera shoved outside `[0, max]` or
+  poisoned with NaN is still assigned back inside the range outright, and `R36` clause 3 still proves
+  the convey-to-floor on that state.
+
+## What was actually broken (all three measured, not inferred)
+
+| id | defect | fix |
+|---|---|---|
+| **B-1** | `assertFloorConvergence` compared `i >= CAM_SETTLE_FRAMES` (module constant, 90) instead of its own `settleFrames` parameter, so `R36` clause 3's caller-side window was ignored and the 544 px forced-0 trace was judged at frame 90 against a 1e-6 tolerance — it is 3.4e-5 px short there and needs ~111 frames. That is the suite-red line. | `if (i >= settleFrames)`. The call site's `150` literal also became `CAM_SETTLE_FRAMES` (see F-4: the constant itself moved to 150, so the two can no longer disagree). |
+| **B-2** | `R36`'s return string referenced `minCam`, a variable the smooth-floor rewrite deleted → `ReferenceError: minCam is not defined` on every green run of that check. Invisible only because B-1 threw first. | Removed; the return now publishes measured values instead (`conv.maxUnder`, `conv.reached`, `deepestSeed`, `worstLerp`). |
+| **B-3** | Clause 4's `maxUnder <= LAG_RUN` budget was applied to traces seeded by the harness's own run-up **teleport** (`p.x = up`, 32–200 px, camera unmoved) AND premised on the post arming at `p.x === post.x`. Measured deepest dips: 14.445 (1-1 f0) / **20.366** (1-1 f1) / **19.007** (1-2 f0) / **87.506** (1-2 f1) / **37.024** (1-3 f0) / 13.835 (1-3 f1) against a 15.833 budget → four false failures, every one of them the seed frame, with the following frames only ever shallower (87.506 → 52.959 → 24.243 → 0.425 on 1-2 f1). | Budget each trace by its own measured seed: `Math.max(LAG_RUN, floorX - trace[0])`. Chose over deleting the teleport — see the reasoning and the refuted counter-argument in the comment at the call site. Frame 0 was deliberately NOT carved out of the max. |
+
+## The new `R44` — registered exactly once, no ids reused
+
+A hero running into a **live, unbanked** flagpost at `WALK_MAX` and at `RUN_MAX` in the real fixed-step
+loop, tracing `{cam, hero x, floor handed to updateCamera}` per frame, then run back into the bound.
+Clauses: the bank window's per-frame step against the largest step elsewhere in the run (spike
+detection, `SPIKE = 2`); every frame of all four traces against the follow's own step
+(`assertFollowStep`, `STEP_FACTOR = 2`, `FOLLOW_RATE` and `STEP_TOL = 1e-4`); the excursion bounded by
+`lag + boxDeficit` (both measured); hero on screen on every frame; monotone approach and
+`eq(cam.x, FLOOR)` at rest. `R34`/`R35`/`R39` remain unregistered.
+
+**The finding that made `R44` necessary and nearly made it useless**: the pop does **not** land on the
+frame the flag banks. `main.js` reads `checkpointBounds()` at the TOP of `updateState`, before
+`updatePlayer` can arm anything, so the arming frame still runs on the previous frame's floor — measured
+identical traces for clean and wall-mutated `camera.js` on every frame up to and including the bank
+(3.167 px steps), and the wall's assignment appearing on the frame **after** it (cam 528.556 → 544.000).
+A check that stops at the crossing frame — the first version of `R44` did — passes on the bug. The trace
+now runs 30 frames past the bank (`AFTER`) and the window is asserted, not the frame.
+
+**Where the teeth went** (this is the structural point of the pass): `assertFollowStep` is shared by
+`R44` (live crossings, both speeds, plus the run-back), by `R36` clause 2b (a REAL play-seeded
+under-floor camera, new: the hero leaves the flag and turns back so the camera parks one run lag under
+the floor, which is how play reaches that state), by `R36` clause 4 (every shipped-map frame), and by
+`R36` clause 3's shove. `R36`'s new clause 2b is placed BEFORE the synthetic shove, so a hard clamp now
+goes red on real gameplay first instead of only on the state its own comment calls "not gameplay".
+
+## Live numbers (current format — this is the line to quote)
+
+```
+PASS R36 flag armed by walking (x=640); hero pinned at 640 with screen x >= 93, camera floored at 544
+and carried onto it from 8.99px of lag (crosses back over its own floor on frame 6, exact by the settle
+window) (deepest shipped seed 87.51px); same on all 6 shipped flags (1-1@880 1-1@1456 1-2@1232
+1-2@1792 1-3@672 1-3@1216), every frame within 2x the follow's own step (largest shipped step
+39.47px), worst screen x 80
+PASS R44 WALK_MAX: bank frame 336 steps 1.833px and the 30-frame window after it peaks at 1.833px
+(frame 336) against 1.833px everywhere else, lag 9.17, deepest 8.28px under; 367+241 frames all within
+2x the follow's own step (largest 1.83px / 1.83px back); rests exactly on 544 | RUN_MAX: bank frame 199
+steps 3.167px and the 30-frame window after it peaks at 3.167px (frame 200) against 3.167px everywhere
+else, lag 15.83, deepest 15.44px under; 230+241 frames all within 2x the follow's own step (largest
+3.17px / 3.17px back); rests exactly on 544
+```
+
+Constants published and re-measured this pass: `FOLLOW_RATE` = 0.16666666666666666 (exactly 1/6; read
+off `updateCamera`, not from `CAMERA_LERP`, so it cannot go stale) · follow lag **9.167** walking /
+**15.833** running = `v·dt·(1−r)/r` = **v/12**, not v/10 · frames from depth d to `CAM_REST_EPS` =
+`log(1e-6/d)/log(5/6)`, verified against the shipped `updateCamera`: 88 (9.167 px) / 91 (15.833) / 93
+(20.366) / 101 (87.506) / 111 (544) → **`CAM_SETTLE_FRAMES` 90 → 150** (91 is the worst gameplay figure;
+90 had *negative* margin against it, and the 56 that the old comment published was never a measurement)
+· `STEP_FACTOR = 2`, `SPIKE = 2`, `STEP_TOL = 1e-4`, `AFTER = 30`.
+
+## Discrimination proofs (six throwaway copies under the session temp; the repo tree was never mutated)
+
+| mutation | observed result |
+|---|---|
+| **unmodified tree** | `42/42 pass, 0 fail`, exit **0**. Bank window peaks at the hero's own per-frame advance (ratio **1.00**), `assertFollowStep` overshoot **0.000 px** over all 1079 traced frames. |
+| `if (cam.x < lo) cam.x = lo;` re-added after the lerp (the pre-fix behaviour) | **40/42, exit 1.** `FAIL R44 WALK_MAX: in the 31-frame window that starts on the frame the flag at x=640 banked (frame 336), the camera stepped 8.278px in one frame (frame 337, from cam 535.722 to 544.000 with its floor at 544) while the largest step anywhere else in the run was 1.833px — a checkpoint banking under a running hero teleported the camera its whole 9.17px follow lag in 1 frame(s) after the crossing, which is the jerk the smooth floor replaced (the hero's screen x on that frame: 98.7 of 256)` + `FAIL R36 flagLevel turn-around at RUN_MAX (camera seeded one run lag under the floor, by play): at frame 1 the camera moved 15.833px in one frame when its target at 544.00 (hero x 640.00, floor 544) could produce at most 5.278px — 6.0 frames of follow compressed into one, which is a camera cut, not a follow` |
+| same, **RUN_MAX leg only** (WALK leg removed) | 40/42, exit 1. `FAIL R44 RUN_MAX: … the camera stepped 15.444px in one frame (frame 200, from cam 528.556 to 544.000 …) while the largest step anywhere else in the run was 3.167px …` — so both speeds discriminate, not just the first one the loop reaches. |
+| same, **spike-ratio assert switched off** (only the follow-step bound left in `R44`) | **still 40/42, exit 1.** `FAIL R44 WALK_MAX live bank at x=640: at frame 337 the camera moved 8.278px in one frame when its target at 546.72 (hero x 642.72, floor 544) could produce at most 3.667px — 4.5 frames of follow compressed into one, which is a camera cut, not a follow` — the result does not rest on one tuned ratio. |
+| same, **all of `R36`'s other camera-cut legs off** (2b + clause 3 + clause 3's step bound) | 40/42, exit 1: `FAIL R36 1-2 flag 0 camera follow step: at frame 1 the camera moved 19.007px in one frame when its target at 1167.78 (hero x 1263.78, floor 1136) could produce at most 16.928px` — clause 4's shipped-map leg has teeth of its own (1.12x over on that flag; 1-1's two posts are shallower seeds and pass, so it is the last line of defence, not the first). |
+| `CAM_EPS = 40` (a 40 px snap radius; strictly worse than the bug fixed — it deletes the follow lag outright) | **40/42, exit 1.** `FAIL R44 WALK_MAX live bank at x=640: at frame 39 the camera moved 0.389px in one frame when its target at 0.39 (hero x 96.39, floor 0) could produce at most 0.130px — 6.0 frames of follow compressed into one, which is a camera cut, not a follow` + `FAIL R36 1-1 flag 0 camera follow step: at frame 1 the camera moved 38.389px … could produce at most 12.796px`. Stated honestly: inside `R44`'s own trace the violation `R44` sees first is small in absolute px (0.389) and is caught by the RELATIVE bound; the large 38.4 px pop is the one `R36`'s shipped-map leg reports. |
+
+## No-regression sweep (the camera-relevant known-bad mutations, re-run against the current harness)
+
+| mutation | still FAILs |
+|---|---|
+| old camera ratchet body restored (`528e916`) | `R20 cam.x only moved back 0.00px from 1664.00 …` + `R36 the camera settles on its checkpoint floor: expected 544 +-0.000001, got 548.561967117037` + `R40 the camera floor moved under a flag that was never banked (cam.x=589.85)` + **new** `R44 WALK_MAX: the camera does not come to rest EXACTLY on its floor — the follow must collapse the last sub-representable sliver (CAM_EPS) …` — 38/42 |
+| player `minX` clamp deleted | `R36 the hero walked to x=229.17, past the checkpoint at 640 …` + **new** `R44 WALK_MAX: the run back put the hero at x=478.67, through the checkpoint at 640` — 40/42 |
+| camera floor `lo = 0` | `R20 cam.x fell to 637.17, below the checkpoint floor at 640` — **41/42, `R20` alone** (see "coverage that moved" below) |
+| `respawnAtCheckpoint` → plain `loadLevel` | `R37 the hero respawned at x=34.0 — that is the level start, not the checkpoint at 880` + R41 + R42 — 39/42 |
+
+Unmutated control copy: `42/42 pass, 0 fail`, exit 0.
+
+## Coverage that moved, and coverage that was LOST (flagged, not silently accepted)
+
+- **`lo = 0` (the camera floor deleted outright) is now caught by `R20` alone.** Under passes 1–3 it
+  also tripped `R36` (`the camera scrolled to 536.90, left of the checkpoint floor at 544`) — that was
+  the `minCam >= FLOOR` assert, which the inversion deleted. It is not recoverable as a floor assert:
+  with `player.js` clamping the hero to `checkpointX`, `target = p.x − 96 ≥ floor` on every frame but
+  the arming one, so a floor-less camera differs from a floored one by at most the lag, and at rest it
+  is **byte-identical** (a pinned hero at `cp.x` gives `target === FLOOR` exactly). Both `R36`'s and
+  `R44`'s rest-state asserts (`cam.x === 544`) therefore pass under `lo = 0`. `R20` covers it at unit
+  level (it calls `updateCamera` with the hero deliberately BELOW the floor, the only place the
+  parameter can bind), and the operative left authority in play — `player.js`'s clamp — is asserted
+  directly by `R36` clauses 2 and 4. Left as-is: an assert that could catch it would have to assert the
+  lag-free camera, which is the opposite of the contract.
+- The 4 shipped-map false failures (B-3) are gone without touching the number `LAG_RUN`; `R36` clause 4
+  now asserts 241 frames × 6 flags of per-frame step as well, which it did not before.
+- `R36` clause 3 keeps its shove case and its step bound, now with a derived ceiling
+  (`FLOOR · FOLLOW_RATE · STEP_FACTOR` = 181.3 px, measured max step 75.6) instead of `FLOOR / 2` = 272 px.
+
+## Docs touched this pass (no history rewritten)
+
+`architecture.md:141` and the **Camera follows both ways** bullet: both said the camera "is clamped to
+`[floor, levelW − VIEW_W]`", which is a description of the deleted wall — restated as the
+target-clamped, smoothly-converged floor contract, with the lag figures. `architecture.md:3`'s drift
+paragraph: `camera.js` (21 → 29 lines) → (21 → 29 → **68**), and the stale `camera.js:22-29` cite
+re-derived to `:31-41,53-68` (`:13-29` in `:141` likewise); every camera citation in that file was
+re-derived against the live file (`makeCamera` `:5-7` and `main.js:299` re-checked, still correct).
+`src/camera.js`: the lag comment's "11 px walking, 19 px running" corrected to the measured 9.17/15.83
+(v/12, matching `verify.mjs`), and the safety-clamp comment's NaN overclaim corrected — the recovery is
+only for a NaN that arrives in `cam.x`; a NaN `minX` makes `lo` NaN, silently drops the floor and
+re-poisons the camera permanently. **Behaviour unchanged**, because it is unreachable from `main.js`
+(`checkpointBounds()` is NaN only if `G.checkpointX` is) and the guard would have to invent a floor;
+the guarantee the function actually makes is now stated as about a finite `[minX, levelW]` pair.
+`tools/verify.mjs`: the contract block's pointer now names `camera.js:31-41` and the `architecture.md`
+bullet by name; the duplicated separator and the stray 16-space indent removed; `R36`/`R44`'s proof
+blocks rewritten with the quotes above.
+
+## Where this pass disagrees with the punch list (all measured)
+
+1. **"the audit measured 87 (walk seed) / 90 (run seed) frames to reach `CAM_REST_EPS`"** — re-measured
+   against the shipped `updateCamera`: **88 / 91**, and the closed form agrees exactly. This matters: it
+   makes the old `CAM_SETTLE_FRAMES = 90` *negative*-margin, not merely tight, and it is why the constant
+   went to 150 rather than 91+ε.
+2. **"re-introducing the old post-lerp hard clamp currently fails ONLY that synthetic clause"** — true
+   of the tree this pass inherited (reproduced: 41/42, one red line, clause 3) and the reason `R44` was
+   worth registering, but the reason is subtler than "no per-frame assert existed": the pop also does not
+   occur on the crossing frame (above). Any future "tighten the crossing frame" work will find nothing.
+3. **"measured dips, ALL at frame 0"** — the *deepest* dip is the seed frame on all six shipped flags;
+   frames 1–3 still dip (1-2 f1: 87.506 → 52.959 → 24.243 → 0.425). Consequence: a "skip frame 0"
+   carve-out would not have been equivalent to measuring the seed, and `maxUnder == under[0]` is forced
+   by the monotone-approach claim anyway, so the seed budget's real content is `LAG_RUN` as its floor.
+4. **"stop teleporting the hero mid-trace" (the alternative the punch list offered)** — I kept the
+   teleport and measured the reason usually given for dropping it, and it is false: with 1-2's post moved
+   onto the pipe at col 108 the `nowhere to walk right after banking` assert fires in BOTH variants
+   (`walkableFar` reads the pipe, not the hero, so `up === null` either way). The teleport is kept for a
+   different reason (every flag gets an identical full-speed retreat; the shipped run-ups are 32–200 px,
+   too short to run at `RUN_MAX` from a standing start), and it is recorded in the comment as such.
+5. **`CAM_EPS = 40`'s "visible one-frame pop" inside `R44`'s own trace** — the first violation `R44`
+   reports is 0.389 px, caught by the relative bound, not by an absolute visibility threshold. The
+   mutation is genuinely caught (and the 38.4 px pop is caught by `R36` clause 4), but I did not want the
+   proof table to imply `R44` had measured a 40 px jump.
+
+## Deliberately NOT done (pass 4)
+
+- **No behavioural change to `src/camera.js`.** The smoothing approach, the lerp, the eps collapse, the
+  guard order and the `minX`-as-parameter design are untouched; two comment blocks corrected only. The
+  NaN-`minX` hardening the corrected comment describes was NOT added (unreachable; inventing a floor is
+  a worse failure), and no new export was introduced (`CAMERA_LERP` stays private — `FOLLOW_RATE` is
+  measured off `updateCamera` instead, so it cannot drift from the constant).
+- No threshold was tuned to make a proof pass. `STEP_FACTOR`/`SPIKE`/`STEP_TOL` were set BEFORE the
+  mutations were run, from the closed form (`1/FOLLOW_RATE = 6` frames is a full snap; 2 keeps a 3x
+  margin), and both mutation directions (spike assert off, R36 legs off) are reported.
+- `main.js:100`/`:182`, `makeCamera()`'s `{ x: 0 }`, `CAMERA_FOLLOW_X`'s export, `render.js:289`'s
+  `Math.floor(cam.x)`, and all checkpoint FLAG ART / feedback code (`sprites.js drawCheckpoint`,
+  `render.js:295-298`, `main.js:484-488`) untouched — that queue item's ground did not move.
+- No terrain, tile, flagpost column, pit or pipe edited. No id reused; `R34`/`R35`/`R39` stay
+  unregistered.
+- Not touched: the two pre-existing doc-drift items still open from pass 3 (`architecture.md:141`'s font
+  citation, `src/main.js:540` → `architecture.md:41`), the `Q` double-award candidate (`R39`), and the
+  `R20`-only coverage of `lo = 0` argued above — reported rather than fixed, because the assert it would
+  need contradicts the contract this pass documents.
