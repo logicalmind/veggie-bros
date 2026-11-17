@@ -38,6 +38,16 @@ export const BERRY_LIFE = 15;
 
 export const SCORE = { fruit: 100, stomp: 200, block: 50, berry: 1000, gate: 1000, bossHit: 500, bossDown: 2000 };
 
+// The checkpoint flag's trigger band, in the same shape as the gate's (main.js GATE_*): it
+// straddles the post drawCheckpoint() paints, running CHECKPOINT_TRIGGER_TOP above cp.y down
+// to CHECKPOINT_TRIGGER_BOTTOM below it, and CHECKPOINT_TRIGGER_W wide from cp.x rightwards.
+// cp.y is the TOP of the marker tile (row 12 in every shipped map), so cp.y + 16 is the
+// standing surface itself: a walking hero (top 196, bottom 208) overlaps it with 12 px to
+// spare on each axis, which is what makes a plain walking pass arm the flag.
+export const CHECKPOINT_TRIGGER_W = TILE * 2;
+export const CHECKPOINT_TRIGGER_TOP = TILE * 4;
+export const CHECKPOINT_TRIGGER_BOTTOM = TILE;
+
 export const SOLID = "XSBPQU=|";
 
 export const PALETTE = {

@@ -1,7 +1,7 @@
 import { ROWS, SOLID } from './config.js';
 
-const MARKER = 'HTFCG';
-const NEEDS_GROUND = 'HTF';
+const MARKER = 'HTFCKG';
+const NEEDS_GROUND = 'HTFK';
 const LEGEND = `${SOLID}${MARKER}.`;
 
 export function isSolid(ch) {
@@ -16,7 +16,7 @@ export function tileAt(level, tx, ty) {
 }
 
 // Rejects map typos that would otherwise load as silent, invisible bugs: characters outside
-// the legend, hangers/enemies/gates left floating, and markers painted onto solid tiles.
+// the legend, hangers/enemies/gates/flags left floating, and markers painted onto solid tiles.
 // Runs on the raw map strings, before any marker is cleared out of the tile grid.
 function validateMap(label, map, cols) {
   const at = (ty, tx) => {
@@ -80,6 +80,7 @@ export function parseLevel(def) {
     boss: null,
     fruits: [],
     gate: null,
+    checkpoints: [],
     bumps: [],
   };
 
@@ -101,9 +102,18 @@ export function parseLevel(def) {
       } else if (ch === 'G') {
         level.gate = { x: tx * 16, y: ty * 16, row: ty };
         tiles[ty][tx] = '.';
+      } else if (ch === 'K') {
+        // A checkpoint flagpost. `taken` is runtime state, like `bumps`: main.js raises the
+        // left authority when the hero walks into it, and re-marks these after a death reload.
+        level.checkpoints.push({ x: tx * 16, y: ty * 16, row: ty, taken: false });
+        tiles[ty][tx] = '.';
       }
     }
   }
+
+  // The scan above is row-major, which is left-to-right only within one row. main.js walks the
+  // list forward from G.checkpointIndex, so the order must be the one true thing about it.
+  level.checkpoints.sort((a, b) => a.x - b.x);
 
   return level;
 }

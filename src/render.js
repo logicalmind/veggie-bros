@@ -5,6 +5,7 @@ import {
   drawBrick,
   drawBoss,
   drawBush,
+  drawCheckpoint,
   drawCloud,
   drawFruit,
   drawGate,
@@ -291,6 +292,10 @@ export function render(ctx, g) {
   drawHills(ctx, camX);
   drawBackdrops(ctx, camX);
   drawTiles(ctx, level, camX);
+  // Flagposts go with the gate, on the far side of the tiles: both are world furniture drawn
+  // by manual -camX arithmetic (this renderer never calls ctx.translate), and both are inked
+  // after the tiles so a post reads as standing in front of the ground it is planted on.
+  for (const cp of level.checkpoints) drawCheckpoint(ctx, cp.x - camX, cp.y, cp.taken);
   if (level.gate) drawGate(ctx, level.gate.x - camX, level.gate.y);
   drawItems(ctx, g.items, camX);
   drawEnemies(ctx, g.enemies, camX);

@@ -6,16 +6,24 @@ export function makeCamera() {
   return { x: 0 };
 }
 
-// How fast the camera closes on its target, in lerp units per second. There used to be a
-// second rate (14) for when the target sat behind the camera, but the ratchet in updateCamera
-// discards any backward step, so that branch could never reach cam.x. It is deleted, not tuned.
+// How far ahead of the hero the camera sits, in px, and how fast it closes on that target,
+// in lerp units per second. CAMERA_FOLLOW_X is also the offset main.js subtracts from the
+// checkpoint to get the camera's left floor, which is what keeps a hero pinned at a flag
+// centred on screen instead of jammed against its left edge — so it is exported.
+export const CAMERA_FOLLOW_X = 96;
 const CAMERA_LERP = 10;
 
-export function updateCamera(cam, dt, player, levelW) {
-  const target = player.x - 96;
-  // One-way ratchet: the world only ever scrolls forward, so cleared ground stays cleared.
-  cam.x = Math.max(cam.x, cam.x + (target - cam.x) * Math.min(1, CAMERA_LERP * dt));
+// Two-sided follow: the camera closes on its target from either side, so walking left scrolls
+// the world back. `minX` is the left floor, and it is a parameter, never a field on `cam`:
+// main.js derives it from the last checkpoint reached (main.js:checkpointBounds), and the
+// harness installs a bare { x } camera, so state on the camera object would read undefined.
+// The floor is clamped under the ceiling, so a checkpoint past the last legal scroll position
+// can never produce a range with no valid cam.x inside it.
+export function updateCamera(cam, dt, player, levelW, minX = 0) {
+  const target = player.x - CAMERA_FOLLOW_X;
+  cam.x += (target - cam.x) * Math.min(1, CAMERA_LERP * dt);
   const max = Math.max(0, levelW - VIEW_W);
-  if (cam.x < 0) cam.x = 0;
+  const lo = Math.min(Math.max(0, minX), max);
+  if (cam.x < lo) cam.x = lo;
   else if (cam.x > max) cam.x = max;
 }

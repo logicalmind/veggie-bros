@@ -96,7 +96,7 @@ All from repo root `/Users/jasonjordan/repos/veggie_bros`.
    - Hit the Pumpkin Block at x=16 from below → Sunfruit pop, +100, block turns used.
    - Stomp a Turnip Trooper → +200, squash.
    - Collect the Mega Berry from the Q-block at x=110 → Poppy grows; as big, head-bump the Pebble Brick at x=112 → it breaks, +50.
-   - Touch a turnip as small (or fall in a gap) → lose a life, respawn at level start in small form with score kept.
+   - Touch a turnip as small (or fall in a gap) → lose a life, and respawn **at the last `K` flagpost banked** (or at the `H` spawn if none has been): small form, score kept, seated on the post's own tile with ~2 s of invulnerability and **no** `WORLD 1-1 …` stage-intro banner. With nothing banked it is the old full restart — `H` spawn, no grace, banner shown. Behaviour: `architecture.md` → Deviations ("Death respawns at the last flag"); checks `R37`/`R41`/`R42`.
    - Reach the Melon Gate at x=165 → slide + "STAGE CLEAR" → level 1-2 loads.
    - Clear 1-2 → level 1-3 "Pineapple Palace"; in the arena, stomp Bromely 3 times (he flashes white per hit) → WIN screen with total score; Enter → title.
    - P → PAUSED overlay (R restarts level, M shows `MUTED` in HUD); 0 lives → GAME OVER screen → Enter → title.
@@ -106,7 +106,7 @@ All from repo root `/Users/jasonjordan/repos/veggie_bros`.
 ## Assumptions & contingencies
 
 - Stack, audio, and 3-level scope are the user's confirmed choices (recorded above).
-- No time limits, no per-level checkpoints, no save persistence — requirements ask only for lives/retry + score; do not add these.
+- No time limits and no save persistence — requirements ask only for lives/retry + score; do not add these. **No per-level checkpoints — REVERSED by explicit user decision 2026-11-16, superseded.** They now ship: a `K` flagpost arms a one-way left bound for the hero and the camera, and death respawns at the last flag banked (`src/level.js`, `src/main.js`, `src/camera.js`; behaviour recorded in `architecture.md` → Deviations, checks `R20`/`R36`/`R37`/`R38`/`R40`/`R41`/`R42`/`R43`). This line's prohibition on **time limits** and **save persistence** still stands.
 - If `AudioContext` construction fails (no WebAudio), the game must run silently; `audio.js` no-ops already guarantee this — do not add audio guards to other modules.
 - Boss difficulty: stomp window is the top 10 px of the 28-px hitbox with a −360 bounce; if it proves impossible in browser testing, increase that 10 px to 14 — do not change boss speed or HP.
 - Very small windows: scale clamps to 1× (no fractional scaling).

@@ -1,5 +1,9 @@
 import {
+  CHECKPOINT_TRIGGER_BOTTOM,
+  CHECKPOINT_TRIGGER_TOP,
+  CHECKPOINT_TRIGGER_W,
   GROW_H,
+  INVULN_TIME,
   PLAYER_BIG_H,
   ROWS,
   SCORE,
@@ -15,7 +19,7 @@ import { isSolid, parseLevel, tileAt } from './level.js';
 import { makeBoss, makeTurnip, updateBoss, updateTurnip } from './enemy.js';
 import { BERRY_H, BERRY_W, makeBerry, makeFruit, makePop, makePopup, makeShards, updateItems } from './items.js';
 import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
-import { makeCamera, updateCamera } from './camera.js';
+import { CAMERA_FOLLOW_X, makeCamera, updateCamera } from './camera.js';
 import { render } from './render.js';
 import {
   consumeJumpPressed,
@@ -78,6 +82,11 @@ export const G = {
   overT: 0,
   dyingT: 0,
   gateScored: false,
+  // The shared left authority. checkpointX is the furthest flag the hero has banked and
+  // checkpointIndex its slot in level.checkpoints (-1 = none yet), so the camera floor, the
+  // player clamp and the death respawn all read one pair instead of three copies of it.
+  checkpointX: 0,
+  checkpointIndex: -1,
   muted: false,
 };
 
@@ -91,6 +100,13 @@ function loadLevel(i) {
   G.cam = makeCamera();
   G.bannerT = 1.5;
   G.gateScored = false;
+  G.checkpointX = 0;
+  G.checkpointIndex = -1;
+  // Per-level like the rest. Every kill site zeroes it and the death branch zeroes it again when
+  // a death resolves, so today it is always 0 on entry — but a future kill path that forgets to
+  // would be handed a stale clock and the fresh level's FIRST frame would resolve the death,
+  // skipping the death arc.
+  G.dyingT = 0;
 }
 
 function startGame() {
@@ -108,6 +124,16 @@ function addScore(n, x, y) {
   G.items.push(makePopup(x, y, '+' + n));
 }
 
+// The one place the left authority is turned into numbers. The hero's floor is the flag itself
+// and the camera's floor is that minus CAMERA_FOLLOW_X, its steady-state lead: so a hero held
+// against a checkpoint sits at screen x 96, the same place it stands while running, rather than
+// being shoved to the left edge of the view. Both consumers must call this — if the two floors
+// ever disagreed the hero could be pinned offscreen or the camera could outrun the clamp.
+function checkpointBounds() {
+  const x = Math.max(0, G.checkpointX);
+  return { playerX: x, camX: Math.max(0, x - CAMERA_FOLLOW_X) };
+}
+
 function onDeathResolved() {
   G.lives -= 1;
   if (G.lives <= 0) {
@@ -115,8 +141,45 @@ function onDeathResolved() {
     G.overT = 0;
     audio.musicStop();
   } else {
-    loadLevel(G.levelIndex);
+    respawnAtCheckpoint();
   }
+}
+
+// Death puts the hero back at the last flag it banked. loadLevel() re-parses the map, which
+// rebuilds level.checkpoints with nothing taken and the player at the H spawn, so the checkpoint
+// state is captured, the level is rebuilt underneath it, and only then re-applied. With no flag
+// banked this is exactly the old full-level restart, banner and all.
+function respawnAtCheckpoint() {
+  const x = G.checkpointX;
+  const index = G.checkpointIndex;
+  loadLevel(G.levelIndex);
+  // loadLevel() has just cleared the pair to 0/-1, so an index that cannot be resolved — nothing
+  // banked, or a slot the rebuilt level does not have — falls back to that plain restart instead
+  // of throwing on cp.row from inside the death handler.
+  if (index < 0 || index >= G.level.checkpoints.length) return;
+  G.checkpointX = x;
+  G.checkpointIndex = index;
+  for (const cp of G.level.checkpoints) {
+    if (cp.x <= x) cp.taken = true;
+  }
+  const cp = G.level.checkpoints[index];
+  const p = G.player;
+  p.x = x;
+  // same standing-surface convention as level.js's spawn formula and main.js's gate slide
+  p.y = (cp.row + 1) * 16 - p.h;
+  p.vx = 0;
+  p.vy = 0;
+  p.prevBottom = p.y + p.h;
+  p.prevX = p.x; // the respawn is the hero's last accepted position too, not the H spawn it came from
+  // The flagpost cells were never authored as safe ground — in shipped 1-1 a turnip patrol is
+  // already on its way to the second one — so the hero gets the same grace a hit grants, from the
+  // same constant. The no-checkpoint path above deliberately still has none: the classic spawn is
+  // untouched.
+  p.invulnT = INVULN_TIME;
+  // loadLevel() raised the WORLD x-y intro banner, which here reads as "stage restarted" right
+  // next to a resume the player did not ask for. Only this path takes it back.
+  G.bannerT = 0;
+  G.cam.x = checkpointBounds().camX;
 }
 
 function onGate() {
@@ -213,10 +276,11 @@ function updateState(dt) {
 
   if (G.state === 'PLAYING') {
     const p = G.player;
+    const bounds = checkpointBounds();
 
     if (p.dead) {
       G.dyingT += dt;
-      updatePlayer(p, dt, input, G.level);
+      updatePlayer(p, dt, input, G.level, bounds.playerX);
       consumeJumpPressed();
       if (G.dyingT > 1.2) {
         onDeathResolved();
@@ -225,14 +289,14 @@ function updateState(dt) {
       return;
     }
 
-    updatePlayer(p, dt, input, G.level);
+    updatePlayer(p, dt, input, G.level, bounds.playerX);
     consumeJumpPressed();
     if (p.jumped) {
       audio.sfx('jump');
       p.jumped = false;
     }
 
-    updateCamera(G.cam, dt, p, G.level.widthPx);
+    updateCamera(G.cam, dt, p, G.level.widthPx, bounds.camX);
 
     updateItems(G.items, dt, G.level);
     for (const b of G.level.bumps) b.t += dt;
@@ -383,6 +447,46 @@ function updateState(dt) {
           audio.sfx('die');
         }
       }
+    }
+
+    // Checkpoints advance forward only, and only one flag at a time: the scan starts after the
+    // flag already banked, so a banked flag can never re-arm and nothing can move the left
+    // authority backwards. Every flag at or behind the new bound is marked taken, which is the
+    // same invariant the death respawn re-imposes after it rebuilds the level. Forward is also
+    // meant forward on the X axis: the hero's left edge has to pass the post, judged against last
+    // frame's x exactly as the stomps above judge prevBottom. Band overlap alone let a hero
+    // RETREATING into an unbanked flag arm it — the floor jumped out in front of it mid-stride and
+    // stopped it dead against a wall that had appeared behind it, camera floor popping right.
+    //
+    // It sits above the dead-return below for the same reason the gate test writes its own
+    // !p.dead instead of trusting that return: a fatal hit inside an unbanked flag's band must
+    // still bank the flag, or the hero loses the respawn it had already reached.
+    for (let i = G.checkpointIndex + 1; i < G.level.checkpoints.length; i++) {
+      const cp = G.level.checkpoints[i];
+      const band = {
+        x: cp.x,
+        y: cp.y - CHECKPOINT_TRIGGER_TOP,
+        w: CHECKPOINT_TRIGGER_W,
+        h: CHECKPOINT_TRIGGER_TOP + CHECKPOINT_TRIGGER_BOTTOM,
+      };
+      if (!rectOverlap(p, band)) continue;
+      if (!(p.prevX <= cp.x && p.x > cp.x)) continue; // not a left-to-right crossing of the post
+      cp.taken = true;
+      G.checkpointIndex = i;
+      G.checkpointX = Math.max(G.checkpointX, cp.x);
+      for (const other of G.level.checkpoints) {
+        if (other.x <= G.checkpointX) other.taken = true;
+      }
+      // Feedback, and only when there is something to give it to. On a frame that banks the post
+      // AND takes a fatal hit (R41's scenario is exactly that), loadLevel() discards the popup and
+      // the banner within the next 1.2 s and the player hears a fanfare under the death cry with
+      // nothing on screen to explain it.
+      if (!p.dead) {
+        audio.sfx('power');
+        G.items.push(makePopup(cp.x, cp.y - TILE, 'CHECKPOINT'));
+        G.bannerT = 1;
+      }
+      break;
     }
 
     // a hit taken in this same frame must end the update: falling through would let

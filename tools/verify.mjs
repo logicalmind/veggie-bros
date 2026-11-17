@@ -258,9 +258,9 @@ const { parseLevel, isSolid } = await import('../src/level.js');
 const { hurtPlayer, killPlayer, makePlayer, updatePlayer } = await import('../src/player.js');
 const { makeBoss, makeTurnip, updateBoss, updateTurnip } = await import('../src/enemy.js');
 const { makeBerry, makeFruit, makePopup, updateItems } = await import('../src/items.js');
-const { updateCamera } = await import('../src/camera.js');
+const { CAMERA_FOLLOW_X, updateCamera } = await import('../src/camera.js');
 const spritesModule = await import('../src/sprites.js');
-const { drawBerry, drawBoss, drawHero, drawPixelText, drawTurnip } = spritesModule;
+const { drawBerry, drawBoss, drawCheckpoint, drawHero, drawPixelText, drawTurnip } = spritesModule;
 const { audio } = await import('../src/audio.js');
 const inputMod = await import('../src/input.js');
 const { input, setupTouch } = inputMod;
@@ -330,6 +330,8 @@ function toTitle() {
   G.winT = 0;
   G.overT = 0;
   G.gateScored = false;
+  G.checkpointX = 0;
+  G.checkpointIndex = -1;
   G.levelIndex = 0;
   audio.musicStop();
   clearInput();
@@ -374,6 +376,11 @@ function installLevel(level, opts = {}) {
   G.cam = { x: opts.camX || 0 };
   G.bannerT = 0;
   G.gateScored = false;
+  // Checkpoint state is per-level too: an installed level starts unbounded, and a level object
+  // installed twice must not carry the flags banked by the first install.
+  G.checkpointX = 0;
+  G.checkpointIndex = -1;
+  for (const cp of level.checkpoints) cp.taken = false;
   G.dyingT = 0;
   G.clearT = 0;
   G.state = 'PLAYING';
@@ -393,6 +400,17 @@ function flatLevel({ cols = 40, turnip = null, boss = null, gate = [C.ROWS - 3, 
   return synth(toDef(grid, 'flat'));
 }
 
+// A flat run carrying one flagpost, for the checkpoint checks: nothing else in the level bounds
+// the hero on the left, so whatever stops it is the checkpoint itself.
+function flagLevel({ cols = 120, flag = [C.ROWS - 3, 40], gate = [C.ROWS - 3, 118] } = {}) {
+  const grid = emptyMap(cols);
+  groundRows(grid);
+  put(grid, 'H', C.ROWS - 3, 2);
+  put(grid, 'K', flag[0], flag[1]);
+  if (gate) put(grid, 'G', gate[0], gate[1]);
+  return synth(toDef(grid, 'flag'));
+}
+
 function mkInput(over = {}) {
   return Object.assign({ left: false, right: false, run: false, jump: false, jumpPressed: false }, over);
 }
@@ -404,6 +422,36 @@ function bigPlayer(p) {
 }
 
 const GROUND_TOP = (C.ROWS - 2) * C.TILE; // 208 — standing surface of the shipped ground
+
+// Would a grounded hero of height `h` fit at x on the shipped standing surface — box clear of
+// solids and solid tile under its feet?
+function heroFits(level, x, h = C.PLAYER_SMALL_H) {
+  if (x < 0 || x + C.PLAYER_W > level.widthPx) return false;
+  const y = GROUND_TOP - h;
+  for (let ty = Math.floor(y / C.TILE); ty <= Math.floor((y + h - 0.001) / C.TILE); ty++) {
+    for (let tx = Math.floor(x / C.TILE); tx <= Math.floor((x + C.PLAYER_W - 0.001) / C.TILE); tx++) {
+      if (isSolid(level.tiles[ty][tx])) return false;
+    }
+  }
+  const foot = Math.floor((x + C.PLAYER_W / 2) / C.TILE);
+  return isSolid(level.tiles[C.ROWS - 2][foot]);
+}
+
+// The FARTHEST x walking in direction `dir` from `fromX` that still passes heroFits(), stopping at
+// the first wall, block or pit — or null if `fromX` itself is not standable. Shipped maps put
+// pipes and bonus blocks right beside flagposts, so a scenario that runs on real maps has to find
+// its own footing instead of assuming one, and a teleport may never hop over an obstacle it could
+// only ever walk past.
+function walkableFar(level, fromX, dir, h = C.PLAYER_SMALL_H) {
+  if (!heroFits(level, fromX, h)) return null;
+  let far = fromX;
+  for (let i = 1; i <= 24; i++) {
+    const x = fromX + dir * i * 8;
+    if (!heroFits(level, x, h)) break;
+    far = x;
+  }
+  return far;
+}
 
 // ---------------------------------------------------------------------------
 // canvas / element observation helpers
@@ -434,7 +482,7 @@ function until(n, watch) {
 // level metrics (corrected standing-surface metric — RESUME.md:45)
 // ---------------------------------------------------------------------------
 
-const LEGEND = ['.', 'X', 'S', 'B', 'P', 'Q', 'U', '=', '|', 'H', 'T', 'F', 'C', 'G'];
+const LEGEND = ['.', 'X', 'S', 'B', 'P', 'Q', 'U', '=', '|', 'H', 'T', 'F', 'C', 'G', 'K'];
 
 // surfaceAt[tx] = row of the lowest solid tile with a non-solid tile above it
 // (the surface the player stands ON). null => no standing surface: a gap, or a
@@ -1582,6 +1630,17 @@ check('R24', () => {
 
 // ---------------------------------------------------------------------------
 // R20 — camera scrolls backwards; nothing is culled behind it
+//
+// REWRITTEN 2026-11-16 by explicit product decision, which supersedes this entry's original
+// "ratchet the camera" fix and its architecture.md "do not restore it" note: the camera now
+// follows the hero LEFT, and the only thing that stops it is the last checkpoint reached —
+// passed to updateCamera as its minX parameter (main.js:checkpointBounds), never stored on the
+// camera object. So this check now asserts the OPPOSITE invariant, with the same teeth, and
+// keeps the part of the entry that still stands: entities well behind the camera are not
+// simulated. The clause at the end is the consequence of the reversal — because that cull is a
+// per-frame test (`enemy.js:63` in updateTurnip, `:92` in updateBoss — re-read from the live file,
+// not copied: this cite has drifted once already), walking the camera back left WAKES the turnips it
+// froze.
 // ---------------------------------------------------------------------------
 
 check('R20', () => {
@@ -1593,17 +1652,41 @@ check('R20', () => {
     updateCamera(cam, C.STEP, p, level.widthPx);
   }
   const X = cam.x;
+  assert(X > 1000, `running right over a 120-column level only scrolled the camera to ${X.toFixed(0)}`);
+
+  // (1) two-sided follow. The bound is a PARAMETER here, not a cam.minX field: the harness (and
+  // main.js's own test seam) install a bare { x } camera, so state on that object reads
+  // undefined and would poison cam.x with NaN instead of flooring it.
+  const FLOOR = 640;
   let back = 0;
   for (let i = 0; i < 120; i++) {
     p.x = Math.max(p.x - C.RUN_MAX * C.STEP, 0);
-    updateCamera(cam, C.STEP, p, level.widthPx);
+    updateCamera(cam, C.STEP, p, level.widthPx, FLOOR);
     back = Math.max(back, X - cam.x);
   }
-  assert(back < 1e-9, `cam.x fell from ${X.toFixed(2)} to ${cam.x.toFixed(2)} (${back.toFixed(2)}px) over 120 steps walking left — the camera must ratchet, not scroll back`);
-  // culling: behind-camera enemies stop being simulated, nearby ones keep moving
+  assert(back > 100, `cam.x only moved back ${back.toFixed(2)}px from ${X.toFixed(2)} over 120 steps walking left — the camera must follow the hero left, not ratchet`);
+  for (let i = 0; i < 600; i++) {
+    p.x = Math.max(p.x - C.RUN_MAX * C.STEP, 0);
+    updateCamera(cam, C.STEP, p, level.widthPx, FLOOR);
+    assert(cam.x >= FLOOR, `cam.x fell to ${cam.x.toFixed(2)}, below the checkpoint floor at ${FLOOR}`);
+  }
+  eq(cam.x, FLOOR, 'the camera settles on its checkpoint floor');
+
+  // (2) no checkpoint reached, no floor: the hero can walk the camera all the way back to the
+  // left edge of the world, which is the half of the original bug that was never reachable.
+  cam.x = X;
+  p.x = level.widthPx - p.w;
+  for (let i = 0; i < 900; i++) {
+    p.x = Math.max(p.x - C.RUN_MAX * C.STEP, 0);
+    updateCamera(cam, C.STEP, p, level.widthPx);
+  }
+  eq(cam.x, 0, 'an unbounded camera walks all the way back to 0');
+
+  // (3) the behind-camera cull, asserted while the camera is pinned, then the reversal's
+  // consequence asserted while it moves.
   installLevel(level);
   G.cam = { x: X };
-  G.player.x = X + 96;            // the steady-state offset keeps camX pinned at X
+  G.player.x = X + CAMERA_FOLLOW_X; // the steady-state offset keeps camX pinned at X
   G.player.y = GROUND_TOP - C.PLAYER_SMALL_H;
   G.player.vx = 0;
   const far = makeTurnip({ x: X - 100, y: GROUND_TOP - C.PLAYER_SMALL_H });
@@ -1616,11 +1699,24 @@ check('R20', () => {
   clearInput();
   steps(60);
   assert(Math.abs(G.cam.x - X) < 2, `the camera drifted to ${G.cam.x.toFixed(2)} during the cull test`);
+  const farX = far.x;
   const movedFar = Math.abs(far.x - (X - 100));
   const movedNear = Math.abs(near.x - (X - 10));
-  assert(movedNear > 0.5, `the enemy 10px behind the camera stopped being simulated (moved ${movedFar.toFixed(2)}px)`);
+  assert(movedNear > 0.5, `the enemy 10px behind the camera stopped being simulated (moved ${movedNear.toFixed(2)}px)`);
   assert(movedFar === 0, `the enemy ${Math.round(X - far.x)}px behind the camera is still simulated (moved ${movedFar.toFixed(2)}px) — cull entities at e.x + e.w < camX - 32`);
-  return `cam ratchets at ${X.toFixed(0)}; enemy at camX-100 frozen, camX-10 still walking`;
+
+  input.left = true;
+  // The hero walks back through the live probe turnip on the way. That contact is not what this
+  // clause is about (and a small hero dying here would reload the shipped 1-1 under the check),
+  // so it is made invulnerable for the length of the walk; the cull itself does not care.
+  G.player.invulnT = 5;
+  steps(120);
+  clearInput();
+  const followed = X - G.cam.x;
+  assert(followed > 150, `holding left for 120 real frames only moved the camera ${followed.toFixed(2)}px back from ${X.toFixed(0)} (now ${G.cam.x.toFixed(2)}) — the camera must follow the hero left in the loop, too`);
+  const wokeFar = Math.abs(far.x - farX);
+  assert(wokeFar > 0.5, `the turnip 100px behind the camera never resumed being simulated as the camera came back over it (moved ${wokeFar.toFixed(2)}px) — CULL_BEHIND is a per-frame test, so a leftward camera must wake it`);
+  return `follows left ${followed.toFixed(0)}px (floored at ${FLOOR}, and to 0 when unbounded); camX-100 frozen while pinned, walks ${wokeFar.toFixed(0)}px once the camera returns over it, camX-10 live`;
 });
 
 // ---------------------------------------------------------------------------
@@ -2151,6 +2247,997 @@ check('R33', () => {
   }
   assert(bad.length === 0, `${bad.length} fairness violation(s): ${bad.slice(0, 2).join(' | ')}${bad.length > 2 ? ` (+${bad.length - 2} more)` : ''}`);
   return `jump rise ${RUN.rise.toFixed(1)}px, run range ${RUN.range.toFixed(1)}px (walk ${WALK.range.toFixed(1)}); ${report.join('; ')}; 1-3 door col ${door} admits h=${C.PLAYER_BIG_H}`;
+});
+
+// ---------------------------------------------------------------------------
+// R36 — the checkpoint is a hard left bound for the hero AND the camera
+//
+// DISCRIMINATION PROOF (all of these re-run 2026-11-16, messages quoted from the actual FAIL):
+// whole src/ at the pre-checkpoint commit → flagLevel() throws `unknown character 'K' at 12,40`.
+// src/main.js alone reverted (loader/maps/camera in place, so the bound is never wired up) →
+// clause 1: `walking right through the flag at x=640 never armed it (checkpointIndex=-1, hero only
+// reached 792.9)` — nothing clamps p.x either, but that is never reached, and it is proven one
+// mutation each instead: delete the minX clamp in player.js → clause 2 `the hero walked to
+// x=229.17, past the checkpoint at 640`; `lo = 0` in camera.js → clause 2 `the camera scrolled to
+// 536.90, left of the checkpoint floor at 544` (R20 fails its own floor clause at the same time).
+// The trigger loop disabled → clause 1 again, `…never armed it (checkpointIndex=-1…)`.
+// Clause 4 is proved on MAP data alone, since that is what it can break on: 1-2's post moved onto
+// the pipe at col 108 → `1-2: the hero has nowhere to walk right after banking the flag at x=1728`;
+// one column earlier, at 111 → `1-2: no standable ground within 2 tiles left of the flag at x=1776
+// — the hero cannot walk into it`; 1-1's second flag dragged into that map's pipe at col 94 →
+// `1-1: the hero has nowhere to walk right after banking the flag at x=1504`. Clauses 1-3 stay
+// green in all three, because they run on a level this check builds itself. Clause 4's floor assert
+// is deliberately a safety net rather than a proven-separate one: the only mutation that can break
+// a camera floor (no floor at all) trips clause 2 first, so it is credited with the real-geometry
+// coverage, not with a failure of its own.
+//
+// CLAUSE 1 ALSO OWNS THE CHECKPOINT POPUP (added 2026-11-16). Before this, nothing in the suite
+// asserted that the `CHECKPOINT` popup ever gets pushed: the only other popup clause (R41) asserts
+// its ABSENCE on a death frame, and deleting the producer outright — `G.items.push(makePopup(cp.x,
+// cp.y - TILE, 'CHECKPOINT'));` in main.js — was measured to leave the suite at 41/41 pass, exit 0.
+// The same deletion now reads:
+//   `FAIL R36 a live left-to-right crossing of an unbanked flag pushed 0 CHECKPOINT popup(s),
+//   expected exactly 1 — it is the only on-screen "you resume here" marker, and R41's clause asserts
+//   only the death-frame ABSENCE, which no popup at all also satisfies: expected 1, got 0`
+// (40/41, that single FAIL). The two position asserts beside it make a popup pushed at the wrong
+// place fail too. The popup is the only legible "you resume here" on the respawn path: the banner can
+// only ever name the level, and R42 shows the respawn suppresses even that.
+// ---------------------------------------------------------------------------
+
+check('R36', () => {
+  const level = flagLevel();
+  installLevel(level);
+  const cp = level.checkpoints[0];
+  const p = G.player;
+  const FLOOR = cp.x - CAMERA_FOLLOW_X;
+  clearInput();
+  resetAudioSpy();
+
+  // (1) a plain walking pass arms the flag: no jump, no frame-perfect placement, just walking
+  // right into the band at the row the shipped maps put it on.
+  p.x = cp.x - 60;
+  p.y = GROUND_TOP - p.h;
+  p.vx = 0;
+  p.vy = 0;
+  input.right = true;
+  const armed = until(120, () => (G.checkpointIndex === 0 ? { x: p.x } : null));
+  input.right = false;
+  assert(armed, `walking right through the flag at x=${cp.x} never armed it (checkpointIndex=${G.checkpointIndex}, hero only reached ${(p.x).toFixed(1)})`);
+  eq(G.checkpointX, cp.x, 'arming a flag raises the left bound to that flag');
+  eq(cp.taken, true, 'the flag reports itself banked once crossed');
+  assert(G.bannerT > 0, 'arming a flag produced no banner feedback (G.bannerT stayed 0)');
+  assert(sfx('power') > 0, 'arming a flag made no sound (no audio.sfx call on the checkpoint path)');
+  // POSITIVE popup coverage. The only other CHECKPOINT-popup clause in this file (R41) asserts an
+  // ABSENCE on a death frame, which a producer that never exists satisfies vacuously — deleting the
+  // push outright used to leave the suite at 41/41. This is the one crossing the suite builds as a
+  // clean, live, non-fatal one, so it is where "the marker got pushed, exactly once, at the post"
+  // has to be pinned: that popup is the only legible "you resume here" on screen (the banner can
+  // only ever name the level, and on the respawn path even that is suppressed — R42).
+  const pops = G.items.filter((it) => it.kind === 'popup' && it.text === 'CHECKPOINT');
+  eq(pops.length, 1, `a live left-to-right crossing of an unbanked flag pushed ${pops.length} CHECKPOINT popup(s), expected exactly 1 — it is the only on-screen "you resume here" marker, and R41's clause asserts only the death-frame ABSENCE, which no popup at all also satisfies`);
+  eq(pops[0].x, cp.x, 'the CHECKPOINT popup does not appear at the post that was just banked');
+  eq(pops[0].y, cp.y - C.TILE, 'the CHECKPOINT popup does not appear above that post');
+
+  // (2) hold left, forever: the hero cannot get past the flag and the camera cannot get past
+  // its floor, and the hero is held where the player can actually see it.
+  input.left = true;
+  let minX = Infinity;
+  let minCam = Infinity;
+  let minScreen = Infinity;
+  for (let i = 0; i < 240; i++) {
+    step();
+    minX = Math.min(minX, p.x);
+    minCam = Math.min(minCam, G.cam.x);
+    minScreen = Math.min(minScreen, p.x - Math.floor(G.cam.x));
+  }
+  input.left = false;
+  assert(minX >= cp.x, `the hero walked to x=${minX.toFixed(2)}, past the checkpoint at ${cp.x} — updatePlayer must clamp accepted x to the bound`);
+  eq(p.x, cp.x, 'the hero is pinned exactly on the flag');
+  assert(minCam >= FLOOR, `the camera scrolled to ${minCam.toFixed(2)}, left of the checkpoint floor at ${FLOOR}`);
+  near(G.cam.x, FLOOR, 1e-6, 'the camera settles on its checkpoint floor');
+  assert(minScreen > 60, `a hero pinned at a checkpoint was pushed to screen x=${minScreen.toFixed(1)} — the floor must keep it centred on the CAMERA_FOLLOW_X lead (${CAMERA_FOLLOW_X}), not jammed at the edge`);
+  assert(p.x - Math.floor(G.cam.x) + p.w < C.VIEW_W, 'the pinned hero is not fully inside the view');
+
+  // (3) the floor is a clamp, not a lerp: even a camera shoved back to the start of the level is
+  // back on the floor within the frame.
+  G.cam.x = 0;
+  step();
+  assert(G.cam.x >= FLOOR, `a camera forced to 0 recovered only to ${G.cam.x.toFixed(2)} (< the floor ${FLOOR}) — the bound has to be a clamp`);
+
+  // (4) the same bound asserted on the SHIPPED maps. A flagpost is map data, so an edit to
+  // src/levels.js can move one anywhere on its own — onto a ledge the hero cannot walk to, or into
+  // a corner the camera floor cannot hold — and clauses 1-3 would never notice, because they run on
+  // a level this check builds itself. Here every shipped flag is armed by WALKING right into it
+  // (which also proves the post is reachable on foot), then the hero runs back into the bound at
+  // speed and must stay bounded, on screen, and in its own view.
+  const shipped = [];
+  let worstScreen = Infinity;
+  for (const def of LEVELS) {
+    const level = synth(def);
+    for (const [ci, post] of level.checkpoints.entries()) {
+      installLevel(level);
+      const p = G.player;
+      const floorX = post.x - CAMERA_FOLLOW_X;
+      clearInput();
+      // the maps post a turnip within a screen of their flags; contact is not what this clause
+      // measures (R37 does the dying, and makes the same allowance for the same reason)
+      p.invulnT = 120;
+      const from = walkableFar(level, post.x - 24, -1);
+      assert(from !== null, `${def.label}: no standable ground within 2 tiles left of the flag at x=${post.x} — the hero cannot walk into it`);
+      p.x = from;
+      p.y = GROUND_TOP - p.h;
+      p.vx = 0;
+      p.vy = 0;
+      input.right = true;
+      input.run = true;
+      const armed = until(240, () => (G.checkpointIndex === ci ? { x: p.x } : null));
+      input.right = false;
+      assert(armed, `${def.label}: walking right from x=${from.toFixed(1)} never armed the flag at x=${post.x} (checkpointIndex=${G.checkpointIndex}, hero reached ${p.x.toFixed(1)}) — the post is behind something unreachable`);
+      // run-up along ground that is actually continuous, so the retreat is a run and not a fall
+      const up = walkableFar(level, post.x + 8, 1);
+      assert(up !== null && up > post.x, `${def.label}: the hero has nowhere to walk right after banking the flag at x=${post.x}`);
+      p.x = up;
+      p.vx = 0;
+      p.vy = 0;
+      input.run = true;
+      input.left = true;
+      let minX = Infinity;
+      let minCam = Infinity;
+      let minScreen = Infinity;
+      for (let i = 0; i < 240; i++) {
+        step();
+        minX = Math.min(minX, p.x);
+        minCam = Math.min(minCam, G.cam.x);
+        minScreen = Math.min(minScreen, p.x - Math.floor(G.cam.x));
+      }
+      input.left = false;
+      worstScreen = Math.min(worstScreen, minScreen);
+      assert(minX >= post.x, `${def.label} flag ${ci}: the hero walked to x=${minX.toFixed(2)}, past that map's own checkpoint at ${post.x}`);
+      assert(minCam >= floorX, `${def.label} flag ${ci}: the camera scrolled to ${minCam.toFixed(2)}, left of that map's own floor at ${floorX}`);
+      assert(minScreen > 60, `${def.label} flag ${ci}: a hero pinned at a shipped checkpoint was driven to screen x=${minScreen.toFixed(1)} — it must stay well inside the view`);
+      assert(p.x - Math.floor(G.cam.x) + p.w < C.VIEW_W, `${def.label} flag ${ci}: the pinned hero is not fully inside the view`);
+      shipped.push(`${def.label}@${post.x}`);
+    }
+  }
+  return `flag armed by walking (x=${cp.x}); hero pinned at ${p.x.toFixed(0)} with screen x >= ${minScreen.toFixed(0)}, camera floored at ${minCam.toFixed(0)}; same on all ${shipped.length} shipped flags (${shipped.join(' ')}, worst screen x ${worstScreen.toFixed(0)})`;
+});
+
+// ---------------------------------------------------------------------------
+// R37 — death puts the hero back at the flag it banked, not at the level start
+//
+// DISCRIMINATION PROOF: FAILs on the pre-change tree — `parseLevel` builds no `checkpoints` and no
+// shipped map carries a `K`, so `G.level.checkpoints.length` throws on the first line. With
+// everything else in place but ONLY src/main.js reverted (no trigger loop either) it fails earlier
+// still, at the arming clause: `walking through 1-1's flag 0 at x=880 never armed it
+// (checkpointIndex=-1, hero at 948.0, state=PLAYING)`. The mutation this check is actually aimed at
+// is the respawn alone — keep the trigger loop and reduce respawnAtCheckpoint to a plain
+// `loadLevel(G.levelIndex)` — and then it FAILs on the substance, on the FIRST respawn assert:
+// `the hero respawned at x=34.0 — that is the level start, not the checkpoint at 880`. (The
+// `eq(q.x, cp.x)` assert below it states the same fact and is not what fires.) Looping the scenario
+// over every index is what makes the second flag — the one a player has actually earned — a tested
+// case rather than an assumed one: the `respawn` mutation above fails it at flag 0, and a respawn
+// hard-wired to the first slot (`const index = 0;`) fails only there — `the banked flag survives the
+// level rebuild: expected 1, got 0`. The final scenario (no flag banked) is the guard that the old
+// full-restart path is still byte-for-byte the behaviour.
+//
+// The prevX assert is proven on its own, and it needs its own proof because nothing else can see
+// it: delete `p.prevX = p.x;` from respawnAtCheckpoint — the line whose own comment states the
+// contract — and R40 and R41 both stay green, because the respawned hero's own post is behind the
+// scan window and prevX is refreshed by the very next updatePlayer call (see the inline note on the
+// assert below: it is state hygiene, not a live defect). This check is the one that goes red, at
+// flag 0: `the respawn left p.prevX at 34 — the crossing test reads it as the last accepted x, so it
+// has to be the checkpoint: expected 880, got 34` (34 is the H spawn the rebuild started from).
+// ---------------------------------------------------------------------------
+
+check('R37', () => {
+  // Driven on the SHIPPED 1-1, not a synthetic map: resolving a death calls loadLevel(), which
+  // re-parses LEVELS[G.levelIndex] — a hand-installed level would be replaced under the check.
+  newGame();
+  const n = G.level.checkpoints.length;
+  assert(n >= 2, `${G.level.label} ships with ${n} checkpoints, so the respawn has nothing to aim at`);
+  const lines = [];
+
+  // Every bankable flag, in map order. index >= 1 is the case the feature exists for: it is the
+  // only one that proves the level rebuild re-seats the hero somewhere other than its own first
+  // flag, and that the flags behind the bound come back taken.
+  for (let index = 0; index < n; index++) {
+    newGame();
+    const cp = G.level.checkpoints[index];
+    const p = G.player;
+    const lives0 = G.lives;
+    clearInput();
+
+    // arm it by walking into it from the nearest standable ground on its left (invulnerable: 1-1
+    // posts a turnip right here, and being mauled mid-scenario is not what this measures). Each
+    // flag starts from its own footing because 1-1 has a pit between the two — walking the whole
+    // level would be a jump test, not a respawn test.
+    p.invulnT = 60;
+    const from = walkableFar(G.level, cp.x - 24, -1);
+    assert(from !== null, `${G.level.label}: no standable ground within 2 tiles left of the flag at x=${cp.x}`);
+    p.x = from;
+    p.y = GROUND_TOP - p.h;
+    p.vx = 0;
+    p.vy = 0;
+    input.right = true;
+    input.run = true;
+    const armed = until(240, () => (G.checkpointIndex === index ? { done: true } : null));
+    input.right = false;
+    input.run = false;
+    assert(armed, `walking through ${G.level.label}'s flag ${index} at x=${cp.x} never armed it (checkpointIndex=${G.checkpointIndex}, hero at ${p.x.toFixed(1)}, state=${G.state})`);
+
+    // die well to the right of it, then let the 1.2 s death window run out
+    p.x = cp.x + 160;
+    p.y = GROUND_TOP - p.h;
+    p.vx = 0;
+    p.vy = 0;
+    G.dyingT = 0;
+    killPlayer(p, true);
+    const respawned = until(150, () => (G.player !== p ? { at: G.player.x } : null));
+    assert(respawned, `flag ${index}: the death never resolved (state=${G.state}, dyingT=${G.dyingT.toFixed(2)})`);
+    const q = G.player;
+    assert(G.state === 'PLAYING', `flag ${index}: respawn left state=${G.state}`);
+    eq(G.lives, lives0 - 1, 'a life is still the cost of dying');
+    assert(q.x > G.level.playerSpawn.x + 100, `the hero respawned at x=${q.x.toFixed(1)} — that is the level start, not the checkpoint at ${cp.x}`);
+    eq(q.x, cp.x, `flag ${index}: the hero comes back on the flag it banked`);
+    eq(q.y, (cp.row + 1) * C.TILE - q.h, 'feet on the flagpost standing surface');
+    // STATE HYGIENE / defence-in-depth, the same class as `G.dyingT = 0` in loadLevel: `prevX` is
+    // the field main.js's crossing test reads as "the last ACCEPTED x", and after a respawn the only
+    // true value for it is the checkpoint, not the H spawn the rebuild started from.
+    //
+    // [CORRECTED 2026-11-16 — this comment used to justify the assert with a counterfactual that
+    // cannot occur: "…so the hero's first step rightward re-reads as a crossing of its own post". It
+    // cannot: the trigger scan starts at `G.checkpointIndex + 1` (main.js:464), respawnAtCheckpoint
+    // re-imposes the index before the hero ticks again (main.js:161), so the hero's own post is
+    // behind the scan window for as
+    // long as it is banked; and updatePlayer rewrites `p.prevX` on the next call it makes
+    // (player.js:180, `p.prevX = xBeforeStep;`), so a stale seed never survives a single frame. Both
+    // citations were re-read from the live file rather than copied from the punch-list.]
+    //
+    // So the honest claim is: nothing shipped can observe an unseeded prevX today, which is exactly
+    // why it is asserted rather than commented. It is a latent lie — a scan that started at 0, or a
+    // respawn that stopped re-imposing the index, would make it load-bearing — and R40/R41 both stay
+    // green without it (proof in the header), so this is the only clause that would notice.
+    eq(q.prevX, cp.x, `flag ${index}: the respawn left p.prevX at ${q.prevX} — the crossing test reads it as the last accepted x, so it has to be the checkpoint`);
+    const ty0 = Math.floor(q.y / C.TILE);
+    const ty1 = Math.floor((q.y + q.h - 0.001) / C.TILE);
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = Math.floor(q.x / C.TILE); tx <= Math.floor((q.x + q.w - 0.001) / C.TILE); tx++) {
+        assert(!isSolid(G.level.tiles[ty][tx]), `the respawn buried the hero in a solid tile at ${tx},${ty}`);
+      }
+    }
+    eq(G.cam.x, cp.x - CAMERA_FOLLOW_X, `flag ${index}: the camera comes back on the checkpoint floor, not at 0`);
+    eq(G.checkpointIndex, index, 'the banked flag survives the level rebuild');
+    eq(G.checkpointX, cp.x, 'the left bound survives the level rebuild');
+    eq(G.level.checkpoints[index].taken, true, 'the flagpost is still drawn as banked after the reload');
+    // the flags behind the bound are re-marked by the rebuild, the ones ahead are not
+    for (let j = 0; j < n; j++) {
+      const want = j <= index;
+      eq(G.level.checkpoints[j].taken, want, `flag ${j} after respawning on flag ${index} (every post at or behind the bound is taken, nothing ahead of it)`);
+    }
+    lines.push(`died right of flag ${index} (${cp.x}) → back at ${q.x.toFixed(0)}, cam ${(cp.x - CAMERA_FOLLOW_X).toFixed(0)}`);
+  }
+
+  // no flag banked: exactly the old behaviour — full restart at the H spawn, camera at 0
+  newGame();
+  const p2 = G.player;
+  clearInput();
+  p2.y = GROUND_TOP - p2.h;
+  G.dyingT = 0;
+  killPlayer(p2, true);
+  const back = until(150, () => (G.player !== p2 ? { done: true } : null));
+  assert(back, 'dying with no checkpoint banked never resolved');
+  eq(G.player.x, G.level.playerSpawn.x, 'an unbanked level still restarts at the H spawn');
+  eq(G.player.y, G.level.playerSpawn.y, 'spawn y unchanged for the no-checkpoint path');
+  eq(G.cam.x, 0, 'the camera still restarts at 0 with nothing banked');
+  eq(G.checkpointIndex, -1, 'nothing is banked after a cold restart');
+  eq(G.checkpointX, 0, 'the left bound is the map edge again');
+  return `${G.level.label}: ${lines.join('; ')}; no flag → H spawn ${G.level.playerSpawn.x}`;
+});
+
+// ---------------------------------------------------------------------------
+// R38 — shipped flagposts: two per level, on solid ground, clear air, before the exit;
+//       and a banked flag must not be drawn identically to a live one
+//
+// DISCRIMINATION PROOF: FAILs on the pre-change tree — no level carries a `K`, so
+// `level.checkpoints` is undefined and `cps.length` throws on the first level (with the loader
+// field added but the maps untouched it fails the same way with `0 checkpoints, expected 2`).
+// PASSes with two grounded flags per map. The art clause fails if drawCheckpoint ignores
+// `taken`, which is the only thing telling the player a flag is already spent. The clearance
+// clause asks the full 4-row trigger band over the post AND the two columns either side, which is
+// where a respawn's first jump actually arcs, and each mutation below was re-run against it:
+// 1-2's post one column early (111) → `1-2: the flag at col 111 has | in the walk-up column 109,9`;
+// 1-1's second flag at 94, against its pipe → `1-1: the flag at col 94 is walled in by | at 95,10`;
+// 1-2's post buried in the pipe at 108 → `1-2: the flag at col 108 is walled in by | at 108,9`; a
+// solid planted at col 110 row 9 → `1-2: the flag at col 112 has X in the walk-up column 110,9`,
+// and at row 10 → `…has X in the walk-up column 110,10` (both of those PASSED this check before the
+// band was restored to full height, which is the hole this clause closes); ground dug out under a
+// post → `level 1-2: 'K' at 12,112 has no solid tile below` (the loader gets there first:
+// `NEEDS_GROUND` covers `K`); 1-2's two posts dragged to cols 21/91 → `the two flags are 70 columns
+// apart, expected roughly two screens (24..48)`. And the exception table cannot rot: with the post
+// at col 105 nothing passes over its tile, so the audit FAILs `the R38 clearance exception for 1-2
+// (114,9) 'P' was consulted 0 time(s), expected exactly 1` — that is the ONE direction it can fire;
+// the `2 times` side is unreachable by a map edit, as the note at the audit itself records.
+//
+// THE ONE RULE THIS CHECK CHANGED, recorded because nothing here is committed and an auditor
+// otherwise cannot recover it. SUPERSEDED (fix pass 2026-11-16) — reconstructed, not quoted:
+// the previous clause is unrecoverable from git, so this is the best reconstruction from
+// WORKFLOW_STATE.md ("it used to demand an empty 5-wide × 4-tall box around every flagpost") plus
+// the neighbouring clauses that were never touched. WORDING IS APPROXIMATE, THE SHAPE IS NOT: it
+// was exactly today's band clause (post ±2 columns × the 4 rows cp.row-3…cp.row, required clear)
+// with NO exception list, i.e. today's clause minus `CLEARANCE_EXCEPTIONS` below.
+// What it rejected on shipped 1-2 data: the pipe at 108-109, the authored bonus block at (114,9)
+// and the `=` ledge from col 120 — so no cell in the 110-115 window could pass it, which is why
+// the earlier pass narrowed it to "full band over ±1, walking height at ±2". That narrowing is
+// what opened the head-height hole: a solid at (110,9) or (110,10) passed both this check and
+// R36, and either one clips a respawn's first jump at y≈160 — the exact defect class that makes
+// 1-2's route hard. The band is therefore back at full height over ±2 and the shipped obstruction
+// it would reject is handled by name, below, rather than by loosening the band a second time.
+// ---------------------------------------------------------------------------
+
+// The clearance band's ONLY exceptions, one entry per shipped tile. Explicit and auditable on
+// purpose: it names level + col + row + the character that must be there, so a NEW obstruction
+// anywhere — same row, one column over, or this cell holding a different character — FAILs loudly
+// instead of being accommodated. This is not a region waiver and must not grow casually: adding
+// an entry is a statement that a shipped tile now obstructs a flagpost's jump-in.
+const CLEARANCE_EXCEPTIONS = [
+  {
+    level: '1-2', col: 114, row: 9, ch: 'P', hits: 0,
+    why: 'the authored bonus block two columns right of 1-2\'s col-112 post. It bounds the '
+       + 'clearing take-off strip on the left and is pre-existing terrain this change must not '
+       + 'move; `R43` measures the respawn it sits beside (21/180 run+jump timings clear the '
+       + 'pit), so it is known-hard-but-playable rather than unknown.',
+  },
+];
+
+check('R38', () => {
+  for (const e of CLEARANCE_EXCEPTIONS) e.hits = 0;
+  const bad = [];
+  for (const def of LEVELS) {
+    const level = parseLevel(def);
+    const cps = level.checkpoints;
+    if (cps.length !== 2) {
+      bad.push(`${def.label}: ${cps.length} checkpoints, expected 2`);
+      continue;
+    }
+    const exitX = level.gate ? level.gate.x : level.boss ? level.boss.x : Infinity;
+    let prev = -Infinity;
+    for (const cp of cps) {
+      const tx = cp.x / C.TILE;
+      if (cp.x <= prev) bad.push(`${def.label}: level.checkpoints is not sorted by ascending x`);
+      prev = cp.x;
+      if (cp.x >= exitX) bad.push(`${def.label}: the flag at col ${tx} sits at or past the level exit ${exitX}`);
+      if (level.tiles[cp.row][tx] !== '.') bad.push(`${def.label}: the flag tile at ${tx},${cp.row} was not cleared to '.'`);
+      // continuous solid ground for five columns under and beside the post...
+      for (let d = -2; d <= 2; d++) {
+        if (!isSolid(level.tiles[cp.row + 1][tx + d]) || !isSolid(level.tiles[cp.row + 2][tx + d])) {
+          bad.push(`${def.label}: the flag at col ${tx} stands over a pit (col ${tx + d} row ${cp.row + 1})`);
+        }
+      }
+      // ...and clear air through the WHOLE trigger band over the post and TWO columns either side:
+      // full band height out there, not just walking height, because that outer ring is exactly
+      // where a respawn's first jump arcs. A solid at (post±2, cp.row-3/-2) head-bumps the jump at
+      // y≈160 and drops the hero into the pit ahead of the post — the failure that makes a respawn
+      // hard rather than merely tight. The one shipped tile the band would reject is named in
+      // CLEARANCE_EXCEPTIONS above; nothing else is waived.
+      for (let d = -2; d <= 2; d++) {
+        for (let ty = cp.row - 3; ty <= cp.row; ty++) {
+          const ch = level.tiles[ty][tx + d];
+          if (!isSolid(ch)) continue;
+          const exc = CLEARANCE_EXCEPTIONS.find((e) => e.level === def.label && e.col === tx + d && e.row === ty);
+          if (exc) {
+            if (ch !== exc.ch) bad.push(`${def.label}: the clearance exception for ${tx + d},${ty} expects '${exc.ch}' and found '${ch}' — fix the map or the entry, and say why`);
+            exc.hits++;
+            continue;
+          }
+          const where = Math.abs(d) === 2 ? `has ${ch} in the walk-up column ${tx + d},${ty}` : `is walled in by ${ch} at ${tx + d},${ty}`;
+          bad.push(`${def.label}: the flag at col ${tx} ${where}`);
+        }
+      }
+    }
+    const gap = (cps[1].x - cps[0].x) / C.TILE;
+    if (gap < 24 || gap > 48) bad.push(`${def.label}: the two flags are ${gap} columns apart, expected roughly two screens (24..48)`);
+  }
+  assert(bad.length === 0, bad[0]);
+  // The whitelist is only auditable if it stays exactly as true as it reads, so an entry that is
+  // never consulted is an error rather than dead weight: it means a flagpost moved and this tile is
+  // no longer the reason the band passes, and someone has to say so.
+  //
+  // HOW FAR THIS AUDIT ACTUALLY REACHES — measured 2026-11-16, because the wording above used to
+  // imply both directions were tested and only one is. The DEAD-WEIGHT direction (`hits === 0`) is
+  // real: 1-2's post at col 105 → `the R38 clearance exception for 1-2 (114,9) 'P' was consulted 0
+  // time(s), expected exactly 1`. The DOUBLE-CONSULT direction (`hits === 2`) is UNREACHABLE through
+  // any map edit: for two posts to consult this single tile they would both have to sit within ±2
+  // columns of 114, and this same check asserts 2 checkpoints per map 24..48 columns apart, so any
+  // pair that could share it is already illegal. Measured with 1-2's posts at cols 112 AND 113: R38
+  // dies at `assert(bad.length === 0, bad[0])` just above with `1-2: the two flags are 1 columns
+  // apart, expected roughly two screens (24..48)` and this loop is never reached — `R43` goes red in
+  // the same run as well (unpinned `1-2@113`), but that does not make this loop reachable. So this
+  // clause is credited with the 0 side only — the 2 side is caught upstream, by a different message —
+  // and the relocation class it guards is now also caught by R43's hazard pins.
+  for (const e of CLEARANCE_EXCEPTIONS) {
+    assert(e.hits === 1, `the R38 clearance exception for ${e.level} (${e.col},${e.row}) '${e.ch}' was consulted ${e.hits} time(s), expected exactly 1 — delete it if no flagpost's clearance band passes over it any more, or say why two posts now share it`);
+  }
+
+  const live = drawInto(drawCheckpoint, 0, 192, false);
+  const used = drawInto(drawCheckpoint, 0, 192, true);
+  const colours = (r) => new Set([...r.pixels.values()]);
+  const a = colours(live);
+  const b = colours(used);
+  assert(a.size > 0 && b.size > 0, `drawCheckpoint inked nothing (live ${a.size} colours, banked ${b.size})`);
+  assert([...a].some((c) => !b.has(c)) && [...b].some((c) => !a.has(c)),
+    `a banked flag is not drawn differently from a live one (both use only ${[...new Set([...a, ...b])].join(', ')})`);
+  const rows = allRows(live);
+  const cols = live.rects.map((q) => [q[0], q[0] + q[2]]).flat();
+  assert(Math.min(...rows) >= 192 - 64 && Math.max(...rows) < 192 + 16,
+    `the flagpost art runs rows ${Math.min(...rows)}..${Math.max(...rows)}, outside the trigger band 128..207 — the band in config.js must be the art`);
+  assert(Math.min(...cols) >= 0 && Math.max(...cols) <= 32,
+    `the flagpost art spans x ${Math.min(...cols)}..${Math.max(...cols)}, wider than the ${C.CHECKPOINT_TRIGGER_W}px trigger band`);
+  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); banked art differs (${a.size} live vs ${b.size} banked colours)`;
+});
+
+// ---------------------------------------------------------------------------
+// R40 — a flagpost arms only on a FORWARD crossing: retreating into one is free
+//
+// Arming on trigger-band overlap alone let a hero walking LEFT into an unbanked flag arm it: the
+// left authority jumped out in front of it mid-retreat and stopped it dead, an invisible wall that
+// appeared from behind with the camera floor popping right to match. The fix is a prev-frame
+// crossing test on p.prevX — the p.prevBottom idiom the stomps above already use.
+//
+// DISCRIMINATION PROOF: delete the `if (!(p.prevX <= cp.x && p.x > cp.x)) continue;` guard from
+// main.js's trigger loop (arming on trigger-band overlap again, exactly the pre-fix behaviour) and
+// clause 1 FAILs `the hero walked LEFT through an unbanked flag and armed it (checkpointIndex=0,
+// hero at x=640.0) — only a left-to-right crossing may bank a checkpoint: expected -1, got 0` — the
+// hero pinned at 640.0 is the invisible wall this clause exists to forbid. Keep the crossing test
+// but drop the band gate with it and clause 3 FAILs instead: `jumping over an unbanked flag banked
+// it — the trigger is a crossing of the post, not a volume to be inside: expected -1, got 0`.
+// ---------------------------------------------------------------------------
+
+check('R40', () => {
+  const level = flagLevel();
+
+  // (1) walk LEFT into an unbanked flag: it must stay unbanked, and it must not stop the hero.
+  installLevel(level);
+  const cp = level.checkpoints[0];
+  const p = G.player;
+  clearInput();
+  p.x = cp.x + 90;
+  p.y = GROUND_TOP - p.h;
+  p.vx = 0;
+  p.vy = 0;
+  input.left = true;
+  input.run = true;
+  let minX = Infinity;
+  for (let i = 0; i < 240; i++) {
+    step();
+    minX = Math.min(minX, p.x);
+  }
+  input.left = false;
+  eq(G.checkpointIndex, -1, `the hero walked LEFT through an unbanked flag and armed it (checkpointIndex=${G.checkpointIndex}, hero at x=${p.x.toFixed(1)}) — only a left-to-right crossing may bank a checkpoint`);
+  assert(minX < cp.x - 120, `the retreat only reached x=${minX.toFixed(1)}, nowhere past the flag at ${cp.x} — the scenario never walked through the band`);
+  eq(G.checkpointX, 0, 'retreating into a flag raised the left bound anyway');
+  eq(cp.taken, false, 'a flag entered from the right reports itself banked although nothing crossed it forward');
+  assert(G.cam.x < 1, `the camera floor moved under a flag that was never banked (cam.x=${G.cam.x.toFixed(2)})`);
+
+  // (2) walking RIGHT across that same flag arms it.
+  resetAudioSpy();
+  input.right = true;
+  const armed = until(240, () => (G.checkpointIndex === 0 ? { x: p.x } : null));
+  input.right = false;
+  input.run = false;
+  assert(armed, `walking right across the flag at x=${cp.x} never armed it (hero at ${p.x.toFixed(1)})`);
+  assert(p.x > cp.x, `the flag armed while the hero was still at x=${p.x.toFixed(1)}, left of the post at ${cp.x}`);
+  assert(sfx('power') > 0, 'the forward crossing made no checkpoint sound');
+
+  // (3) jumping over it leaves it unbanked and free to pass. 52 px of run-up at run speed puts the
+  // arc's apex exactly over the post, so the crossing frame is above the trigger band.
+  installLevel(level);
+  const q = G.player;
+  clearInput();
+  q.x = cp.x - 52;
+  q.y = GROUND_TOP - q.h;
+  q.vx = C.RUN_MAX;
+  q.vy = 0;
+  input.right = true;
+  input.run = true;
+  input.jumpPressed = true;
+  input.jump = true;
+  let airborne = false;
+  const landed = until(180, () => {
+    if (!q.onGround) airborne = true;
+    return airborne && q.onGround ? { x: q.x } : null;
+  });
+  input.jump = false;
+  input.right = false;
+  input.run = false;
+  assert(landed, `the jump-over never landed (y=${q.y.toFixed(1)}, vy=${q.vy.toFixed(1)})`);
+  assert(landed.x > cp.x + C.PLAYER_W, `the jump-over landed at x=${landed.x.toFixed(1)}, still left of the post at ${cp.x} — the scenario never crossed it`);
+  eq(G.checkpointIndex, -1, 'jumping over an unbanked flag banked it — the trigger is a crossing of the post, not a volume to be inside');
+  eq(cp.taken, false, 'a flag jumped over is marked taken');
+  // ...and it is still free to pass: walking back left through the post must arm nothing.
+  input.left = true;
+  const back = until(240, () => (q.x < cp.x - 60 ? { x: q.x } : null));
+  input.left = false;
+  assert(back, `the hero could not walk back left through the flag it jumped (stuck at x=${q.x.toFixed(1)}) — an unbanked flag must not be a wall`);
+  eq(G.checkpointIndex, -1, 'walking back left through a jumped-over flag armed it');
+  return `retreat (to x=${minX.toFixed(0)}) and jump-over (landed x=${landed.x.toFixed(0)}) both stayed unbanked; only the rightward crossing armed x=${cp.x}`;
+});
+
+// ---------------------------------------------------------------------------
+// R41 — a fatal hit inside an unbanked flag's band still banks it
+//
+// The trigger loop sits ABOVE the `if (p.dead) return;` short-circuit, for the same reason the gate
+// test writes its own !p.dead rather than trusting that return: a hero killed at the post has
+// reached it, and losing the respawn it just earned is the worse of the two outcomes. The scenario
+// makes the fatal contact and the forward crossing the SAME frame, so only that ordering can bank
+// the flag — and it composes with R40: a rightward crossing is still required.
+//
+// DISCRIMINATION PROOF: move the trigger loop back below `if (p.dead) return;` in src/main.js and
+// this FAILs `a fatal hit inside the band of an unbanked flag skipped the checkpoint
+// (checkpointIndex=-1) — the trigger loop must run before the dead-return short-circuit`.
+//
+// The SILENCE clauses (fix pass) are proven the same way, and MEASURED, not assumed: take the
+// `if (!p.dead)` guard off the trigger's feedback and the fanfare assert FAILs `banking a flag on
+// the frame the hero dies still played the fanfare (1 × audio.sfx('power')) under the death cry:
+// expected 0, got 1` — the only red check in the run.
+//
+// **[CORRECTED 2026-11-16 — the paragraph this pass first shipped here was FALSE.]** It claimed
+// "delete only the popup line instead and the next assert FAILs `…still pushed 1 CHECKPOINT
+// popup(s)…`". Re-run: deleting `G.items.push(makePopup(cp.x, cp.y - TILE, 'CHECKPOINT'));` from
+// main.js leaves the suite at **41/41 pass, 0 fail**, because this check's popup clause asserts an
+// ABSENCE (`eq(ghosts.length, 0)`) and a producer that no longer exists satisfies it vacuously. The
+// mutation that does fail is removing the popup's GUARD — and it is caught by the FANFARE assert
+// that sits above it, not by the popup one. So as written this clause could never be the first to
+// fire. Two things followed: (1) the positive direction is asserted in R36 clause 1 (exactly ONE
+// CHECKPOINT popup on a live crossing), and that same deletion now FAILs there — proof quoted in
+// R36's header; (2) this clause stays, as a second line of defence, and its own reachability is
+// recorded honestly: the smallest mutation that makes it fire is compound (guard removed AND the
+// `audio.sfx('power')` line deleted with it) → `FAIL R41 banking a flag on the frame the hero dies
+// still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments later: expected 0, got 1`,
+// with R36 and R40 also red for the missing sound. Nothing here is load-bearing on its own.
+//
+// The LIVE crossing keeps all of the feedback — R36 clause 1 asserts the sound, the banner AND the
+// popup, R40 clause 2 the sound — so the guard cannot be satisfied by silencing checkpoints in
+// general.
+// ---------------------------------------------------------------------------
+
+check('R41', () => {
+  // Shipped 1-1 again: resolving the death calls loadLevel(), which would replace a synthetic map.
+  newGame();
+  const cp = G.level.checkpoints[0];
+  const p = G.player;
+  clearInput();
+  // One frozen turnip parked 12 px right of the post, and the hero starts one step left of the
+  // post at full run speed: the frame its left edge passes the post is the frame its right edge
+  // reaches the turnip, so "killed" and "crossed" are the same frame. The map's own turnips are
+  // removed so nothing else can land the hit first, and vx = 0 keeps the geometry exact.
+  const foe = makeTurnip({ x: cp.x + C.PLAYER_W, y: GROUND_TOP - C.PLAYER_SMALL_H });
+  foe.vx = 0;
+  foe.active = true;
+  G.enemies = [foe];
+  resetAudioSpy();
+  p.invulnT = 0;
+  p.big = false;
+  p.h = C.PLAYER_SMALL_H;
+  p.x = cp.x - 1;
+  p.y = GROUND_TOP - p.h;
+  p.vx = C.RUN_MAX;
+  p.vy = 0;
+  input.right = true;
+  input.run = true;
+  step();
+  input.right = false;
+  input.run = false;
+  assert(p.dead, `the scenario never died (x=${p.x.toFixed(2)}, invulnT=${p.invulnT.toFixed(2)}) — the check has nothing to bank`);
+  assert(p.x > cp.x, `the hero died without crossing the post (x=${p.x.toFixed(2)} <= ${cp.x}) — the scenario geometry broke, not the trigger`);
+  assert(G.checkpointIndex === 0, `a fatal hit inside the band of an unbanked flag skipped the checkpoint (crossed to x=${p.x.toFixed(2)}, checkpointIndex=${G.checkpointIndex}) — the trigger loop must run before the dead-return short-circuit`);
+  eq(G.checkpointX, cp.x, 'the flag banked on the fatal frame did not raise the bound');
+  // ...but banking it must stay SILENT on that frame. The player is hearing the death cry; the
+  // trigger's fanfare would sit under it, and the popup and banner it pushes are discarded by the
+  // loadLevel() that follows, so the visible half of the feedback never exists. (A LIVE crossing
+  // still gets all of it: R36 clause 1 asserts the sound, the banner and the popup, R40 clause 2 the
+  // sound.) This popup clause is an ABSENCE assert, so it is vacuous if the producer is deleted —
+  // R36 clause 1 is what pins the producer's existence; see the header for the measurement.
+  eq(sfx('power'), 0, `banking a flag on the frame the hero dies still played the fanfare (${sfx('power')} × audio.sfx('power')) under the death cry`);
+  const ghosts = G.items.filter((it) => it.kind === 'popup' && it.text === 'CHECKPOINT');
+  eq(ghosts.length, 0, `banking a flag on the frame the hero dies still pushed ${ghosts.length} CHECKPOINT popup(s) that loadLevel() discards moments later`);
+  // and the death then resolves ONTO that flag, which is the whole point of banking it.
+  const respawned = until(150, () => (G.player !== p ? { at: G.player.x } : null));
+  assert(respawned, `the death never resolved (state=${G.state}, dyingT=${G.dyingT.toFixed(2)})`);
+  eq(G.player.x, cp.x, 'a hero killed on the crossing frame respawned somewhere other than that flag');
+  return `killed on the crossing frame at x=${cp.x} → banked there and respawned there, silently (no fanfare, no ghost popup)`;
+});
+
+// ---------------------------------------------------------------------------
+// R42 — the checkpoint respawn: grace, no stage-intro banner, and a bogus index cannot throw
+//
+// The flagpost cells were never authored as safe ground (1-1's second flag has a turnip patrol
+// walking towards it), so the respawn grants the same INVULN_TIME a hit already grants — and ONLY
+// there: the classic x=34 restart must stay exactly as it was, banner included. loadLevel() raises
+// the WORLD x-y intro banner, which on a respawn reads as "stage restarted", so the checkpoint
+// path takes it back. And the respawn's index lookup is bounded: an index the rebuilt level does
+// not have falls back to the plain restart instead of throwing on cp.x inside the death handler.
+//
+// DISCRIMINATION PROOF: drop `p.invulnT = INVULN_TIME;` from respawnAtCheckpoint → clause 1 FAILs
+// `a checkpoint respawn granted no invulnerability (invulnT=0.00) — the flagpost cells are not safe
+// ground`. Drop `G.bannerT = 0;` → clause 1 FAILs `a checkpoint respawn re-raised the 1-1 stage-
+// intro banner (bannerT=1.50) — that reads as "level restarted": expected 0, got 1.5`. Widen the
+// index guard back to `if (index < 0) return;` → the last clause FAILs `the respawn threw:
+// TypeError: Cannot read properties of undefined (reading 'row'): expected 0, got 1`, i.e. the
+// throw happens inside the death handler and the frame is lost. R37's unchanged second scenario is
+// what pins the no-checkpoint path to the old behaviour. The last clause pins the death CLOCK:
+// `loadLevel()` zeroes `G.dyingT`, and delete that line and this is the only thing in the suite
+// that notices — `a level load inherited the death clock — the next kill would resolve on that same
+// frame and skip the death arc: expected 0, got 9`. No shipped kill path can hand over a stale
+// clock today, which is exactly why the clause poisons it by hand rather than waiting for one.
+// ---------------------------------------------------------------------------
+
+check('R42', () => {
+  newGame();
+  const cp = G.level.checkpoints[0];
+  const p = G.player;
+  clearInput();
+  assert(G.bannerT > 0, `entering ${G.level.label} fresh showed no intro banner (bannerT=${G.bannerT.toFixed(2)}) — that half of the clause is the baseline`);
+
+  // bank the flag, then die past it
+  p.invulnT = 60;
+  const from = walkableFar(G.level, cp.x - 24, -1);
+  assert(from !== null, 'no standable ground left of 1-1 flag 0');
+  p.x = from;
+  p.y = GROUND_TOP - p.h;
+  p.vx = 0;
+  p.vy = 0;
+  input.right = true;
+  input.run = true;
+  const armed = until(240, () => (G.checkpointIndex === 0 ? { x: p.x } : null));
+  input.right = false;
+  input.run = false;
+  assert(armed, 'walking into 1-1 flag 0 never armed it');
+  p.x = cp.x + 160;
+  p.y = GROUND_TOP - p.h;
+  G.dyingT = 0;
+  killPlayer(p, true);
+  const respawned = until(150, () => (G.player !== p ? { at: G.player.x } : null));
+  assert(respawned, 'the death never resolved');
+  const q = G.player;
+  eq(q.x, cp.x, 'the respawn is not on the flag, so the rest of this check is measuring the wrong hero');
+  assert(q.invulnT > 0, `a checkpoint respawn granted no invulnerability (invulnT=${q.invulnT.toFixed(2)}) — the flagpost cells are not safe ground`);
+  near(q.invulnT, C.INVULN_TIME, 1e-9, 'the respawn grace is not the INVULN_TIME a hit already grants (it must come from the same constant)');
+  eq(G.bannerT, 0, `a checkpoint respawn re-raised the ${G.level.label} stage-intro banner (bannerT=${G.bannerT.toFixed(2)}) — that reads as "level restarted"`);
+
+  // the grace holds: a turnip parked on the respawn cannot touch it while it lasts...
+  const foe = makeTurnip({ x: q.x + 2, y: GROUND_TOP - 12 });
+  foe.vx = 0;
+  foe.active = true;
+  G.enemies = [foe];
+  steps(45);
+  assert(!q.dead, 'a turnip standing on the respawn point killed the hero inside its respawn grace');
+  // ...but it is a grace, not immortality: the same turnip gets the hero when it runs out.
+  const got = until(200, () => (q.dead ? { t: q.invulnT } : null));
+  assert(got, `the respawn grace never expired — the parked turnip never landed a hit (invulnT=${q.invulnT.toFixed(2)})`);
+  clearInput();
+  toTitle();
+
+  // the path that must not change: no flag banked → the classic restart, banner and no grace
+  newGame();
+  const p2 = G.player;
+  clearInput();
+  p2.y = GROUND_TOP - p2.h;
+  G.dyingT = 0;
+  killPlayer(p2, true);
+  const back = until(150, () => (G.player !== p2 ? { done: true } : null));
+  assert(back, 'dying with no checkpoint banked never resolved');
+  eq(G.player.x, G.level.playerSpawn.x, 'the no-checkpoint restart moved off the H spawn');
+  eq(G.player.invulnT, 0, 'the no-checkpoint restart granted the checkpoint respawn grace');
+  assert(G.bannerT > 0, `the no-checkpoint restart lost its stage-intro banner (bannerT=${G.bannerT.toFixed(2)})`);
+
+  // a checkpoint index the rebuilt level does not have must not throw inside the death handler
+  newGame();
+  const cp2 = G.level.checkpoints[0];
+  const p3 = G.player;
+  clearInput();
+  p3.invulnT = 60;
+  p3.x = cp2.x;
+  p3.y = GROUND_TOP - p3.h;
+  G.checkpointIndex = G.level.checkpoints.length + 5; // a slot that cannot exist after the reload
+  G.checkpointX = cp2.x;
+  G.dyingT = 0;
+  const errsBefore = consoleLog.length;
+  killPlayer(p3, true);
+  const third = until(150, () => (G.player !== p3 ? { done: true } : null));
+  assert(third, 'a death with an out-of-range checkpoint index never resolved');
+  eq(consoleLog.length - errsBefore, 0, `the respawn threw: ${consoleLog.slice(errsBefore)[0] || ''}`);
+  eq(G.state, 'PLAYING', 'an out-of-range checkpoint index left the game in an odd state');
+  eq(G.player.x, G.level.playerSpawn.x, 'an out-of-range checkpoint index did not fall back to the plain restart');
+  eq(G.checkpointIndex, -1, 'the fallback restart left a stale checkpoint index behind');
+  eq(G.checkpointX, 0, 'the fallback restart left a stale left bound behind');
+
+  // Clock hygiene on the same path: loading a level clears the death timer. No shipped kill path
+  // can hand it a stale value today (every one of them zeroes it), so this is the only way the
+  // reset in loadLevel() is worth more than a comment — poison the clock, load a level through the
+  // pause-restart, and the fresh level must not inherit it.
+  G.dyingT = 9;
+  G.state = 'PAUSED';
+  input.restartPressed = true;
+  step();
+  clearInput();
+  eq(G.state, 'PLAYING', 'the pause-restart that was supposed to reload the level did not resume play');
+  eq(G.dyingT, 0, 'a level load inherited the death clock — the next kill would resolve on that same frame and skip the death arc');
+  return `respawn grace ${C.INVULN_TIME}s + no intro banner; no-flag restart unchanged; bogus index → plain restart, no throw; level load clears dyingT`;
+});
+
+// ---------------------------------------------------------------------------
+// R43 — every shipped flagpost respawn has a live route forward (DYNAMIC fairness)
+//
+// R36 proves a shipped flagpost can be walked INTO and R38 proves nothing solid stands in its
+// trigger band; neither proves the route OFF it. That is the property that justified moving 1-2's
+// second post back from col 117 to col 112, and until now it was carried by prose only — a map
+// edit that parked a post somewhere its own respawn cannot get out of would have kept every other
+// check green. This check respawns the hero on each of the 6 shipped posts and asks, per post,
+// whether at least one run+jump timing gets past the hazard that post actually faces.
+//
+// Protocol, deliberately the same one R33's pitCross/measureJump use: the real updatePlayer, the
+// hero stood on the post's own tile, right + run held, ONE full-hold jump pressed at take-off
+// frame f, for 180 values of f, 400 frames of horizon each. A timing "clears" if the hero ends up
+// grounded with its right edge past the hazard's far column; falling through it is fatal ("deaths"),
+// anything else that ends the horizon alive is "short".
+//
+// Which hazard: the first thing in a grounded hero's path ahead of the post — a pit, or a wall in
+// the walking band (a pipe, a staircase). That is the anti-soft-lock half, and it covers posts that
+// stand below a staircase they have to climb. On top of that, a post that faces a pit WITHIN ONE
+// SCREEN (the pit's lip is within VIEW_W px, so the player can see it from the respawn) must be
+// able to cross THAT PIT with a single committed run+jump: that is the col-112 property, and the
+// near-pit test is what makes the difference between a hard respawn and an impossible one. Posts
+// further than a screen from their nearest pit are not measured on it — long routes are R33's
+// reachability job, and one jump cannot cross a pit 29 columns away (1-1's flag 1 stands behind a
+// pipe, and 180/180 of its timings clear the pipe, which is the honest answer).
+//
+// WHAT A COUNT HERE DOES NOT MEAN — two reporting defects fixed 2026-11-16, both of which had
+// already caused a wrong conclusion upstream, so they are written next to the code and not only in
+// the changelog:
+//
+//  1. A count on a NO-DEATH-ROUTE row is NOT a fairness margin. The rule above measures the FIRST
+//     wall-or-pit in the grounded path, and that first wall can be a CLIMBABLE STAIRCASE: 1-2's
+//     col-77 post faces stone steps at cols 80-88, which offer no death route whatsoever — 0 of 180
+//     timings die, all 172 non-clears end their horizon GROUNDED on the steps at x≈1300-1316 (cols
+//     81-82), and mashing jump — i.e. how anyone actually plays it — carries the hero from col 77 to
+//     col 146 and off the screen alive. Its "8/180" is an artifact of one committed jump inside a
+//     400-frame horizon; the 400 frames, not the level, are what stop the other 172. Publishing that
+//     figure as if it were commensurable with the genuine 21/180 pit margin next to it made a
+//     harmless staircase read as a near-failure.
+//
+//     REMEDY CHOSEN, stated because "skip the wall rows" was the other option and it would have
+//     silently dropped coverage: no row is skipped. Every row now prints `deaths` and `short` beside
+//     `clears` and is TAGGED. `clears > 0` is asserted as a SURVIVAL property only where the hazard
+//     actually kills some timings; on a NO-DEATH-ROUTE row the asserts are deliberately weaker and
+//     differently named — `deaths === 0` (this row is not a survival test, and if terrain ever makes
+//     it one, that is a NEW fairness question and the check says so in as many words) plus
+//     `clears > 0` read as PROGRESS ONLY ("the respawn is not a dead end": a post the hero can never
+//     leave is unplayable even when nothing kills it). All 6 posts are still measured and asserted.
+//
+//  2. A green count is only comparable to a previously-quoted green count if it is the SAME hazard.
+//     The hazard is derived from the map, so authored terrain can move it while the printed number
+//     stands still: filling 1-2's pit at cols 120-125 left this check reporting 21/180 while it had
+//     silently re-aimed at the pit at cols 132-135 (a different hazard, window f91-111 instead of
+//     f19-39), and in the same run R33's published inventory re-baselined itself — `7 pits (widest 6)
+//     … worst margin 11.0px @cols 120-125` → `6 pits (widest 4) … worst margin 19.8px @cols 23-24` —
+//     because R33 prints what it finds, it does not assert it. RESPAWN_HAZARDS and PIT_INVENTORY
+//     below pin the measured identity, so a terrain edit turns the suite RED with expected and found
+//     side by side instead of re-baselining quietly. Deliberate terrain work is expected to update
+//     both tables, re-measure the margins, and republish them — the FAIL says exactly that.
+//
+//     The VIEW_W cutoff is UNCHANGED, deliberately. Widening it to ~380px would make 1-2's col-77
+//     post's real kill hazard — the pit at cols 100-102, ~368px away — the measured one, and this
+//     protocol would then assert a FALSE failure: one jump from a standing respawn cannot cross a
+//     staircase and then a pit. That pit is therefore recorded as OUT OF SCOPE for this check
+//     (R33's reachability sweep covers it), not measured wrongly.
+//
+//     AND WHAT THE PINS DO NOT PIN: they pin WHICH hazard, never its count. Measured with the reviewer
+//     option "lift the row-9 `=` platform to row 8" done literally (cols 120-125, row 9 → row 8):
+//     every pin stayed GREEN while this check's margin for 1-2@112 moved **21/180 → 13/180 (window
+//     f24-36)**; that run went red in `SMOKE` and `R33` instead, for the unrelated reason that a
+//     row-8 platform standing on ground is a 5-tile rise (`rise at cols 119-120 (5 tiles): margin
+//     3.8px < 8px`). Freezing counts was rejected on purpose — the rule forbids the impossible, not
+//     the tight, and a physics tweak would then require re-baselining numbers that are not claims about
+//     terrain. So: identity is machine-checked, the MARGINS ARE NOT. Whenever authored terrain changes,
+//     re-measure and republish them by hand (the inventory FAIL says exactly that).
+//
+// DISCRIMINATION PROOFS (each in its own throwaway copy under the session temp; quoted from the
+// actual FAIL, 2026-11-16):
+//   - the flag to col 105 (15 columns from the pit's lip, inside the screen window) → `1-2: the flag
+//     at col 105 respawns the hero with NO route across the pit 120-125 ahead of it (0 of 180
+//     run+jump timings get across; 180 fell in, 0 stopped short) — the flagpost is playable only if
+//     its own respawn can leave it, and R36/R38 cannot see this`, while R36 clause 4 still PASSes it
+//     (the post is walkable — precisely the gap this check exists to fill).
+//   - **[CORRECTED 2026-11-16: this bullet used to read "moving the post the other way, to col 117,
+//     still PASSES at 15/180, and it must: this check forbids the impossible, not the tight." That
+//     was true of the pre-pin check and is FALSE now — which is the point of pinning.]** Re-measured
+//     with the pins in: col 117 still MEASURES 15/180 across pit 120-125 (the playability claim is
+//     unchanged — 117 was playable, just worse than 112), but the check now FAILs, twice:
+//     `1-2@117: this shipped flagpost has no pinned hazard in RESPAWN_HAZARDS … it measures pit
+//     120-125 (15/180, 165 deaths)` plus `the R38 clearance exception for 1-2 (114,9) 'P' was
+//     consulted 0 time(s)`. A margin measured on an unpinned post is not a margin anyone can quote,
+//     so relocating a post is now a deliberate act: re-measure, re-pin, republish.
+//   - 1-2's pit at cols 120-125 filled with `X` (authored terrain edited, no flagpost moved at all)
+//     → R43 alone goes red, on the inventory pin, BEFORE it can print a comparable number:
+//     `1-2: the pit inventory R43 measures on has changed — pinned [12-14 38-41 70-72 100-102
+//     120-125 132-135 160-161] (7 pits, widest 6), found [12-14 38-41 70-72 100-102 132-135 160-161]
+//     (6 pits, widest 4) …`. Before the pins this exact edit kept the run at 41/41 while the check
+//     quietly re-aimed at cols 132-135 and printed the identical 21/180 — re-verified against the
+//     pre-pin harness, which really does print `1-2@112 pit 132-135 21/180 (f91-111)` and 41/41.
+//   - a lone `X` at 1-3 (60,12) — a re-aim that touches no pit at all, so the inventory pin is
+//     silent → R43 alone goes red, on the identity pin: `1-3: the flag at col 42 is now measured on
+//     wall 60-60, but this check publishes its margin as pit 64-66 …`.
+//   - 1-2's col-77 post moved to col 90 (a post MOVES, the pin has no row for it) → R36, R38 and R43
+//     all go red, R43 with `1-2@90: this shipped flagpost has no pinned hazard in RESPAWN_HAZARDS …
+//     it measures pit 100-102 (27/180, 153 deaths)`. R36/R38 catch this particular cell for their own
+//     reasons; the pin is what stops a relocation that they happen to find comfortable.
+//
+// ORDER, chosen deliberately and asserted by the col-105 row above: a post that is PINNED but
+// re-aimed fails immediately (its count would be a false statement), while a post that is simply
+// UNPINNED is still measured and still held to the survival rule first, with the missing pin reported
+// after the loop. Otherwise a relocation would pre-empt the substantive FAIL whose text is quoted in
+// `docs/REVIEW-2026-11-15.md` and this file.
+// ---------------------------------------------------------------------------
+
+// The two hazard predicates, defined once: "no ground left at all in this column" and "something
+// standing in the walking band (rows 11-12)". Both R43 clauses read these, so the pinned inventory
+// below is the same notion of "pit" the measurements are made on.
+const noGroundAt = (def, tx) => !isSolid(def.map[C.ROWS - 2][tx]) && !isSolid(def.map[C.ROWS - 1][tx]);
+const wallAt = (def, tx) => isSolid(def.map[C.ROWS - 3][tx]) || isSolid(def.map[C.ROWS - 4][tx]);
+
+// Every no-ground run in the map, as `from-to` strings, left to right.
+function pitRuns(def) {
+  const cols = def.map[0].length;
+  const runs = [];
+  for (let tx = 0; tx < cols; tx++) {
+    if (!noGroundAt(def, tx)) continue;
+    let to = tx;
+    while (to + 1 < cols && noGroundAt(def, to + 1)) to++;
+    runs.push(`${tx}-${to}`);
+    tx = to;
+  }
+  return runs;
+}
+
+// WHICH HAZARD IS MEASURED, pinned per shipped respawn, together with whether it offers a death
+// route (`lethal`). This is not a cached measurement to be tidied away: it is the assertion that the
+// number this check publishes is about the hazard everyone thinks it is about. `wall 80-88` is 1-2's
+// climbable stone staircase and is lethal: false for the reason given in the header — its count must
+// never be quoted as a fairness margin.
+const RESPAWN_HAZARDS = {
+  '1-1@55': { asked: 'pit 58-59', lethal: true },
+  '1-1@91': { asked: 'wall 95-96', lethal: false },
+  '1-2@77': { asked: 'wall 80-88', lethal: false },
+  '1-2@112': { asked: 'pit 120-125', lethal: true },
+  '1-3@42': { asked: 'pit 64-66', lethal: true },
+  '1-3@76': { asked: 'wall 80-81', lethal: false },
+};
+
+// THE AUTHORED-TERRAIN FINGERPRINT: every pit in every shipped map, same `noGroundAt` notion the
+// measurements use. R33 reports an inventory but cannot fail on one, so without this a map edit just
+// republishes itself. A deliberate terrain change updates this line and the margins above together.
+const PIT_INVENTORY = {
+  '1-1': '58-59 70-72 84-86 120-122',
+  '1-2': '12-14 38-41 70-72 100-102 120-125 132-135 160-161',
+  '1-3': '10-12 36-39 64-66 110-112',
+};
+
+const pitWidth = (r) => Number(r.split('-')[1]) - Number(r.split('-')[0]) + 1;
+const inventoryShape = (list) => `${list.length} pits, widest ${list.reduce((a, r) => Math.max(a, pitWidth(r)), 0)}`;
+
+// The first obstruction in a grounded hero's path right of `fromCol`: a pit (both ground rows air)
+// or a wall standing in the walking band (rows 11-12). `kind` narrows the search to one class.
+function nextHazardAhead(def, fromCol, kind = 'any') {
+  const cols = def.map[0].length;
+  const fall = (tx) => noGroundAt(def, tx);
+  const wall = (tx) => wallAt(def, tx);
+  for (let tx = fromCol + 1; tx < cols; tx++) {
+    const hit = (kind === 'pit' && fall(tx)) || (kind === 'wall' && wall(tx))
+      || (kind === 'any' && (fall(tx) || wall(tx)));
+    if (!hit) continue;
+    const isPit = fall(tx);
+    let to = tx;
+    while (to + 1 < cols && (isPit ? fall(to + 1) : wall(to + 1))) to++;
+    return { kind: isPit ? 'pit' : 'wall', from: tx, to };
+  }
+  return null;
+}
+
+// How many of `frames` take-off timings clear `hazard` from a standing respawn at column
+// `spawnCol`, one committed run+jump each. `deaths` is the only fatal outcome; `short` is everything
+// else that ended the horizon alive (stopped at a wall, still climbing, or simply out of frames).
+function respawnClears(def, spawnCol, hazard, { run = true, frames = 180, horizon = 400 } = {}) {
+  const level = parseLevel(def);
+  const target = (hazard.to + 1) * C.TILE;
+  const p0 = spawnCol * C.TILE;
+  let clears = 0, deaths = 0, short = 0, lo = Infinity, hi = -Infinity;
+  for (let f0 = 0; f0 < frames; f0++) {
+    const p = makePlayer(p0, (C.ROWS - 3 + 1) * C.TILE - C.PLAYER_SMALL_H);
+    p.onGround = true;
+    const inp = mkInput({ right: true, run, jump: true });
+    let out = null;
+    for (let i = 0; i < horizon; i++) {
+      inp.jumpPressed = i === f0;
+      updatePlayer(p, C.STEP, inp, level, p0);
+      if (p.y + p.h >= C.ROWS * C.TILE) { out = 'dead'; break; }          // the pit claim wins the race
+      if (p.onGround && p.x + C.PLAYER_W > target) { out = 'clear'; break; }
+    }
+    if (out === 'dead') deaths++;
+    else if (out === 'clear') { clears++; lo = Math.min(lo, f0); hi = Math.max(hi, f0); }
+    else short++;
+  }
+  return { clears, deaths, short, window: clears ? `f${lo}-${hi}` : 'none' };
+}
+
+check('R43', () => {
+  // (0) AUTHORED-TERRAIN FINGERPRINT first: if the pits themselves moved, nothing measured downstream
+  // is comparable to anything published, and the pass line would just look familiar.
+  const invBad = [];
+  for (const def of LEVELS) {
+    const want = PIT_INVENTORY[def.label];
+    const runs = pitRuns(def);
+    const got = runs.join(' ');
+    if (!want) {
+      invBad.push(`${def.label}: R43 has no pinned pit inventory for this map (found ${inventoryShape(runs)}: [${got}]) — a new shipped map must have its own pin, its own RESPAWN_HAZARDS rows, and its own re-measured margins`);
+      continue;
+    }
+    if (got === want) continue;
+    invBad.push(`${def.label}: the pit inventory R43 measures on has changed — pinned [${want}] (${inventoryShape(want.split(' '))}), found [${got}] (${inventoryShape(runs)}). Terrain is AUTHORED data and this check's published margins are statements about these exact pits: if the edit was deliberate, update PIT_INVENTORY and RESPAWN_HAZARDS here together, re-measure every margin and republish them in WORKFLOW_STATE.md; if it was not, the terrain is the bug. R33 prints whatever it finds without failing, which is exactly why this pin cannot live there`);
+  }
+  assert(invBad.length === 0, invBad[0]);
+
+  const lines = [];
+  const seen = new Set();
+  // Pin bookkeeping (a post with no pin, or a pin nothing matches any more) is COLLECTED and reported
+  // after the loop, deliberately: the survival assert below is the substantive one, its FAIL text is
+  // quoted in docs/WORKFLOW_STATE, and a post moved into an unmeasurable cell must still produce THAT
+  // message first. A re-aim on a POST THAT IS PINNED stays fail-fast above it — a count measured
+  // against the wrong hazard is a false statement, not a bookkeeping detail.
+  const pinBad = [];
+  for (const def of LEVELS) {
+    const level = parseLevel(def);
+    for (const cp of level.checkpoints) {
+      const col = cp.x / C.TILE;
+      const key = `${def.label}@${col}`;
+      seen.add(key);
+      assert(heroFits(level, cp.x), `${def.label}: the hero does not fit at the flag at x=${cp.x} (col ${col}) — there is no respawn here to measure`);
+      const first = nextHazardAhead(def, col);
+      assert(first, `${def.label}: nothing at all lies ahead of the flag at col ${col} — the scenario has no hazard to clear`);
+      let measured = respawnClears(def, col, first);
+      let asked = `${first.kind} ${first.from}-${first.to}`;
+      // the stronger half: a pit the player can see from the respawn has to be crossable from it
+      const pit = first.kind === 'pit' ? first : nextHazardAhead(def, col, 'pit');
+      if (pit && (pit.from - col) * C.TILE <= C.VIEW_W) {
+        measured = respawnClears(def, col, pit);
+        asked = `pit ${pit.from}-${pit.to}`;
+      }
+      const want = RESPAWN_HAZARDS[key];
+      // An unpinned post is still measured and still held to the survival rule, classified by what the
+      // measurement says the hazard does; the missing pin is reported at the end.
+      if (!want) pinBad.push(`${key}: this shipped flagpost has no pinned hazard in RESPAWN_HAZARDS, so nothing here can tell a re-aimed measurement from a real one — it measures ${asked} (${measured.clears}/180, ${measured.deaths} deaths). Add the pin on purpose and say what the number means`);
+      else assert(asked === want.asked, `${def.label}: the flag at col ${col} is now measured on ${asked}, but this check publishes its margin as ${want.asked}. The hazard under a shipped respawn moved, so the count printed here is NOT the number WORKFLOW_STATE.md quotes (window and margin included) — re-measure, update RESPAWN_HAZARDS, and republish the margin in the same change`);
+      const lethal = want ? want.lethal : measured.deaths > 0;
+      if (lethal) {
+        if (want) assert(measured.deaths > 0, `${def.label}: the flag at col ${col} faces ${asked}, pinned as a hazard that KILLS some timings and therefore as a survival margin, but 0 of 180 timings die on it now (${measured.clears} clear, ${measured.short} short) — the route under this respawn changed; re-measure and re-pin it`);
+        assert(measured.clears > 0,
+          `${def.label}: the flag at col ${col} respawns the hero with NO route across the ${asked} ahead of it (0 of 180 run+jump timings get across; ${measured.deaths} fell in, ${measured.short} stopped short) — the flagpost is playable only if its own respawn can leave it, and R36/R38 cannot see this`);
+      } else {
+        // NOT a fairness margin. The only thing asserted here that could be called a difficulty
+        // number is `clears`, and it is labelled NO-DEATH-ROUTE in the pass line for that reason.
+        if (want) assert(measured.deaths === 0, `${def.label}: the flag at col ${col} now dies on ${measured.deaths} of 180 timings at the ${asked} ahead of it, which is pinned here as a no-death-route obstruction (a climbable wall, not a kill zone). That makes it a SURVIVAL question it was never measured as: re-measure it, re-pin RESPAWN_HAZARDS with lethal: true, and republish the margin`);
+        assert(measured.clears > 0,
+          `${def.label}: the flag at col ${col} respawns the hero with NO way forward past the ${asked} ahead of it (0 of 180 run+jump timings get across; ${measured.deaths} died, ${measured.short} stayed grounded short of it) — this row is NOT a fairness margin (nothing here kills), it is a dead-end test: a post the hero can never leave is unplayable even though it is safe`);
+      }
+      lines.push(`${key} ${asked} ${lethal ? 'SURVIVAL' : 'NO-DEATH-ROUTE'} clears=${measured.clears}/180 deaths=${measured.deaths} short=${measured.short} (${measured.window})`);
+    }
+  }
+  assert(pinBad.length === 0, pinBad[0]);
+  // The tables must not rot in the other direction either: a post that disappears leaves R38 red, and
+  // a post that MOVES leaves an orphaned pin here. Same class as R38's clearance-exception audit.
+  const orphans = Object.keys(RESPAWN_HAZARDS).filter((k) => !seen.has(k));
+  assert(orphans.length === 0, `RESPAWN_HAZARDS pins respawns that are not in the shipped maps any more: ${orphans.join(', ')} — the post moved or went away (R38 is the one that should already be red); delete or move the pin in the same change and re-measure`);
+  const shape = LEVELS.map((d) => `${PIT_INVENTORY[d.label].split(' ').length}`).join('+');
+  return `6 respawns can leave their flag: ${lines.join(', ')}; pits pinned at ${shape} (widest ${LEVELS.map((d) => Math.max(...pitRuns(d).map((r) => r.split('-')[1] - r.split('-')[0] + 1))).join('/')}), hazard identity pinned per post; NO-DEATH-ROUTE rows have 0 deaths — their clears is progress inside the 400-frame horizon, NOT a fairness margin`;
 });
 
 // MARKER:CHECKS

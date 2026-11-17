@@ -57,8 +57,9 @@ export function makeBoss(spawn) {
 
 // No `player` parameter: a turnip never reads the hero (updateBoss does, for its hop).
 export function updateTurnip(e, dt, level, camX) {
-  // Well behind the ratcheted camera: a live turnip stops being simulated. A squashed
-  // one keeps ticking so main.js can still retire it; render.js draws either way.
+  // Well behind the camera — and this is a per-frame test, so ground the camera scrolls back over
+  // resumes: a live turnip only stops being simulated while it trails. A squashed one keeps
+  // ticking so main.js can still retire it; render.js draws either way.
   if (!e.squashed && e.x + e.w < camX - CULL_BEHIND) return;
   if (!e.squashed && !e.active && e.x < camX + VIEW_W + 32) {
     e.active = true;
@@ -85,8 +86,9 @@ export function updateTurnip(e, dt, level, camX) {
 }
 
 export function updateBoss(b, dt, level, camX, player) {
-  // Well behind the ratcheted camera: a live boss stops being simulated. A defeated one
-  // keeps ticking so main.js can still finish the fight off; render.js draws either way.
+  // Well behind the camera — and this is a per-frame test, so ground the camera scrolls back over
+  // resumes: a live boss only stops being simulated while it trails. A defeated one keeps ticking
+  // so main.js can still finish the fight off; render.js draws either way.
   if (!b.defeated && b.x + b.w < camX - CULL_BEHIND) return;
   if (!b.defeated && !b.active && b.x < camX + VIEW_W + 32) {
     b.active = true;

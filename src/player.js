@@ -26,6 +26,7 @@ export function makePlayer(x, y) {
     x,
     y,
     prevBottom: y + PLAYER_SMALL_H,
+    prevX: x,
     vx: 0,
     vy: 0,
     w: PLAYER_W,
@@ -51,7 +52,7 @@ function moveToward(cur, target, amount) {
   return Math.max(cur - amount, target);
 }
 
-export function updatePlayer(p, dt, input, level) {
+export function updatePlayer(p, dt, input, level, minX = 0) {
   if (p.dead) {
     p.deadT += dt;
     if (!p.deadPit) {
@@ -63,8 +64,11 @@ export function updatePlayer(p, dt, input, level) {
 
   p.headBump = null;
   // Where the feet were before this frame's physics. main.js compares this against an
-  // enemy's top, so it must be last frame's bottom, not the post-Y-pass one.
+  // enemy's top, so it must be last frame's bottom, not the post-Y-pass one. prevX is the same
+  // idea on the other axis: main.js compares it against a checkpoint post to tell which way the
+  // hero crossed it, so it must be last frame's accepted x, not this frame's clamped one.
   const bottomBeforeStep = p.y + p.h;
+  const xBeforeStep = p.x;
 
   // Horizontal
   const target = (input.left ? -1 : 0) + (input.right ? 1 : 0);
@@ -123,6 +127,16 @@ export function updatePlayer(p, dt, input, level) {
     }
   }
 
+  // The checkpoint floor. It is applied here, at the end of the X pass, because that is the
+  // single point where `p.x` is an accepted position: the Y pass re-reads p.x for its tile
+  // scan, so clamping any earlier could leave the hero standing in a wall and any later could
+  // let a frame of physics resolve from a position that was never legal. Same idiom as the
+  // wall resolve above: move the box out, then kill the velocity driving it.
+  if (p.x < minX) {
+    p.x = minX;
+    if (p.vx < 0) p.vx = 0;
+  }
+
   // Y pass
   p.y += p.vy * dt;
   p.onGround = false;
@@ -163,6 +177,7 @@ export function updatePlayer(p, dt, input, level) {
   p.invulnT = Math.max(0, p.invulnT - dt);
   p.t += dt;
   p.prevBottom = bottomBeforeStep;
+  p.prevX = xBeforeStep;
 }
 
 export function hurtPlayer(p) {
