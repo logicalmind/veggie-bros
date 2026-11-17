@@ -294,22 +294,9 @@ export function drawGate(ctx, x, y) {
   px(ctx, x + 16, ay - 5, 1, 1, P.red);
 }
 
-export function drawCheckpoint(ctx, x, y, taken) {
-  // (x, y) is the flag's own tile: the post stands on that tile's bottom edge (y + 16, the
-  // standing surface) and runs up to y - 64, so its vertical extent is exactly the band main.js
-  // triggers on (config.js CHECKPOINT_TRIGGER_*). A reached flag wears the same drained
-  // used/usedDark pair a popped pumpkin block wears, so "already banked" reads the way every
-  // other spent thing in this game reads.
-  const flag = taken ? P.used : P.pumpkin;
-  const flagEdge = taken ? P.usedDark : P.pumpkinDark;
-  px(ctx, x + 7, y - 64, 2, 80, P.stone);
-  px(ctx, x + 9, y - 64, 1, 80, P.stoneDark);
-  for (let r = 0; r < 9; r++) px(ctx, x + 10, y - 63 + r, 11 - r, 1, r === 8 ? flagEdge : flag);
-  px(ctx, x + 10, y - 63, 11, 1, flagEdge);
-  px(ctx, x + 2, y + 10, 12, 6, P.stone);
-  px(ctx, x + 2, y + 10, 12, 1, P.white);
-  px(ctx, x + 2, y + 15, 12, 1, P.stoneDark);
-}
+// No checkpoint sprite, deliberately: a banked checkpoint is invisible in play. The `K` tiles in
+// the maps are authoring markers and a trigger band in config.js only — see render.js's note at the
+// former draw call, and R45 in tools/verify.mjs, which fails if anything ever draws at a post again.
 
 export function drawHill(ctx, x, y, r, color) {
   for (let h = 0; h <= r; h++) {

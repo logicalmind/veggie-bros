@@ -260,7 +260,9 @@ const { makeBoss, makeTurnip, updateBoss, updateTurnip } = await import('../src/
 const { makeBerry, makeFruit, makePopup, updateItems } = await import('../src/items.js');
 const { CAMERA_FOLLOW_X, updateCamera } = await import('../src/camera.js');
 const spritesModule = await import('../src/sprites.js');
-const { drawBerry, drawBoss, drawCheckpoint, drawHero, drawPixelText, drawTurnip } = spritesModule;
+const { drawBerry, drawBoss, drawHero, drawPixelText, drawTurnip } = spritesModule;
+// R45 renders whole scenes into a mock context to prove nothing is drawn at a checkpoint.
+const { render: renderScene } = await import('../src/render.js');
 const { audio } = await import('../src/audio.js');
 const inputMod = await import('../src/input.js');
 const { input, setupTouch } = inputMod;
@@ -2433,52 +2435,92 @@ function assertFloorConvergence(what, trace, floor, lag, settleFrames = CAM_SETT
 // flagLevel and clause 4 on shipped 1-2, quoted verbatim at each assert. R44 is the same bound on a
 // live crossing, both speeds, and is the check the contract comment above points at.
 //
-// CLAUSE 1 ALSO OWNS THE CHECKPOINT POPUP (added 2026-11-16). Before this, nothing in the suite
-// asserted that the `CHECKPOINT` popup ever gets pushed: the only other popup clause (R41) asserts
-// its ABSENCE on a death frame, and deleting the producer outright — `G.items.push(makePopup(cp.x,
-// cp.y - TILE, 'CHECKPOINT'));` in main.js — was measured to leave the suite at 41/41 pass, exit 0.
-// The same deletion now reads:
+// [SUPERSEDED 2026-11-16, FIX PASS 5 — this paragraph read "CLAUSE 1 ALSO OWNS THE CHECKPOINT
+// POPUP", and the popup is GONE BY DESIGN: checkpoints are invisible and silent now, so the
+// producer it pinned (`G.items.push(makePopup(cp.x, cp.y - TILE, 'CHECKPOINT'));`) no longer exists
+// and the FAIL below can never be produced again. The measurement is kept because it is the reason
+// the clause existed: nothing in this file asserted the popup was ever pushed (only R41 asserted its
+// ABSENCE on a death frame), so deleting the producer outright measured 41/41 pass, exit 0, until
+// the clause was added — with it, that same deletion read
 //   `FAIL R36 a live left-to-right crossing of an unbanked flag pushed 0 CHECKPOINT popup(s),
 //   expected exactly 1 — it is the only on-screen "you resume here" marker, and R41's clause asserts
 //   only the death-frame ABSENCE, which no popup at all also satisfies: expected 1, got 0`
-// (40/41, that single FAIL). The two position asserts beside it make a popup pushed at the wrong
-// place fail too. The popup is the only legible "you resume here" on the respawn path: the banner can
-// only ever name the level, and R42 shows the respawn suppresses even that.
+// (40/41, that single FAIL). That FAIL is NO LONGER A DEFECT SIGNAL. What needs a guard now is the
+// opposite claim — that nothing at all is announced at a post — and `R45` owns it, pixel-wise and
+// sound-wise. The same pass deleted this check's `bannerT > 0` and `sfx('power') > 0` asserts.]
+//
+// CLAUSE 1 NOW OWNS THE CROSSING'S STATE (fix pass 5). What arming has to leave behind is not a
+// banner, a fanfare or a popup, it is G.checkpointIndex / G.checkpointX / cp.taken and the two floors
+// the game derives from that pair: clause 1 pins the state, clause 1b holds both floors on it, and
+// clauses 2/2b/3/3b (seeded by this same crossing) are its shape-and-depth legs. Measured against
+// src/main.js: a trigger loop that never arms is red on cross()'s `never armed it`; deleting the bound
+// write is red on clause 1's `raises the left bound`; deleting BOTH marking writes is red on four
+// checks (R36/R40/R41/R45). Clause 1b re-runs the identical crossing afterwards, and this check's PASS
+// line is byte-identical to the one it printed before 1b existed — 8.99px of lag, floor crossed back
+// over on frame 6, deepest shipped seed 87.51px, largest shipped step 39.47px, worst screen x 80 — so
+// the probe demonstrably did not soften the camera clauses it sits in front of.
 // ---------------------------------------------------------------------------
 
 check('R36', () => {
   const level = flagLevel();
   installLevel(level);
   const cp = level.checkpoints[0];
-  const p = G.player;
   const FLOOR = cp.x - CAMERA_FOLLOW_X;
-  clearInput();
-  resetAudioSpy();
+
+  // THE CROSSING, factored out because clause 1b runs it three times over (arm → measure the floors
+  // on a clean install → re-arm so clauses 2+ get the state they were written against). installLevel()
+  // resets cp.taken and the G.checkpoint* pair, so every run starts from nothing banked, and with a
+  // fixed timestep the runs are bit-identical: R36's pass line is byte-for-byte the line this check
+  // printed before clause 1b existed (WORKFLOW_STATE.md, FIX PASS 5), which is how "the probe did not
+  // soften the camera clauses" is verified rather than asserted.
+  const cross = () => {
+    installLevel(level);
+    const hero = G.player;
+    clearInput();
+    hero.x = cp.x - 60;
+    hero.y = GROUND_TOP - hero.h;
+    hero.vx = 0;
+    hero.vy = 0;
+    input.right = true;
+    const res = until(120, () => (G.checkpointIndex === 0 ? { x: hero.x, cam: G.cam.x } : null));
+    input.right = false;
+    assert(res, `walking right through the flag at x=${cp.x} never armed it (checkpointIndex=${G.checkpointIndex}, hero only reached ${(hero.x).toFixed(1)})`);
+    return { p: hero, x: res.x, cam: res.cam };
+  };
 
   // (1) a plain walking pass arms the flag: no jump, no frame-perfect placement, just walking
   // right into the band at the row the shipped maps put it on.
-  p.x = cp.x - 60;
-  p.y = GROUND_TOP - p.h;
-  p.vx = 0;
-  p.vy = 0;
-  input.right = true;
-  const armed = until(120, () => (G.checkpointIndex === 0 ? { x: p.x, cam: G.cam.x } : null));
-  input.right = false;
-  assert(armed, `walking right through the flag at x=${cp.x} never armed it (checkpointIndex=${G.checkpointIndex}, hero only reached ${(p.x).toFixed(1)})`);
+  let armed = cross();
+  let p = armed.p;
+  // THE STATE THE CROSSING LEAVES BEHIND, which is the whole product now that nothing is announced:
+  // which slot armed, that the bound moved to THAT post, that the post reports itself banked, and that
+  // the hero was past the post when it armed (a band-overlap arm would not be). The reach of these is
+  // MEASURED, because the arming block has two writes that mark a post and each covers the other:
+  // deleting `cp.taken = true;` alone measures 43/43 (the re-mark loop below marks the crossed post
+  // anyway) and deleting the re-mark loop alone measures 43/43 too (the direct write covers it) — those
+  // two are equivalent mutants, not coverage gaps. Delete BOTH and this clause is one of four that go
+  // red (here, R40 clause 2, R41, R45). Deleting `G.checkpointX = Math.max(…)` is red right here
+  // (`arming a flag raises the left bound to that flag: expected 640, got 0`), and a trigger loop that
+  // never arms is red on the `never armed it` message in cross() above.
+  eq(G.checkpointIndex, 0, `the crossing armed the wrong slot (checkpointIndex=${G.checkpointIndex})`);
   eq(G.checkpointX, cp.x, 'arming a flag raises the left bound to that flag');
   eq(cp.taken, true, 'the flag reports itself banked once crossed');
-  assert(G.bannerT > 0, 'arming a flag produced no banner feedback (G.bannerT stayed 0)');
-  assert(sfx('power') > 0, 'arming a flag made no sound (no audio.sfx call on the checkpoint path)');
-  // POSITIVE popup coverage. The only other CHECKPOINT-popup clause in this file (R41) asserts an
-  // ABSENCE on a death frame, which a producer that never exists satisfies vacuously — deleting the
-  // push outright used to leave the suite at 41/41. This is the one crossing the suite builds as a
-  // clean, live, non-fatal one, so it is where "the marker got pushed, exactly once, at the post"
-  // has to be pinned: that popup is the only legible "you resume here" on screen (the banner can
-  // only ever name the level, and on the respawn path even that is suppressed — R42).
-  const pops = G.items.filter((it) => it.kind === 'popup' && it.text === 'CHECKPOINT');
-  eq(pops.length, 1, `a live left-to-right crossing of an unbanked flag pushed ${pops.length} CHECKPOINT popup(s), expected exactly 1 — it is the only on-screen "you resume here" marker, and R41's clause asserts only the death-frame ABSENCE, which no popup at all also satisfies`);
-  eq(pops[0].x, cp.x, 'the CHECKPOINT popup does not appear at the post that was just banked');
-  eq(pops[0].y, cp.y - C.TILE, 'the CHECKPOINT popup does not appear above that post');
+  assert(armed.x > cp.x, `the flag armed while the hero was still at x=${armed.x.toFixed(2)}, not past the post at ${cp.x} — the trigger is a crossing, not a band overlap`);
+
+  // (1b) AND THAT STATE HAS TO BE LIVE: both floors derived from G.checkpointX have to hold on the
+  // armed post, which is the only thing the player can actually feel. The hero is pinned ON the post
+  // and the camera comes to rest EXACTLY on the floor the post derives. Its own install + the
+  // identical crossing, then a third identical crossing to hand clauses 2/2b/3/3b the state they were
+  // written against: a probe that settled the SHARED state first would have left clause 2's trace
+  // seeded on its own floor, i.e. a convergence clause that could no longer fail.
+  const probe = cross();
+  input.left = true;
+  for (let i = 0; i < 240; i++) step();
+  input.left = false;
+  eq(probe.p.x, cp.x, `holding left for 240 frames after arming left the hero at x=${probe.p.x.toFixed(2)} instead of on the post at ${cp.x} — the armed bound does not clamp the hero`);
+  eq(G.cam.x, FLOOR, `the armed post never gave the camera its floor (cam.x=${G.cam.x} against the floor ${FLOOR} derived from G.checkpointX=${G.checkpointX})`);
+  armed = cross();
+  p = armed.p;
 
   // (2) hold left, forever: the hero cannot get past the flag, the camera cannot come to rest past
   // its floor, and the hero is held where the player can actually see it.
@@ -3013,16 +3055,33 @@ check('R37', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R38 — shipped flagposts: two per level, on solid ground, clear air, before the exit;
-//       and a banked flag must not be drawn identically to a live one
+// R38 — shipped flagposts (map data): two per level, on solid ground, clear air in the trigger
+//       band, before the exit, and spaced roughly two screens apart
+//
+// WHAT THIS CHECK IS ABOUT SINCE FIX PASS 5: `K` is invisible authoring data. The post sprite and
+// the arrival feedback are deleted (`R45` fails if any draw or announcement at a post comes back),
+// so nothing here may be justified by what the art inks. The band it keeps demanding is justified
+// by config.js's CHECKPOINT_TRIGGER_* constants, which still drive real gameplay: main.js arms a
+// post on a left-to-right crossing of that box, and respawnAtCheckpoint() puts the hero back INSIDE
+// it, so the box and its jump-in approach have to stay flyable whatever is drawn there.
+//
+// [SUPERSEDED 2026-11-16, FIX PASS 5 — the two lines above used to end "…before the exit; and a
+// banked flag must not be drawn identically to a live one", and the DISCRIMINATION PROOF below used
+// to read "The art clause fails if drawCheckpoint ignores `taken`, which is the only thing telling
+// the player a flag is already spent." There is no art clause any more: `drawCheckpoint` is deleted
+// from src/sprites.js, so this check importing it threw `fn is not a function` the moment the sprite
+// went, and the banked-vs-live colour compare went with it. That coverage is GONE, deliberately, and
+// is NOT replaced: a state that cannot be seen cannot be colour-checked, and `cp.taken` is now proved
+// as state by R36 clause 1 / R37 / R40 / R45 instead. Everything else in this header is live.]
 //
 // DISCRIMINATION PROOF: FAILs on the pre-change tree — no level carries a `K`, so
 // `level.checkpoints` is undefined and `cps.length` throws on the first level (with the loader
 // field added but the maps untouched it fails the same way with `0 checkpoints, expected 2`).
-// PASSes with two grounded flags per map. The art clause fails if drawCheckpoint ignores
-// `taken`, which is the only thing telling the player a flag is already spent. The clearance
-// clause asks the full 4-row trigger band over the post AND the two columns either side, which is
-// where a respawn's first jump actually arcs, and each mutation below was re-run against it:
+// PASSes with two grounded flags per map. The clearance clause asks the full 4-row trigger band over
+// the post AND the two columns either side — 4 rows because CHECKPOINT_TRIGGER_TOP is 4 tiles, and
+// two columns either side because that is where a respawn's first jump actually arcs, R43 measuring
+// the respawn that starts inside this exact box — and each mutation below was re-run against it:
+// 1-2's post one column early (111) → `1-2: the flag at col 111 has | in the walk-up column 109,9`;
 // 1-2's post one column early (111) → `1-2: the flag at col 111 has | in the walk-up column 109,9`;
 // 1-1's second flag at 94, against its pipe → `1-1: the flag at col 94 is walled in by | at 95,10`;
 // 1-2's post buried in the pipe at 108 → `1-2: the flag at col 108 is walled in by | at 108,9`; a
@@ -3091,12 +3150,15 @@ check('R38', () => {
           bad.push(`${def.label}: the flag at col ${tx} stands over a pit (col ${tx + d} row ${cp.row + 1})`);
         }
       }
-      // ...and clear air through the WHOLE trigger band over the post and TWO columns either side:
-      // full band height out there, not just walking height, because that outer ring is exactly
-      // where a respawn's first jump arcs. A solid at (post±2, cp.row-3/-2) head-bumps the jump at
-      // y≈160 and drops the hero into the pit ahead of the post — the failure that makes a respawn
-      // hard rather than merely tight. The one shipped tile the band would reject is named in
-      // CLEARANCE_EXCEPTIONS above; nothing else is waived.
+      // ...and clear air through the WHOLE trigger band over the post and TWO columns either side.
+      // The band is config.js's CHECKPOINT_TRIGGER_TOP/BOTTOM box (rows cp.row-3…cp.row: TOP is 4
+      // tiles, BOTTOM the tile under cp.y that the hero stands on), NOT anything about art — the post
+      // is invisible now, and the box is real because main.js arms on a crossing of it and
+      // respawnAtCheckpoint() drops the hero inside it. Full band height out to ±2 columns, not just
+      // walking height, because that outer ring is exactly where a respawn's first jump arcs. A solid
+      // at (post±2, cp.row-3/-2) head-bumps the jump at y≈160 and drops the hero into the pit ahead of
+      // the post — the failure that makes a respawn hard rather than merely tight. The one shipped
+      // tile the band would reject is named in CLEARANCE_EXCEPTIONS above; nothing else is waived.
       for (let d = -2; d <= 2; d++) {
         for (let ty = cp.row - 3; ty <= cp.row; ty++) {
           const ch = level.tiles[ty][tx + d];
@@ -3136,21 +3198,21 @@ check('R38', () => {
     assert(e.hits === 1, `the R38 clearance exception for ${e.level} (${e.col},${e.row}) '${e.ch}' was consulted ${e.hits} time(s), expected exactly 1 — delete it if no flagpost's clearance band passes over it any more, or say why two posts now share it`);
   }
 
-  const live = drawInto(drawCheckpoint, 0, 192, false);
-  const used = drawInto(drawCheckpoint, 0, 192, true);
-  const colours = (r) => new Set([...r.pixels.values()]);
-  const a = colours(live);
-  const b = colours(used);
-  assert(a.size > 0 && b.size > 0, `drawCheckpoint inked nothing (live ${a.size} colours, banked ${b.size})`);
-  assert([...a].some((c) => !b.has(c)) && [...b].some((c) => !a.has(c)),
-    `a banked flag is not drawn differently from a live one (both use only ${[...new Set([...a, ...b])].join(', ')})`);
-  const rows = allRows(live);
-  const cols = live.rects.map((q) => [q[0], q[0] + q[2]]).flat();
-  assert(Math.min(...rows) >= 192 - 64 && Math.max(...rows) < 192 + 16,
-    `the flagpost art runs rows ${Math.min(...rows)}..${Math.max(...rows)}, outside the trigger band 128..207 — the band in config.js must be the art`);
-  assert(Math.min(...cols) >= 0 && Math.max(...cols) <= 32,
-    `the flagpost art spans x ${Math.min(...cols)}..${Math.max(...cols)}, wider than the ${C.CHECKPOINT_TRIGGER_W}px trigger band`);
-  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); banked art differs (${a.size} live vs ${b.size} banked colours)`;
+  // THE BAND THIS CHECK CLEARS IS THE BAND THE GAME TRIGGERS ON — asserted, not implied. Until fix
+  // pass 5 that coupling was proved by the post art, which was inked to exactly the trigger box (see
+  // the superseded note in this check's header). With the art deleted, "4 rows of air over the post"
+  // in the clause above is a bare literal with nothing tying it to gameplay, so the constants that
+  // generate main.js's real box are pinned here instead: widen or shrink CHECKPOINT_TRIGGER_* and
+  // this goes red until the band above is re-derived from it, which is the only way a respawn ends up
+  // jumping into a tile this check never looked at.
+  const rowsTop = C.CHECKPOINT_TRIGGER_TOP / C.TILE;
+  const rowsBottom = C.CHECKPOINT_TRIGGER_BOTTOM / C.TILE;
+  eq(rowsTop, 4, `R38 clears rows cp.row-3…cp.row over every post, but CHECKPOINT_TRIGGER_TOP is ${C.CHECKPOINT_TRIGGER_TOP}px (${rowsTop} tiles) — this check is clearing air main.js does not trigger on`);
+  eq(rowsBottom, 1, `R38 treats the tile under cp.y as the surface the hero stands on inside the band, but CHECKPOINT_TRIGGER_BOTTOM is ${C.CHECKPOINT_TRIGGER_BOTTOM}px (${rowsBottom} tiles) — the trigger now reaches below the ground this check requires`);
+  eq(C.CHECKPOINT_TRIGGER_W, C.TILE * 2, `R38 clears the post's own column plus one either side, and the trigger starts at cp.x and is ${C.CHECKPOINT_TRIGGER_W}px wide (${C.CHECKPOINT_TRIGGER_W / C.TILE} tiles) — if that stops being 2 tiles, the x-extent cleared here is not the x-extent that arms`);
+  // and the band must still be a band, i.e. the loop above must have walked a non-empty box
+  assert(rowsTop + rowsBottom >= 2, `the trigger band is ${rowsTop + rowsBottom} rows tall, so the clearance loop above is asking about a degenerate box`);
+  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); ${rowsTop + rowsBottom}-row x post±2-col clearance band held to CHECKPOINT_TRIGGER_* (${C.CHECKPOINT_TRIGGER_W}x${(rowsTop + rowsBottom) * C.TILE}px), nothing drawn at a post to compare`;
 });
 
 // ---------------------------------------------------------------------------
@@ -3168,6 +3230,12 @@ check('R38', () => {
 // hero pinned at 640.0 is the invisible wall this clause exists to forbid. Keep the crossing test
 // but drop the band gate with it and clause 3 FAILs instead: `jumping over an unbanked flag banked
 // it — the trigger is a crossing of the post, not a volume to be inside: expected -1, got 0`.
+//
+// [FIX PASS 5] Clause 2's `assert(sfx('power') > 0, 'the forward crossing made no checkpoint sound')`
+// was this check's only evidence that an arming HAPPENED had ever been audio; the fanfare is deleted,
+// so clause 2 now reads the bound and both floors that follow from the state. Both NOT-armed clauses
+// (1 and 3) already read `checkpointIndex`/`checkpointX`/`cp.taken`, so nothing here needed
+// repointing beyond that one assert — and this check now makes no audio claim of either sign at all.
 // ---------------------------------------------------------------------------
 
 check('R40', () => {
@@ -3204,7 +3272,22 @@ check('R40', () => {
   input.run = false;
   assert(armed, `walking right across the flag at x=${cp.x} never armed it (hero at ${p.x.toFixed(1)})`);
   assert(p.x > cp.x, `the flag armed while the hero was still at x=${p.x.toFixed(1)}, left of the post at ${cp.x}`);
-  assert(sfx('power') > 0, 'the forward crossing made no checkpoint sound');
+  // THE FORWARD CROSSING IS PROVED BY THE STATE IT WRITES. This clause used to prove it with
+  // `assert(sfx('power') > 0, 'the forward crossing made no checkpoint sound')`, and that was the
+  // only thing separating "it armed" from "nothing happened at all" here beyond the clauses above:
+  // fix pass 5 deleted the fanfare, so the claim now has to be the bound itself — the slot that
+  // armed, the bound it raised, the post's own flag, and the floor both of those have to produce.
+  // ("Is the arrival silent?" is a question with a fixed answer now, and R45 asserts it at zero.)
+  eq(G.checkpointIndex, 0, `the forward crossing armed slot ${G.checkpointIndex}, not the slot of the post it crossed`);
+  eq(G.checkpointX, cp.x, 'the forward crossing did not raise the left bound to the post it crossed');
+  eq(cp.taken, true, 'the post crossed forward does not report itself banked');
+  input.left = true;
+  input.run = true;
+  for (let i = 0; i < 120; i++) step();
+  input.left = false;
+  input.run = false;
+  eq(p.x, cp.x, `running back left after arming left the hero at x=${p.x.toFixed(2)} instead of pinned on the post at ${cp.x} — the state above never became the hero's floor`);
+  near(G.cam.x, cp.x - CAMERA_FOLLOW_X, CAM_REST_EPS, `the post armed above did not give the camera its floor (cam.x=${G.cam.x.toFixed(4)} against ${cp.x - CAMERA_FOLLOW_X})`);
 
   // (3) jumping over it leaves it unbanked and free to pass. 52 px of run-up at run speed puts the
   // arc's apex exactly over the post, so the crossing frame is above the trigger band.
@@ -3253,29 +3336,28 @@ check('R40', () => {
 // this FAILs `a fatal hit inside the band of an unbanked flag skipped the checkpoint
 // (checkpointIndex=-1) — the trigger loop must run before the dead-return short-circuit`.
 //
-// The SILENCE clauses (fix pass) are proven the same way, and MEASURED, not assumed: take the
-// `if (!p.dead)` guard off the trigger's feedback and the fanfare assert FAILs `banking a flag on
-// the frame the hero dies still played the fanfare (1 × audio.sfx('power')) under the death cry:
-// expected 0, got 1` — the only red check in the run.
-//
-// **[CORRECTED 2026-11-16 — the paragraph this pass first shipped here was FALSE.]** It claimed
-// "delete only the popup line instead and the next assert FAILs `…still pushed 1 CHECKPOINT
-// popup(s)…`". Re-run: deleting `G.items.push(makePopup(cp.x, cp.y - TILE, 'CHECKPOINT'));` from
-// main.js leaves the suite at **41/41 pass, 0 fail**, because this check's popup clause asserts an
-// ABSENCE (`eq(ghosts.length, 0)`) and a producer that no longer exists satisfies it vacuously. The
-// mutation that does fail is removing the popup's GUARD — and it is caught by the FANFARE assert
-// that sits above it, not by the popup one. So as written this clause could never be the first to
-// fire. Two things followed: (1) the positive direction is asserted in R36 clause 1 (exactly ONE
-// CHECKPOINT popup on a live crossing), and that same deletion now FAILs there — proof quoted in
-// R36's header; (2) this clause stays, as a second line of defence, and its own reachability is
-// recorded honestly: the smallest mutation that makes it fire is compound (guard removed AND the
-// `audio.sfx('power')` line deleted with it) → `FAIL R41 banking a flag on the frame the hero dies
-// still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments later: expected 0, got 1`,
-// with R36 and R40 also red for the missing sound. Nothing here is load-bearing on its own.
-//
-// The LIVE crossing keeps all of the feedback — R36 clause 1 asserts the sound, the banner AND the
-// popup, R40 clause 2 the sound — so the guard cannot be satisfied by silencing checkpoints in
-// general.
+// [SUPERSEDED 2026-11-16, FIX PASS 5 — everything this header said about SILENCE. It was three
+// paragraphs, and the quoted measurements are kept because they are the record of how far the
+// feedback asserts were trusted; the CLAIMS are not true of this file any more, because the
+// feedback itself is gone from src/main.js (fanfare, 'CHECKPOINT' popup, banner re-raise, and the
+// `if (!p.dead)` guard that gated them). What was recorded:
+//   1. "Take the `if (!p.dead)` guard off the trigger's feedback and the fanfare assert FAILs
+//      `banking a flag on the frame the hero dies still played the fanfare (1 × audio.sfx('power'))
+//      under the death cry: expected 0, got 1` — the only red check in the run." Measured, then.
+//   2. "[CORRECTED 2026-11-16 — the paragraph this pass first shipped here was FALSE.]": deleting
+//      `G.items.push(makePopup(cp.x, cp.y - TILE, 'CHECKPOINT'));` from main.js left the suite at
+//      41/41, because this check's popup clause asserted an ABSENCE and a producer that no longer
+//      exists satisfies it vacuously; the smallest mutation that could fire it was compound (guard
+//      removed AND the `audio.sfx('power')` line deleted with it) → `FAIL R41 banking a flag on the
+//      frame the hero dies still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments
+//      later: expected 0, got 1`. That is precisely why both absence asserts were deleted rather
+//      than left behind: after fix pass 5 the producer is gone ON PURPOSE, on every frame, so an
+//      absence assert here can never be red again. R45 is the check that can still go red on noise.
+//   3. "The LIVE crossing keeps all of the feedback — R36 clause 1 asserts the sound, the banner AND
+//      the popup, R40 clause 2 the sound." No longer true anywhere: R36 clause 1 and R40 clause 2
+//      read state now (checkpointIndex / checkpointX / cp.taken / both floors), and this check reads
+//      the bank through the respawn it buys. R41 has no audio or popup asserts left, and never needs
+//      one again: the ordering it exists to prove is a state question.]
 // ---------------------------------------------------------------------------
 
 check('R41', () => {
@@ -3309,20 +3391,28 @@ check('R41', () => {
   assert(p.x > cp.x, `the hero died without crossing the post (x=${p.x.toFixed(2)} <= ${cp.x}) — the scenario geometry broke, not the trigger`);
   assert(G.checkpointIndex === 0, `a fatal hit inside the band of an unbanked flag skipped the checkpoint (crossed to x=${p.x.toFixed(2)}, checkpointIndex=${G.checkpointIndex}) — the trigger loop must run before the dead-return short-circuit`);
   eq(G.checkpointX, cp.x, 'the flag banked on the fatal frame did not raise the bound');
-  // ...but banking it must stay SILENT on that frame. The player is hearing the death cry; the
-  // trigger's fanfare would sit under it, and the popup and banner it pushes are discarded by the
-  // loadLevel() that follows, so the visible half of the feedback never exists. (A LIVE crossing
-  // still gets all of it: R36 clause 1 asserts the sound, the banner and the popup, R40 clause 2 the
-  // sound.) This popup clause is an ABSENCE assert, so it is vacuous if the producer is deleted —
-  // R36 clause 1 is what pins the producer's existence; see the header for the measurement.
-  eq(sfx('power'), 0, `banking a flag on the frame the hero dies still played the fanfare (${sfx('power')} × audio.sfx('power')) under the death cry`);
-  const ghosts = G.items.filter((it) => it.kind === 'popup' && it.text === 'CHECKPOINT');
-  eq(ghosts.length, 0, `banking a flag on the frame the hero dies still pushed ${ghosts.length} CHECKPOINT popup(s) that loadLevel() discards moments later`);
-  // and the death then resolves ONTO that flag, which is the whole point of banking it.
+  eq(cp.taken, true, 'the post banked on the fatal frame does not report itself banked');
+  // THE SILENCE CLAUSES THAT USED TO SIT HERE WERE DELETED BY FIX PASS 5, and the reason is worth
+  // keeping: they read `eq(sfx('power'), 0, …)` and `eq(ghosts.length, 0, …)` on the death frame,
+  // which were teeth while some crossings made noise and this frame had to stay quiet. Once the
+  // trigger's whole feedback block went away there is no producer on ANY frame, so both asserts
+  // became claims about a thing that cannot happen — unfailable forever, which is the vacuity this
+  // file refuses rather than a guarantee. "Nothing at a checkpoint is announced" is now asserted
+  // where it can still fail: `R45`, live crossing, zero popups, zero `power`, banner untouched.
+  //
+  // What this check owns — and what stays load-bearing without any audio in it — is that the bank
+  // happened (above) and that it SURVIVED the level rebuild the death handler performs, since
+  // surviving it is the entire point of banking on a fatal frame. So the respawn itself is read as
+  // state: hero on the post, bound still the post, the rebuilt level marking that post taken, and
+  // the camera on the floor that post derives.
   const respawned = until(150, () => (G.player !== p ? { at: G.player.x } : null));
   assert(respawned, `the death never resolved (state=${G.state}, dyingT=${G.dyingT.toFixed(2)})`);
   eq(G.player.x, cp.x, 'a hero killed on the crossing frame respawned somewhere other than that flag');
-  return `killed on the crossing frame at x=${cp.x} → banked there and respawned there, silently (no fanfare, no ghost popup)`;
+  eq(G.checkpointIndex, 0, 'the post banked on the fatal frame did not survive the respawn rebuild (checkpointIndex=' + G.checkpointIndex + ')');
+  eq(G.checkpointX, cp.x, 'the respawn dropped the bound the fatal frame earned');
+  eq(G.level.checkpoints[0].taken, true, 'the rebuilt level leaves the post the hero respawned ON unbanked — the scan would treat a post behind the hero as one it may still arm');
+  eq(G.cam.x, cp.x - CAMERA_FOLLOW_X, `the respawn did not put the camera on that flag's floor (cam.x=${G.cam.x} against ${cp.x - CAMERA_FOLLOW_X}) — the hero could scroll left of the post it earned`);
+  return `killed on the crossing frame at x=${cp.x} → banked there and respawned there (x=${G.player.x}, cam=${G.cam.x}), bound and taken mark intact through the level rebuild`;
 });
 
 // ---------------------------------------------------------------------------
@@ -3337,8 +3427,11 @@ check('R41', () => {
 //
 // DISCRIMINATION PROOF: drop `p.invulnT = INVULN_TIME;` from respawnAtCheckpoint → clause 1 FAILs
 // `a checkpoint respawn granted no invulnerability (invulnT=0.00) — the flagpost cells are not safe
-// ground`. Drop `G.bannerT = 0;` → clause 1 FAILs `a checkpoint respawn re-raised the 1-1 stage-
-// intro banner (bannerT=1.50) — that reads as "level restarted": expected 0, got 1.5`. Widen the
+// ground`. Drop `G.bannerT = 0;` → clause 1 FAILs `a checkpoint respawn shows the 1-1 stage-intro
+// banner (bannerT=1.50) — loadLevel() raised it inside the respawn and respawnAtCheckpoint() must take
+// it back: on a resume the player did not ask for, that reads as "level restarted": expected 0, got
+// 1.5` (wording and figures re-measured after fix pass 5; the paragraph below records why the line is
+// still load-bearing). Widen the
 // index guard back to `if (index < 0) return;` → the last clause FAILs `the respawn threw:
 // TypeError: Cannot read properties of undefined (reading 'row'): expected 0, got 1`, i.e. the
 // throw happens inside the death handler and the frame is lost. R37's unchanged second scenario is
@@ -3347,6 +3440,20 @@ check('R41', () => {
 // that notices — `a level load inherited the death clock — the next kill would resolve on that same
 // frame and skip the death arc: expected 0, got 9`. No shipped kill path can hand over a stale
 // clock today, which is exactly why the clause poisons it by hand rather than waiting for one.
+//
+// THE CHECKPOINT-RESPAWN `bannerT === 0` AFTER FIX PASS 5 — kept, and it is NOT the trivially-true
+// leftover it looks like. The checkpoint trigger's `G.bannerT = 1` re-raise is gone from src/main.js,
+// so the honest question was whether this half of the clause still proves anything. It does, for a
+// reason that has nothing to do with the trigger: `respawnAtCheckpoint()` calls `loadLevel()` FIRST,
+// and loadLevel() raises the WORLD x-y banner to 1.5, so `G.bannerT = 0` at the end of the respawn is
+// the only thing standing between a resume and a stage-intro card. Re-measured after the removal, in
+// a throwaway copy: dropping that line fails clause 1, alone in the run (42/43), with
+//   `FAIL R42 a checkpoint respawn shows the 1-1 stage-intro banner (bannerT=1.50) — loadLevel() raised
+//   it inside the respawn and respawnAtCheckpoint() must take it back: on a resume the player did not
+//   ask for, that reads as "level restarted": expected 0, got 1.5`
+// Kept as a two-way guard: it fails the same way if anyone re-introduces a banner on the respawn path.
+// The 1.5 baselines beside it (fresh entry, no-flag restart) are what stop it being satisfiable by
+// muting banners everywhere.
 // ---------------------------------------------------------------------------
 
 check('R42', () => {
@@ -3380,7 +3487,11 @@ check('R42', () => {
   eq(q.x, cp.x, 'the respawn is not on the flag, so the rest of this check is measuring the wrong hero');
   assert(q.invulnT > 0, `a checkpoint respawn granted no invulnerability (invulnT=${q.invulnT.toFixed(2)}) — the flagpost cells are not safe ground`);
   near(q.invulnT, C.INVULN_TIME, 1e-9, 'the respawn grace is not the INVULN_TIME a hit already grants (it must come from the same constant)');
-  eq(G.bannerT, 0, `a checkpoint respawn re-raised the ${G.level.label} stage-intro banner (bannerT=${G.bannerT.toFixed(2)}) — that reads as "level restarted"`);
+  // NOT vacuous after the trigger's banner re-raise was deleted: the respawn calls loadLevel(), which
+  // raises this banner to 1.5, so what this pins is `G.bannerT = 0` at the end of
+  // respawnAtCheckpoint() — see the header for the re-measured mutation (drop that line, got 1.50).
+  // The 1.5 baselines in the clauses below are what stop it being satisfied by muting banners at large.
+  eq(G.bannerT, 0, `a checkpoint respawn shows the ${G.level.label} stage-intro banner (bannerT=${G.bannerT.toFixed(2)}) — loadLevel() raised it inside the respawn and respawnAtCheckpoint() must take it back: on a resume the player did not ask for, that reads as "level restarted"`);
 
   // the grace holds: a turnip parked on the respawn cannot touch it while it lasts...
   const foe = makeTurnip({ x: q.x + 2, y: GROUND_TOP - 12 });
@@ -3716,6 +3827,162 @@ check('R43', () => {
   assert(orphans.length === 0, `RESPAWN_HAZARDS pins respawns that are not in the shipped maps any more: ${orphans.join(', ')} — the post moved or went away (R38 is the one that should already be red); delete or move the pin in the same change and re-measure`);
   const shape = LEVELS.map((d) => `${PIT_INVENTORY[d.label].split(' ').length}`).join('+');
   return `6 respawns can leave their flag: ${lines.join(', ')}; pits pinned at ${shape} (widest ${LEVELS.map((d) => Math.max(...pitRuns(d).map((r) => r.split('-')[1] - r.split('-')[0] + 1))).join('/')}), hazard identity pinned per post; NO-DEATH-ROUTE rows have 0 deaths — their clears is progress inside the 400-frame horizon, NOT a fairness margin`;
+});
+
+// ---------------------------------------------------------------------------
+// R45 — a checkpoint is INVISIBLE and SILENT (a guard on a removal, which is the kind of test
+//       nobody writes until the feature comes back)
+//
+// Fix pass 5 deleted the flagpost art (sprites.js drawCheckpoint), the render loop that drew it, and
+// main.js's whole arrival-feedback block (audio.sfx('power'), the 'CHECKPOINT' popup, the banner
+// re-raise, and the `if (!p.dead)` guard that gated them) — while deleting NONE of the checkpoint
+// LOGIC: arming on a left-to-right crossing, the hero's left clamp, the camera floor and the respawn
+// all still read level.checkpoints. A removal like that takes its own assertions with it, so both
+// halves of the new contract are pinned here, each with its own mutation proof below:
+//
+//  (1) NOTHING IS DRAWN AT A POST. A real shipped level is rendered through src/render.js's own
+//      render() into the mock context and the draw streams are diffed — every fillRect / fillText /
+//      drawImage, in issue order, with colour, alpha and sequence number — for three renders of the
+//      SAME state: as authored, with level.checkpoints emptied, and with every post banked. All three
+//      must be byte-identical. "Identical to the level that has no checkpoints at all" is the
+//      non-vacuous form: a post that draws anything, anywhere in the frame, taken or not, cannot
+//      survive it, at any camera position. render() is a pure function of (ctx, G) in PLAYING — its
+//      only wall-clock input is drawTitle's Date.now() blink, which the PLAYING path never reaches —
+//      so the comparison is deterministic; the fourth render below proves that rather than assuming
+//      it (the same state rendered twice must reproduce, or "identical" would only mean "both were noise").
+//
+//  (2) ARRIVAL IS SILENT, AND IT STILL ARMS. One real left-to-right crossing at RUN_MAX through the
+//      real fixed-timestep loop, from a deliberately live, decaying banner: zero items pushed (so zero
+//      popups), zero audio.sfx('power') calls, no sfx whose name smells like an arrival, and the
+//      banner never rising above where the run started. Then the same crossing's STATE: the slot that
+//      armed, the bound, the post's own flag, and both floors holding on the post. Silence with no
+//      arming fails; arming with noise fails. Both halves are required — the previous suite proved an
+//      arming by its NOISE, so it could not tell "silent but armed" from "nothing at all".
+//
+// 'power' is not a dead sound: src/main.js still plays it for berries and berry blocks. So "no power
+// at the post" is a claim about the checkpoint path, not about a sound nobody can trigger.
+//
+// DISCRIMINATION PROOFS (each in its own throwaway copy under the session temp; the repo was never
+// mutated. Full table, with the pass counts each produced, in WORKFLOW_STATE.md FIX PASS 5):
+//   - re-add a drawCheckpoint-style draw at the post in src/render.js (the deleted loop, restored)
+//     → clause 1 FAILS, quoting the first fillRect that differs.
+//   - re-add the deleted feedback block (`audio.sfx('power')` + the 'CHECKPOINT' popup + `G.bannerT =
+//     1`) to main.js's trigger → clause 2 FAILS, on the item count; each effect re-added ALONE is
+//     quoted too, because a one-line regression is the likelier one.
+//   - keep the crossing silent but stop it arming: deleting the whole arming block → clause 2 FAILS at
+//     its own scenario guard (`the hero at RUN_MAX never crossed the post at x=640 (checkpointIndex=-1
+//     after 400 frames) — the scenario never performed the arrival it is here to measure`), and arming
+//     the slot while deleting only the bound write → clause 2 FAILS on `the silent crossing did not
+//     raise the left bound to the post it crossed (checkpointX=0, post 640)`. Either way red: a
+//     checkpoint that announces nothing and does nothing is not invisible, it is gone, and this check
+//     refuses both.
+// ---------------------------------------------------------------------------
+
+check('R45', () => {
+  // One frame's draw stream, as data. `scale`/`translate` are captured into the compared string, but
+  // only the first three kinds get a per-call diff message, because those are what a re-added sprite
+  // changes.
+  const stream = (r) => JSON.stringify([r.rects, r.text, r.blits, r.scaleCalls, r.translateCalls]);
+  const shot = () => { const r = mkRecorder(); renderScene(mkCtx(r), G); return stream(r); };
+  const firstDiff = (a, b) => {
+    const A = JSON.parse(a);
+    const B = JSON.parse(b);
+    const kinds = ['fillRect', 'fillText', 'drawImage'];
+    for (let k = 0; k < 3; k++) {
+      for (let i = 0; i < Math.max(A[k].length, B[k].length); i++) {
+        const x = JSON.stringify(A[k][i]);
+        const y = JSON.stringify(B[k][i]);
+        if (x !== y) return `${kinds[k]} #${i}: with checkpoints ${x === undefined ? '(no such call)' : x}, without them ${y === undefined ? '(no such call)' : y}`;
+      }
+    }
+    return 'the two frames differ outside the draw-call kinds this check models';
+  };
+
+  // ---- (1) nothing is drawn at a post, on a real shipped level
+  newGame();
+  const level = G.level;
+  const cps = level.checkpoints;
+  assert(cps.length >= 2, `${level.label} ships ${cps.length} checkpoints — there is nothing here to be invisible about`);
+  const takenBefore = cps.map((c) => c.taken);
+  G.cam.x = cps[0].x - 120;
+  const postScreenX = cps[0].x - Math.floor(G.cam.x);
+  assert(postScreenX >= 0 && postScreenX < C.VIEW_W, `the harness parked the camera so the first post lands at screen x=${postScreenX}, outside the ${C.VIEW_W}px view — the diff below would be comparing a frame with nothing in it`);
+  const authored = shot();
+  const nRects = JSON.parse(authored)[0].length;
+
+  level.checkpoints = [];
+  const emptied = shot();
+  level.checkpoints = cps;
+
+  // and a banked post is invisible too: cp.taken may not be readable on screen in any form. The
+  // deleted art recoloured a spent flag (pumpkin → used), which is the regression this clause catches
+  // now that there is no sprite to colour-compare.
+  for (const c of cps) c.taken = true;
+  const banked = shot();
+  cps.forEach((c, i) => { c.taken = takenBefore[i]; });
+
+  eq(shot(), authored, 'rendering the same PLAYING state twice through src/render.js produced two different draw streams — the harness is not deterministic, so nothing in this check can call anything identical');
+  assert(emptied === authored, `a checkpoint changed the frame: ${firstDiff(authored, emptied)} — nothing may be drawn at a post (${nRects} fillRect calls with the level's ${cps.length} posts, ${JSON.parse(emptied)[0].length} with none)`);
+  assert(banked === authored, `a banked checkpoint is drawn differently from a live one: ${firstDiff(authored, banked)} — cp.taken must not be visible at all. This is what R38's deleted "banked art differs" clause used to prove by colour, and colour comparison is not available for a sprite that does not exist`);
+
+  // ---- (2) a real arrival is silent AND still arms
+  const fl = flagLevel({ cols: 120, flag: [C.ROWS - 3, 40] });
+  installLevel(fl);
+  const post = fl.checkpoints[0];
+  const p = G.player;
+  clearInput();
+  G.items.length = 0;
+  // A live banner on purpose. The claim is "the crossing never raises it", and that has to hold from a
+  // non-zero, decaying baseline — the state a real level entry leaves — not only from 0, where a
+  // re-raise would have to be the only thing in the number.
+  G.bannerT = 0.75;
+  const banner0 = G.bannerT;
+  resetAudioSpy();
+  p.x = 2 * C.TILE;
+  p.y = GROUND_TOP - p.h;
+  p.vx = 0;
+  p.vy = 0;
+  input.right = true;
+  input.run = true;
+  let bank = -1;
+  let frames = 0;
+  let bannerMax = -Infinity;
+  let itemsMax = 0;
+  const watch = () => {
+    frames++;
+    bannerMax = Math.max(bannerMax, G.bannerT);
+    itemsMax = Math.max(itemsMax, G.items.length);
+    if (bank < 0 && G.checkpointIndex === 0) bank = frames;
+  };
+  while (frames < 400 && bank < 0) { step(); watch(); }
+  assert(bank > 20, `the hero at RUN_MAX never crossed the post at x=${post.x} (checkpointIndex=${G.checkpointIndex} after ${frames} frames) — the scenario never performed the arrival it is here to measure`);
+  // and keep running a second past the bank: a popup that spawns late is still inside POPUP_LIFE
+  // (0.6 s), and a banner re-raise does not have to land on the crossing frame itself.
+  for (let i = 0; i < 60; i++) { step(); watch(); }
+  input.right = false;
+  input.run = false;
+  const heard = audioCalls.filter((c) => c.startsWith('sfx:'));
+  const noisy = heard.filter((c) => /power|checkpoint|flag|bank|score/i.test(c));
+
+  eq(itemsMax, 0, `the arrival pushed ${itemsMax} item(s) into G.items — a checkpoint pushes nothing at all now. flagLevel has no fruit, no berry and no breakable block, so anything in here is the post's own marker (the deleted 'CHECKPOINT' popup coming back is exactly what this catches)`);
+  eq(G.items.filter((it) => it.kind === 'popup').length, 0, `${G.items.filter((it) => it.kind === 'popup').length} popup(s) were still alive at the end of the arrival run`);
+  eq(sfx('power'), 0, `the arrival made ${sfx('power')} audio.sfx('power') call(s). That sound is not dead code — main.js still plays it for berries and berry blocks — but a checkpoint may not use it`);
+  eq(noisy.length, 0, `the arrival announced itself (${heard.join(', ') || 'no sfx at all'}) — nothing may be heard at a post`);
+  assert(bannerMax <= banner0 + 1e-12, `the crossing raised the banner: it peaked at ${bannerMax.toFixed(4)} against ${banner0.toFixed(4)} when the run started, and updateState only ever subtracts ${C.STEP.toFixed(4)} from it per frame, so a rise is a re-raise — checkpoints do not get banners`);
+  assert(bannerMax < banner0 - 1e-9, `the banner never decayed across ${frames} frames (peak ${bannerMax.toFixed(4)}, start ${banner0.toFixed(4)}) — updateState never ran, so the assert above proves nothing`);
+
+  // the other half: silent, and still the run's left authority.
+  eq(G.checkpointIndex, 0, `the crossing was silent AND did not arm (checkpointIndex=${G.checkpointIndex}) — an invisible checkpoint that never arms is not invisible, it is deleted`);
+  eq(G.checkpointX, post.x, `the silent crossing did not raise the left bound to the post it crossed (checkpointX=${G.checkpointX}, post ${post.x})`);
+  eq(post.taken, true, 'the silent crossing did not mark the post banked');
+  input.left = true;
+  input.run = true;
+  for (let i = 0; i < 240; i++) step();
+  input.left = false;
+  input.run = false;
+  eq(p.x, post.x, `holding left after a silent bank left the hero at x=${p.x.toFixed(2)} instead of pinned on the post at ${post.x} — the invisible checkpoint stopped clamping the hero`);
+  eq(G.cam.x, post.x - CAMERA_FOLLOW_X, `the silent bank did not give the camera its floor (cam.x=${G.cam.x} against ${post.x - CAMERA_FOLLOW_X})`);
+  return `nothing drawn at a post (${nRects} fillRect calls identical with ${cps.length} posts live, ${cps.length} removed and ${cps.length} banked) | RUN_MAX arrival at x=${post.x} over ${frames} frames: ${heard.length} sfx, 0 items, banner ${banner0} → ${G.bannerT.toFixed(2)} (peak ${bannerMax.toFixed(4)}), still armed, hero pinned on ${post.x}, camera floored on ${post.x - CAMERA_FOLLOW_X}`;
 });
 
 // MARKER:CHECKS

@@ -5,7 +5,6 @@ import {
   drawBrick,
   drawBoss,
   drawBush,
-  drawCheckpoint,
   drawCloud,
   drawFruit,
   drawGate,
@@ -292,10 +291,11 @@ export function render(ctx, g) {
   drawHills(ctx, camX);
   drawBackdrops(ctx, camX);
   drawTiles(ctx, level, camX);
-  // Flagposts go with the gate, on the far side of the tiles: both are world furniture drawn
-  // by manual -camX arithmetic (this renderer never calls ctx.translate), and both are inked
-  // after the tiles so a post reads as standing in front of the ground it is planted on.
-  for (const cp of level.checkpoints) drawCheckpoint(ctx, cp.x - camX, cp.y, cp.taken);
+  // Checkpoints draw NOTHING. `level.checkpoints` stays live gameplay state — the arming band, the
+  // hero's left clamp and the camera floor all read it (main.js) — but a banked post is invisible,
+  // so there is deliberately no draw call here. `R45` renders a level with and without its
+  // checkpoints and requires identical draw streams; the gate below stays world furniture drawn by
+  // manual -camX arithmetic (this renderer never calls ctx.translate).
   if (level.gate) drawGate(ctx, level.gate.x - camX, level.gate.y);
   drawItems(ctx, g.items, camX);
   drawEnemies(ctx, g.enemies, camX);

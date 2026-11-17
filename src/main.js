@@ -477,15 +477,11 @@ function updateState(dt) {
       for (const other of G.level.checkpoints) {
         if (other.x <= G.checkpointX) other.taken = true;
       }
-      // Feedback, and only when there is something to give it to. On a frame that banks the post
-      // AND takes a fatal hit (R41's scenario is exactly that), loadLevel() discards the popup and
-      // the banner within the next 1.2 s and the player hears a fanfare under the death cry with
-      // nothing on screen to explain it.
-      if (!p.dead) {
-        audio.sfx('power');
-        G.items.push(makePopup(cp.x, cp.y - TILE, 'CHECKPOINT'));
-        G.bannerT = 1;
-      }
+      // Nothing else happens here, on purpose: an arrival is silent and invisible now. The block
+      // that used to sit here (fanfare + 'CHECKPOINT' popup + banner re-raise, all behind `if
+      // (!p.dead)`) was feedback only; the guard existed solely to keep that feedback off the death
+      // frame, so it goes with it. Arming is unchanged on EVERY frame including a fatal one — this
+      // loop still runs above the dead-return, which is what R41 pins.
       break;
     }
 
