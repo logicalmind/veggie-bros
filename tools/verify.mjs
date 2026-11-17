@@ -335,6 +335,14 @@ function toTitle() {
   G.checkpointX = 0;
   G.checkpointIndex = -1;
   G.levelIndex = 0;
+  // The HUD's MUTED badge is part of the frame the pixel checks count, so it belongs to the reset.
+  // Without it R24 (which sets `G.muted = true` to measure the worst-case HUD layout) leaks the badge
+  // into every check that runs after it: measured 2026-11-17, `R19`'s pass line printed `draw #1153 vs
+  // #1154` in canonical order and `#1208 vs #1209` in a shuffled run, and `R45`'s printed rect count
+  // moved 1425 → 1370, the 55-rect difference being exactly one 5-character `drawPixelText` run. Both
+  // assertions are RELATIVE, so they passed in every order — but their published figures were not
+  // reproducible, which is what the WORKFLOW_STATE write-up claimed. Reset here and both are.
+  G.muted = false;
   audio.musicStop();
   clearInput();
 }
@@ -2288,11 +2296,15 @@ check('R33', () => {
 // hero at 544: 88 frames from a walk-lag seed (9.167 px), 91 from a run-lag seed (15.833), 101 from
 // the deepest seed any trace here has (87.506), 111 from the 544 px shove. Earlier notes published 56
 // (the continuous v/L form, wrong for a discrete step: the lag is v dt (1−r)/r = v/12) and 90, which
-// had no margin against the 91 it had to cover. GAMEPLAY traces top out at 91 frames, so the window
-// is 150: the worst legitimate gameplay figure plus ~60 frames (1 s) of margin, which comfortably
-// covers even the 544 px shove's 111 — that seed is not gameplay and gets its own budget at the call
-// site anyway. Widening this further buys nothing; narrowing it under ~100 starts failing on
-// legitimate seeds instead of on bugs.
+// had no margin against the 91 it had to cover. [CORRECTED 2026-11-17: the sentence below used to say
+// "GAMEPLAY traces top out at 91 frames" while this same comment records 101 for the 87.506 px seed —
+// and that seed IS gameplay, it is the deepest shipped one R36 prints (`deepest shipped seed 87.51px`,
+// 1-1's col-88 flag approached at RUN_MAX). Re-measured against the real updateCamera: 88 / 91 / 101 /
+// 111 frames for depths 9.167 / 15.833 / 87.506 / 544 px. So the gameplay figure this window has to
+// cover is 101, and 150 is 101 plus 49 frames (~0.8 s) of margin, which still covers the 111-frame
+// non-gameplay shove. Nothing about the window changed, only the arithmetic quoted for it.] Widening
+// this further buys nothing; narrowing it under ~110 starts failing on legitimate seeds instead of on
+// bugs.
 const CAM_SETTLE_FRAMES = 150;
 const CAM_REST_EPS = 1e-6;
 
@@ -2307,12 +2319,21 @@ const FOLLOW_RATE = (() => {
 })();
 // The lerp step is an equality on every frame of a legitimate follow (assertFollowStep states it), so
 // this factor is not slack for a bug to hide in: measured on the shipped code the worst overshoot
-// over all four camera traces in this file is exactly 0 px, while a re-added hard clamp lands 2.3–3.0x
-// over the bound (8.278 vs 3.667, 15.833 vs 5.278) and CAM_EPS = 40 lands 3.0x over it — both are a
-// full snap-to-target, which is 1/FOLLOW_RATE = 6 lerp steps compressed into one frame, so anything
-// below 6.0 catches them and 2.0 keeps that margin while still allowing a follow that closes twice as
-// briskly as today's without being called a cut.
-const STEP_FACTOR = 2;
+// over all four camera traces in this file is exactly 0 px — every traced frame sits at ratio 1.000 of
+// the unscaled allowance, so the bound only ever has to cover float drift (STEP_TOL). [TIGHTENED 2 →
+// 1.5, 2026-11-17, measured in throwaway copies: 1.5 keeps all four traces green (43/43, exit 0, md5
+// stable) and closes an escape 2.0 left open. The mutant was a PARTIAL clamp, `if (cam.x < lo) cam.x
+// += 0.20 * (lo - cam.x);` after the lerp — a wall wearing a lerp's clothes. At 2.0 it passed the whole
+// suite because its bank-frame step (5.278 px on the run leg, 3.122 px on the walk leg) is EXACTLY the
+// 2.0 bound (15.833/6 × 2), so it survived on STEP_TOL alone. At 1.5 the bound is 3.958 px on the run
+// leg and R36 goes red with `… moved 5.278px … could produce at most 3.958px`, and R44's spike clause
+// goes red with the walk leg (3.122 px against a 1.833 px run-wide maximum). The offenders, against
+// the 1.5 bounds: the re-added hard clamp 8.278 vs 2.750 (walk) and 15.833 vs 3.958 (run), CAM_EPS = 40
+// at 3.0x over. Nothing in a legitimate trace is closer than ratio 1.000, i.e. a third of the allowance
+// spare; going below ~1.2 starts cutting into that margin for no measured gain, and 1.0 would make the
+// clause an exact-equality test on floats. 1.5 also still allows a follow that closes 50% more briskly
+// than CAMERA_LERP today without calling it a cut.]
+const STEP_FACTOR = 1.5;
 const STEP_TOL = 1e-4; // px/frame; CAM_EPS (1e-6) and float drift both live far under this
 
 // The camera's one-frame step is the follow's own step, or it is not a follow. This is the assertion
@@ -2560,7 +2581,8 @@ check('R36', () => {
   // it — the hero leaves the flag at RUN_MAX and turns back, so the camera parks exactly one run lag
   // under a floor it cannot cross — and the same trace is then judged by assertFollowStep, which
   // states the bound the follow could actually produce. Re-adding `if (cam.x < lo) cam.x = lo;` turns
-  // frame 1 of THIS trace into a 15.833 px assignment against a 5.278 px bound, measured, and it is
+  // frame 1 of THIS trace into a 15.833 px assignment against a 5.278 px bound (as printed when
+  // STEP_FACTOR was 2; at today's 1.5 the same FAIL reads 3.958 px), measured, and it is
   // the first R36 clause to go red.
   G.cam.x = FLOOR - LAG_RUN;
   const turn = [{ cam: G.cam.x, x: p.x, floor: FLOOR }];
@@ -2604,7 +2626,8 @@ check('R36', () => {
   // `lag` is the whole gap here: a FORCED camera position is not follow lag, so its depth under the
   // floor carries no information — the convergence shape, the rest state and the step bound below do.
   // The default settle window is enough even for this 544 px seed (it needs ~111 frames of the 150;
-  // the deepest GAMEPLAY seed here needs 91 — see CAM_SETTLE_FRAMES).
+  // the deepest GAMEPLAY seed here needs 101 — 87.506 px, the deepest shipped one — see
+  // CAM_SETTLE_FRAMES, whose note carried 91 until 2026-11-17 and was corrected to the measured 101).
   const rec = assertFloorConvergence('shoved camera (forced to 0)', shove, FLOOR, FLOOR, CAM_SETTLE_FRAMES);
   // The lerp's biggest possible step across this gap is its FIRST one — (floor − 0) · FOLLOW_RATE =
   // 90.667 px — because the remaining distance only ever shrinks; measured maxStep here is 75.556 px
@@ -2785,17 +2808,44 @@ check('R36', () => {
 //     compressed into one, which is a camera cut, not a follow`
 //     (the same mutation makes R36 fail too, and there the pop is a big one: `FAIL R36 1-1 flag 0
 //     camera follow step: at frame 1 the camera moved 38.389px … could produce at most 12.796px`).
+//   [The `could produce at most N px` figures quoted in this table (3.667, 5.278, 12.796) were printed
+//   at STEP_FACTOR = 2, which is what the tree said on 2026-11-16. They are left as measured. Re-run at
+//   1.5 the same mutations fail the same clause on the same frame with the same step, against a bound
+//   that has moved: measured `FAIL R36 flagLevel turn-around at RUN_MAX …: at frame 1 the camera moved
+//   15.833px in one frame when its target at 544.00 (hero x 640.00, floor 544) could produce at most
+//   3.958px — 6.0 frames of follow compressed into one`, 41/43, and `FAIL R44 WALK_MAX: … the camera
+//   stepped 8.278px in one frame … while the largest step anywhere else in the run was 1.833px`, 41/43;
+//   CAM_EPS = 40 measures `… could produce at most 9.597px` there now (was 12.796). So the wall is
+//   still caught twice over, by both R36 and R44.]
 //
 // WHAT THE BOUND IS, and why it is not a magic number. STEP_FACTOR is applied to the shipped follow's
 // own step for that frame (FOLLOW_RATE · (target − cam), both measured off updateCamera), so the
-// legitimate worst case sits at 1/STEP_FACTOR of the allowance — measured 0.000 px of overshoot on
-// every frame of all four traces — while the wall sits 2.3–3.0x over it and the snap 3.0x. The spike
-// clause is relative for the same reason: 2x the largest step elsewhere in the run, where the shipped
-// code's ratio is 1.00 and the wall's is 4.52 (walk) / 4.88 (run).
+// legitimate worst case sits at 1/STEP_FACTOR of the allowance — measured 0.000 px of overshoot and
+// ratio 1.000 on every frame of all four traces — while the wall sits over it and the snap sits 3.0x
+// over it. The spike clause is relative for the same reason: SPIKE × the largest step elsewhere in the
+// run, where the shipped code's ratio is EXACTLY 1.00 on both legs (the bank window peaks at 1.833 px
+// walking / 3.167 px running, the same figures as everywhere else in the run) and the wall's is 4.52
+// (walk) / 4.88 (run).
+//
+// BOTH FACTORS WERE 2 AND ARE NOW 1.5 (2026-11-17, measured in throwaway copies). At 2.0 the spike
+// clause's detection floor was 2 × 1.833 = 3.667 px walking and 2 × 3.167 = 6.333 px running, and a
+// PARTIAL clamp — `if (cam.x < lo) cam.x += 0.20 * (lo - cam.x);` after the lerp, a wall wearing a
+// lerp's clothes — stepped only 3.122 px / 5.622 px there: under both floors, so it passed the whole
+// suite. At 1.5 the floors are 2.750 / 4.750 and the same mutant is red twice over, on the spike clause
+// (`FAIL R44 WALK_MAX: … the camera stepped 3.122px in one frame … while the largest step anywhere else
+// in the run was 1.833px …`, and on the RUN leg 5.622 against 3.167) and on the follow-step clause
+// (`FAIL R36 flagLevel turn-around at RUN_MAX …: at frame 1 the camera moved 5.278px … could produce at
+// most 3.958px …`). Margin check, the part that matters: the shipped traces did not move at all — still
+// ratio 1.000, i.e. a third of the allowance unused — while the escape sits at 1.70/1.77. Nothing
+// legitimate is anywhere near 1.5, so the tightening buys the mutant without making a clause brittle;
+// no clause here was tuned down to a measured figure. The clean tree at 1.5 is 43/43, exit 0, md5
+// stable across runs.
 // ---------------------------------------------------------------------------
 
 check('R44', () => {
-  const SPIKE = 2;  // bank-window step, as a multiple of the largest step anywhere else in the run
+  const SPIKE = 1.5;  // bank-window step, as a multiple of the largest step anywhere else in the run.
+                      // Was 2; tightened 2026-11-17 because at 2.0 a 20%-per-frame partial clamp on the
+                      // floor deficit slipped the whole suite — see the "BOTH FACTORS" note above R44.
   const MIN_RUN = 30; // frames of full-speed running required before the flag may bank
   const lines = [];
 
@@ -3126,9 +3176,42 @@ const CLEARANCE_EXCEPTIONS = [
   },
 ];
 
+// THE BAND R38 SWEEPS, DERIVED RATHER THAN WRITTEN OUT (2026-11-17). main.js builds the trigger box as
+// `{ x: cp.x, y: cp.y - CHECKPOINT_TRIGGER_TOP, w: CHECKPOINT_TRIGGER_W, h: TOP + BOTTOM }`
+// (main.js:466-471), and `cp.y` is the TOP of the post's own tile, so in tile rows the box the game
+// actually arms on is `cp.row - TOP/TILE + 1 … cp.row + BOTTOM/TILE - 1` — rows 9..12 as shipped — and
+// in columns `tx … tx + W/TILE - 1`. Rows are therefore read off the three product constants here, once;
+// they were written as the literal `cp.row - 3 … cp.row` in the loop below, and that is a hole with a
+// measurement behind it: narrowing the loop to `cp.row - 3 … cp.row - 1` measured 43/43, i.e. a solid
+// planted in the POST'S OWN ROW inside the band stopped being checked by anything (throwaway copy,
+// `1-2`'s col-112 post with 'X' planted at (114,12): clean tree FAILs `1-2: the flag at col 112 has X in
+// the walk-up column 114,12`, same map with the narrowed loop PASSes R38 — R43 is red in that run for a
+// different reason, so the band clause was the only thing that went quiet). Same story for the width:
+// the ground sweep written as `d = -2 … 2` was reduced to `d = 0` and measured 43/43.
+//
+// So the two numbers come from here, and the loops that use them are audited against what they ACTUALLY
+// walked — the sweptAirRows / sweptAirCols / sweptGroundCols sets, collected inside the loops and
+// compared after them: an audit derived from the same constant as the loop would be tautological, so the
+// thing it catches is a hand-edited loop bound, which is the mutation class that was silent. The width
+// is not a trigger property — the outer ring is where a respawn's first jump arcs (R43 measures that arc) — so it
+// gets its own named constant, with the one relation to the product that IS load-bearing asserted: the
+// ring must reach at least as far each way as the trigger box is wide, i.e. it can never become narrower
+// than the box the game arms on.
+const CLEARANCE_BAND_COLS = 2;
+const CHECKPOINT_BAND_ROW_OFFSETS = (() => {
+  const offs = [];
+  for (let o = -C.CHECKPOINT_TRIGGER_TOP / C.TILE + 1; o <= C.CHECKPOINT_TRIGGER_BOTTOM / C.TILE - 1; o++) offs.push(o);
+  return offs;
+})();
+const CHECKPOINT_BAND_COL_OFFSETS = [];
+for (let d = -CLEARANCE_BAND_COLS; d <= CLEARANCE_BAND_COLS; d++) CHECKPOINT_BAND_COL_OFFSETS.push(d);
+
 check('R38', () => {
   for (const e of CLEARANCE_EXCEPTIONS) e.hits = 0;
   const bad = [];
+  const sweptAirRows = new Set();
+  const sweptAirCols = new Set();
+  const sweptGroundCols = new Set();
   for (const def of LEVELS) {
     const level = parseLevel(def);
     const cps = level.checkpoints;
@@ -3144,23 +3227,29 @@ check('R38', () => {
       prev = cp.x;
       if (cp.x >= exitX) bad.push(`${def.label}: the flag at col ${tx} sits at or past the level exit ${exitX}`);
       if (level.tiles[cp.row][tx] !== '.') bad.push(`${def.label}: the flag tile at ${tx},${cp.row} was not cleared to '.'`);
-      // continuous solid ground for five columns under and beside the post...
-      for (let d = -2; d <= 2; d++) {
+      // continuous solid ground for the whole width of the band under and beside the post...
+      for (const d of CHECKPOINT_BAND_COL_OFFSETS) {
+        sweptGroundCols.add(d);
         if (!isSolid(level.tiles[cp.row + 1][tx + d]) || !isSolid(level.tiles[cp.row + 2][tx + d])) {
           bad.push(`${def.label}: the flag at col ${tx} stands over a pit (col ${tx + d} row ${cp.row + 1})`);
         }
       }
       // ...and clear air through the WHOLE trigger band over the post and TWO columns either side.
-      // The band is config.js's CHECKPOINT_TRIGGER_TOP/BOTTOM box (rows cp.row-3…cp.row: TOP is 4
-      // tiles, BOTTOM the tile under cp.y that the hero stands on), NOT anything about art — the post
-      // is invisible now, and the box is real because main.js arms on a crossing of it and
-      // respawnAtCheckpoint() drops the hero inside it. Full band height out to ±2 columns, not just
-      // walking height, because that outer ring is exactly where a respawn's first jump arcs. A solid
-      // at (post±2, cp.row-3/-2) head-bumps the jump at y≈160 and drops the hero into the pit ahead of
-      // the post — the failure that makes a respawn hard rather than merely tight. The one shipped
-      // tile the band would reject is named in CLEARANCE_EXCEPTIONS above; nothing else is waived.
-      for (let d = -2; d <= 2; d++) {
-        for (let ty = cp.row - 3; ty <= cp.row; ty++) {
+      // The band is config.js's CHECKPOINT_TRIGGER_TOP/BOTTOM box (CHECKPOINT_BAND_ROW_OFFSETS above:
+      // rows cp.row-3…cp.row, because TOP is 4 tiles and BOTTOM the tile under cp.y that the hero stands
+      // on), NOT anything about art — the post is invisible now, and the box is real because main.js arms
+      // on a crossing of it and respawnAtCheckpoint() drops the hero inside it. Full band height out to
+      // ±2 columns, not just walking height, because that outer ring is exactly where a respawn's first
+      // jump arcs. A solid at (post±2, cp.row-3/-2) head-bumps the jump at y≈160 and drops the hero into
+      // the pit ahead of the post — the failure that makes a respawn hard rather than merely tight. The
+      // one shipped tile the band would reject is named in CLEARANCE_EXCEPTIONS above; nothing else is
+      // waived. Row `cp.row` itself is in here on purpose: it is the row the respawned hero's own box
+      // occupies, and it is the row a hand-narrowed loop used to skip (see the DERIVED note above).
+      for (const d of CHECKPOINT_BAND_COL_OFFSETS) {
+        sweptAirCols.add(d);
+        for (const off of CHECKPOINT_BAND_ROW_OFFSETS) {
+          const ty = cp.row + off;
+          sweptAirRows.add(off);
           const ch = level.tiles[ty][tx + d];
           if (!isSolid(ch)) continue;
           const exc = CLEARANCE_EXCEPTIONS.find((e) => e.level === def.label && e.col === tx + d && e.row === ty);
@@ -3178,25 +3267,14 @@ check('R38', () => {
     if (gap < 24 || gap > 48) bad.push(`${def.label}: the two flags are ${gap} columns apart, expected roughly two screens (24..48)`);
   }
   assert(bad.length === 0, bad[0]);
-  // The whitelist is only auditable if it stays exactly as true as it reads, so an entry that is
-  // never consulted is an error rather than dead weight: it means a flagpost moved and this tile is
-  // no longer the reason the band passes, and someone has to say so.
-  //
-  // HOW FAR THIS AUDIT ACTUALLY REACHES — measured 2026-11-16, because the wording above used to
-  // imply both directions were tested and only one is. The DEAD-WEIGHT direction (`hits === 0`) is
-  // real: 1-2's post at col 105 → `the R38 clearance exception for 1-2 (114,9) 'P' was consulted 0
-  // time(s), expected exactly 1`. The DOUBLE-CONSULT direction (`hits === 2`) is UNREACHABLE through
-  // any map edit: for two posts to consult this single tile they would both have to sit within ±2
-  // columns of 114, and this same check asserts 2 checkpoints per map 24..48 columns apart, so any
-  // pair that could share it is already illegal. Measured with 1-2's posts at cols 112 AND 113: R38
-  // dies at `assert(bad.length === 0, bad[0])` just above with `1-2: the two flags are 1 columns
-  // apart, expected roughly two screens (24..48)` and this loop is never reached — `R43` goes red in
-  // the same run as well (unpinned `1-2@113`), but that does not make this loop reachable. So this
-  // clause is credited with the 0 side only — the 2 side is caught upstream, by a different message —
-  // and the relocation class it guards is now also caught by R43's hazard pins.
-  for (const e of CLEARANCE_EXCEPTIONS) {
-    assert(e.hits === 1, `the R38 clearance exception for ${e.level} (${e.col},${e.row}) '${e.ch}' was consulted ${e.hits} time(s), expected exactly 1 — delete it if no flagpost's clearance band passes over it any more, or say why two posts now share it`);
-  }
+  // [ORDER MATTERS, 2026-11-17: the clearance-exception audit moved BELOW the band pins and the swept-set
+  // audits that follow. It used to run first, and that made any width pin placed after it unreachable in
+  // practice — narrowing the ring to ±1 stops consulting the (114,9) exception, so the `hits === 0`
+  // message printed and the width claim was never the thing measured (measured, before the move:
+  // `CLEARANCE_BAND_COLS = 1` → `…consulted 0 time(s)…`, 42/43). Re-measured after the move, that
+  // mutation now fails on the width assert. The exception audit's own documented proof (1-2's post moved
+  // to col 105 → `…was consulted 0 time(s)…`) survives the move unchanged: that mutation leaves every
+  // pin above it satisfied, so the audit is still the message that prints.]
 
   // THE BAND THIS CHECK CLEARS IS THE BAND THE GAME TRIGGERS ON — asserted, not implied. Until fix
   // pass 5 that coupling was proved by the post art, which was inked to exactly the trigger box (see
@@ -3210,9 +3288,60 @@ check('R38', () => {
   eq(rowsTop, 4, `R38 clears rows cp.row-3…cp.row over every post, but CHECKPOINT_TRIGGER_TOP is ${C.CHECKPOINT_TRIGGER_TOP}px (${rowsTop} tiles) — this check is clearing air main.js does not trigger on`);
   eq(rowsBottom, 1, `R38 treats the tile under cp.y as the surface the hero stands on inside the band, but CHECKPOINT_TRIGGER_BOTTOM is ${C.CHECKPOINT_TRIGGER_BOTTOM}px (${rowsBottom} tiles) — the trigger now reaches below the ground this check requires`);
   eq(C.CHECKPOINT_TRIGGER_W, C.TILE * 2, `R38 clears the post's own column plus one either side, and the trigger starts at cp.x and is ${C.CHECKPOINT_TRIGGER_W}px wide (${C.CHECKPOINT_TRIGGER_W / C.TILE} tiles) — if that stops being 2 tiles, the x-extent cleared here is not the x-extent that arms`);
-  // and the band must still be a band, i.e. the loop above must have walked a non-empty box
-  assert(rowsTop + rowsBottom >= 2, `the trigger band is ${rowsTop + rowsBottom} rows tall, so the clearance loop above is asking about a degenerate box`);
-  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); ${rowsTop + rowsBottom}-row x post±2-col clearance band held to CHECKPOINT_TRIGGER_* (${C.CHECKPOINT_TRIGGER_W}x${(rowsTop + rowsBottom) * C.TILE}px), nothing drawn at a post to compare`;
+  // THE ROW SET THE SWEEP IS SUPPOSED TO PRODUCE, pinned as a set and not just as two counts. The two
+  // `eq`s above pin the constants; they cannot see the DERIVATION drift (a `+ 1` becoming a `+ 2` keeps
+  // TOP at 4 and quietly moves the band off the hero's own row). This is the reachable half of that
+  // pair: any change to the constants or to how the offsets are read off them lands here, and the fix
+  // is to re-derive the band and re-measure, not to edit this literal.
+  eq(CHECKPOINT_BAND_ROW_OFFSETS.join(','), '-3,-2,-1,0', `the trigger band R38 clears is rows ${CHECKPOINT_BAND_ROW_OFFSETS.map((o) => 'cp.row' + (o < 0 ? o : '+' + o)).join('…')} over each post, derived from CHECKPOINT_TRIGGER_TOP=${C.CHECKPOINT_TRIGGER_TOP} BOTTOM=${C.CHECKPOINT_TRIGGER_BOTTOM} — it was supposed to be cp.row-3…cp.row, the four rows a standing hero's own box occupies over the post`);
+  // The swept ring must never be narrower than the box the game arms on. Reachable, and re-measured
+  // 2026-11-17 after the exception audit moved below it: `CLEARANCE_BAND_COLS = 1` → `FAIL R38 R38
+  // sweeps ±1 column(s) around each post (16px each way) but main.js's trigger box is 32px wide from
+  // cp.x …` (42/43). Before the move that mutation printed the exception audit instead and this line
+  // was never reached — the same unreachable-guard defect this pass deleted `rowsTop + rowsBottom >= 2`
+  // for, caught here by actually running the mutation the comment claimed it caught.
+  assert(CLEARANCE_BAND_COLS * C.TILE >= C.CHECKPOINT_TRIGGER_W, `R38 sweeps ±${CLEARANCE_BAND_COLS} column(s) around each post (${CLEARANCE_BAND_COLS * C.TILE}px each way) but main.js's trigger box is ${C.CHECKPOINT_TRIGGER_W}px wide from cp.x — the swept ring is now narrower than the box that arms a checkpoint, so a tile inside the trigger can be solid and unlooked-at`);
+  // AND THE LOOPS ARE HELD TO WHAT THEY CLAIM. Both sweeps above used to carry their extent as literals
+  // (`d = -2…2`, `ty = cp.row-3…cp.row`), and a literal narrowed by hand changed nothing anyone could
+  // see: measured 43/43 for `d = 0`, and 43/43 for `… <= cp.row - 1` with a solid planted in the post's
+  // own row inside the band. These three compares are what make those edits red. They record what each
+  // loop ACTUALLY iterated — the ground sweep and the air sweep separately, because a width pin shared
+  // between them is blind to narrowing one of the two (measured: air loop pinned to column 0 alone,
+  // ground loop still ±2, and a shared set stayed green) — so they fire on a narrowed or shifted loop
+  // rather than on a constant someone re-derived on purpose, which is the pair above's job.
+  const sortedSet = (s) => [...s].sort((a, b) => a - b).join(',');
+  const wantRows = CHECKPOINT_BAND_ROW_OFFSETS.join(',');
+  const wantCols = CHECKPOINT_BAND_COL_OFFSETS.join(',');
+  eq(sortedSet(sweptAirRows), wantRows, `the AIR sweep of the clearance band walked rows ${sortedSet(sweptAirRows)} around each post, but CHECKPOINT_TRIGGER_TOP/BOTTOM make the trigger box rows ${wantRows} — every one of them must be looked at, over the post's column and both walk-up columns (the row that dropped out is the one the respawned hero's own box sits in)`);
+  eq(sortedSet(sweptAirCols), wantCols, `the AIR sweep of the clearance band walked columns ${sortedSet(sweptAirCols)} around each post, but the ring is ±${CLEARANCE_BAND_COLS} — the outer column is where a respawn's first jump arcs (R43 measures it), and the trigger box main.js arms on is ${C.CHECKPOINT_TRIGGER_W / C.TILE} tiles wide from the post's own column`);
+  eq(sortedSet(sweptGroundCols), wantCols, `the GROUND-under-post sweep walked columns ${sortedSet(sweptGroundCols)}, but the same ±${CLEARANCE_BAND_COLS} ring applies: digging out under the post's shoulder (measured at 1-1's col-91 post, ground removed at col 93) has to be visible to this check, and a sweep narrowed to the post's own column alone measured 43/43 while it stood`);
+  // The whitelist is only auditable if it stays exactly as true as it reads, so an entry that is
+  // never consulted is an error rather than dead weight: it means a flagpost moved and this tile is
+  // no longer the reason the band passes, and someone has to say so.
+  //
+  // HOW FAR THIS AUDIT ACTUALLY REACHES — measured 2026-11-16, because the wording above used to
+  // imply both directions were tested and only one is. The DEAD-WEIGHT direction (`hits === 0`) is
+  // real: 1-2's post at col 105 → `the R38 clearance exception for 1-2 (114,9) 'P' was consulted 0
+  // time(s), expected exactly 1`. The DOUBLE-CONSULT direction (`hits === 2`) is UNREACHABLE through
+  // any map edit: for two posts to consult this single tile they would both have to sit within ±2
+  // columns of 114, and this same check asserts 2 checkpoints per map 24..48 columns apart, so any
+  // pair that could share it is already illegal. Measured with 1-2's posts at cols 112 AND 113: R38
+  // dies at `assert(bad.length === 0, bad[0])` above with `1-2: the two flags are 1 columns
+  // apart, expected roughly two screens (24..48)` and this loop is never reached — `R43` goes red in
+  // the same run as well (unpinned `1-2@113`), but that does not make this loop reachable. So this
+  // clause is credited with the 0 side only — the 2 side is caught upstream, by a different message —
+  // and the relocation class it guards is now also caught by R43's hazard pins. (It also stopped being
+  // the message a band-width edit produces, on 2026-11-17, when it moved below the band pins: see the
+  // ORDER MATTERS note above.)
+  for (const e of CLEARANCE_EXCEPTIONS) {
+    assert(e.hits === 1, `the R38 clearance exception for ${e.level} (${e.col},${e.row}) '${e.ch}' was consulted ${e.hits} time(s), expected exactly 1 — delete it if no flagpost's clearance band passes over it any more, or say why two posts now share it`);
+  }
+  // [REMOVED 2026-11-17: `assert(rowsTop + rowsBottom >= 2, …)` here was unreachable — the two `eq`s
+  // above pin 4 and 1, so the sum is 5 on every path that reaches it, and a degenerate pair (BOTTOM = 0)
+  // fails at the `eq` first. Measured: CHECKPOINT_TRIGGER_BOTTOM = 0 → `expected 1, got 0` at the
+  // `eq(rowsBottom, …)` line, never here. Non-degeneracy is therefore credited to those pins, which is
+  // where it is actually caught, rather than kept as decoration behind them.]
+  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); ${CHECKPOINT_BAND_ROW_OFFSETS.length}-row x post±${CLEARANCE_BAND_COLS}-col clearance band held to CHECKPOINT_TRIGGER_* (${C.CHECKPOINT_TRIGGER_W}x${CHECKPOINT_BAND_ROW_OFFSETS.length * C.TILE}px), swept set audited (${sweptAirRows.size}x${sweptAirCols.size} air, ${sweptGroundCols.size} ground), nothing drawn at a post to compare`;
 });
 
 // ---------------------------------------------------------------------------
@@ -3840,16 +3969,77 @@ check('R43', () => {
 // all still read level.checkpoints. A removal like that takes its own assertions with it, so both
 // halves of the new contract are pinned here, each with its own mutation proof below:
 //
-//  (1) NOTHING IS DRAWN AT A POST. A real shipped level is rendered through src/render.js's own
-//      render() into the mock context and the draw streams are diffed — every fillRect / fillText /
-//      drawImage, in issue order, with colour, alpha and sequence number — for three renders of the
-//      SAME state: as authored, with level.checkpoints emptied, and with every post banked. All three
-//      must be byte-identical. "Identical to the level that has no checkpoints at all" is the
-//      non-vacuous form: a post that draws anything, anywhere in the frame, taken or not, cannot
-//      survive it, at any camera position. render() is a pure function of (ctx, G) in PLAYING — its
-//      only wall-clock input is drawTitle's Date.now() blink, which the PLAYING path never reaches —
-//      so the comparison is deterministic; the fourth render below proves that rather than assuming
-//      it (the same state rendered twice must reproduce, or "identical" would only mean "both were noise").
+//  (1) NOTHING IS DRAWN AT A POST, over a state space that is written down instead of assumed. Levels
+//      are rendered through src/render.js's own render() into the mock context and the draw streams are
+//      diffed — every fillRect / fillText / drawImage, in issue order, with colour, alpha and sequence
+//      number — for EVERY shipped LEVELS definition x four camera positions (three putting the level's
+//      first post on screen centred / at the left edge / at the right edge, one with no post on screen
+//      at all) x four checkpoint states (unarmed, all-taken-but-unarmed, armed on post 0, armed on the
+//      last post). Per (level, camera): each state's frame must equal the SAME state's frame with
+//      `level.checkpoints` emptied, AND the armed frame must equal the unarmed frame with the array
+//      intact — that second comparison is the one this check did not have, and it is what makes "the
+//      marker appears after you bank" undrawable. On top of the differentials there is an ABSOLUTE
+//      probe: each post's trigger band (the CHECKPOINT_TRIGGER_* box R38 holds clear, cols post±2 x
+//      rows cp.row-3…cp.row) must ink exactly what the same box inks on that map stripped of every
+//      checkpoint and every solid above the ground line, in three states (unarmed / armed / armed with
+//      the hero pinned on the post), and one pair per level x camera with the intro BANNER up (the
+//      banner is drawn from `level.label` at y=60, outside the probe's band, so it needs its own pair).
+//      Total today: 138 comparisons, 1138 fillRects in the reference frame.
+//
+//  MEASURED SENSITIVITY FLOOR, and what still escapes (2026-11-17, throwaway copies of this tree with
+//      markers injected into src/render.js; the repo was never mutated). This replaces the previous
+//      sentence, which claimed a post that draws anything "anywhere in the frame, taken or not, cannot
+//      survive it, at any camera position". That was false as measured: the old clause rendered ONE
+//      level (1-1, via newGame()), ONE camera offset, ONE frame, with G.checkpointIndex = -1, and only
+//      cancelled code that reads level.checkpoints — and an auditor's three marker variants walked
+//      through it at 43/43. What the rewritten clause catches, with the FAIL line each produced:
+//        - the deleted flagpost draw restored            → `FAIL R45 1-1 @cam 760 (post centred)
+//          state=unarmed: a checkpoint changed the frame — fillRect #495: with checkpoints
+//          [120,192,4,16,"#f08c1e",null,495], without them [1880,128,2,80,"#e8e0c0",null,495]`
+//        - a SINGLE 1×1 fillRect at the post (P.red, cp.x+8/cp.y+8) → same clause, `fillRect #495:
+//          with checkpoints [128,200,1,1,"#e8434f",null,495], …` — the 1×1 sensitivity the old clause
+//          had is kept, and the harness paints a canary pixel of its own at the end of the clause to
+//          prove the probe is still wired to a pixel.
+//        - a marker gated on `g.checkpointIndex >= 0` (appears only after you bank; coordinates from
+//          nowhere, placed where no probe box is) → `FAIL R45 1-1 @cam 760 (post centred) arming:
+//          raising the left authority (checkpointIndex -1 → 0, checkpointX 0 → 880) changed the frame —
+//          fillRect #495: unarmed [1880,128,2,80,"#e8e0c0",null,495], armed
+//          [4,120,6,6,"#ffd23e",null,495]` — the old clause could not see this one; it never armed the
+//          state, and no `level.checkpoints` differential can: the coordinates here come from nowhere.
+//        - a marker gated on `level.label === '1-3'` (a level the old clause never rendered) →
+//          `FAIL R45 1-3 @cam 552 (post centred) state=unarmed: a checkpoint changed the frame —
+//          fillRect #502: with checkpoints [120,168,4,8,"#f08c1e",null,502], …`
+//        - a marker whose coordinates come from the authored MAP STRINGS rather than from
+//          level.checkpoints → `FAIL R45 1-1 @cam 760 probe=unarmed/parked: the col-55 post's trigger
+//          band (cols 53…57, rows 9…12) holds ink the bare world does not produce — with the level's
+//          posts present: 120,184=#b35c0a, on the same map stripped of them: 120,184=#9be3f5` — neither
+//          differential can see this one (it draws in both arms of both), the absolute probe can.
+//        - a marker that only paints while the hero stands in the post's tile → caught by the probe's
+//          pinned state: `FAIL R45 1-1 @cam 760 probe=armed/hero pinned on the post: …
+//          126,186=#ffd23e …`.
+//        - a "marker" that is not a sprite at all but one extra character in the intro banner string
+//          (`WORLD 1-1#1 — STRAWBERRY FIELDS`) → `FAIL R45 1-1 @cam 760 (post centred) banner up: a
+//          checkpoint changed the framed banner — fillRect #1138: with checkpoints [35,63,1,1,"#1a1a1a",
+//          1,1138], without them [41,63,1,1,"#1a1a1a",1,1138]` — every glyph after the inserted `#1`
+//          shifted 6 px. This is why one pair per level and camera renders with the banner live.
+//      WHAT STILL ESCAPES, stated because the point of a guarantee is its edges:
+//        - A draw that depends on NO checkpoint state and lands OUTSIDE every post's trigger band.
+//          Measured: `ctx.fillRect(4, 120, 4, 4)` in an unused palette colour, painted unconditionally
+//          on every level — the whole suite stays **43/43**. That is not a hidden checkpoint marker (it
+//          is furniture, drawn identically with or without a `K` anywhere in the game), but this check
+//          cannot tell the two apart and does not claim to.
+//        - Ink in a post's band that exactly matches the colour already there (invisible by definition),
+//          ink outside the band (the probe's box is the trigger box, not the whole frame), and any state
+//          this check does not render: PAUSED / LEVEL_CLEAR / WIN / GAME_OVER overlays, TITLE, camera
+//          positions other than the four above, checkpoint states other than the four above, hero
+//          positions other than parked / pinned-on-post-0, banner phases other than the one `bannerT =
+//          1.5` pair, levels other than the three shipped, and anything that depends on a LIVE crossing
+//          (a draw that happens only on the frame a hero runs through the band at RUN_MAX, or only for
+//          the first N frames of a run). Clause 2 covers the audible/pushable half of that one real
+//          crossing.
+//      render() is a pure function of (ctx, G) in PLAYING — its only wall-clock input is drawTitle's
+//      Date.now() blink, which the PLAYING path never reaches — so repeating a render is a determinism
+//      test rather than an assumption, and it is run as one on every camera position.
 //
 //  (2) ARRIVAL IS SILENT, AND IT STILL ARMS. One real left-to-right crossing at RUN_MAX through the
 //      real fixed-timestep loop, from a deliberately live, decaying banner: zero items pushed (so zero
@@ -3884,7 +4074,7 @@ check('R45', () => {
   // changes.
   const stream = (r) => JSON.stringify([r.rects, r.text, r.blits, r.scaleCalls, r.translateCalls]);
   const shot = () => { const r = mkRecorder(); renderScene(mkCtx(r), G); return stream(r); };
-  const firstDiff = (a, b) => {
+  const firstDiff = (a, b, la = 'with checkpoints', lb = 'without them') => {
     const A = JSON.parse(a);
     const B = JSON.parse(b);
     const kinds = ['fillRect', 'fillText', 'drawImage'];
@@ -3892,38 +4082,252 @@ check('R45', () => {
       for (let i = 0; i < Math.max(A[k].length, B[k].length); i++) {
         const x = JSON.stringify(A[k][i]);
         const y = JSON.stringify(B[k][i]);
-        if (x !== y) return `${kinds[k]} #${i}: with checkpoints ${x === undefined ? '(no such call)' : x}, without them ${y === undefined ? '(no such call)' : y}`;
+        if (x !== y) return `${kinds[k]} #${i}: ${la} ${x === undefined ? '(no such call)' : x}, ${lb} ${y === undefined ? '(no such call)' : y}`;
       }
     }
     return 'the two frames differ outside the draw-call kinds this check models';
   };
 
-  // ---- (1) nothing is drawn at a post, on a real shipped level
-  newGame();
-  const level = G.level;
-  const cps = level.checkpoints;
-  assert(cps.length >= 2, `${level.label} ships ${cps.length} checkpoints — there is nothing here to be invisible about`);
-  const takenBefore = cps.map((c) => c.taken);
-  G.cam.x = cps[0].x - 120;
-  const postScreenX = cps[0].x - Math.floor(G.cam.x);
-  assert(postScreenX >= 0 && postScreenX < C.VIEW_W, `the harness parked the camera so the first post lands at screen x=${postScreenX}, outside the ${C.VIEW_W}px view — the diff below would be comparing a frame with nothing in it`);
-  const authored = shot();
-  const nRects = JSON.parse(authored)[0].length;
+  // ---- (1) NOTHING IS DRAWED AT A POST — on every shipped level, at several cameras, armed or not
+  //
+  // The state space IS the claim, so it is spelled out. For each of the three shipped LEVELS
+  // definitions, for each of four camera positions (three that put the level's first post on screen at
+  // a different place in the frame, one that puts none of its posts on screen), for each of four
+  // checkpoint states:
+  //   unarmed      checkpointIndex = -1,  checkpointX = 0,   no post taken
+  //   spent        checkpointIndex = -1,  checkpointX = 0,   EVERY post taken   (isolates cp.taken)
+  //   armed        checkpointIndex = 0,   checkpointX = post0.x, taken flags derived
+  //   banked       checkpointIndex = last, checkpointX = last post, all taken
+  // two things are asserted:
+  //   (a) the frame equals the frame of the SAME level with `level.checkpoints` emptied — the
+  //       differential, which is what catches a draw that reads level.checkpoints or cp.taken; and
+  //   (b) the ARMED frame equals the UNARMED frame of the same level with its array intact — the axis
+  //       this check did not have before 2026-11-17, and the one that makes a marker gated on
+  //       `g.checkpointIndex` ("appears after you bank") impossible to hide, including one whose
+  //       coordinates have nothing to do with `level.checkpoints`.
+  // Then a third, NON-differential half (the absolute probe below) covers markers that no checkpoint
+  // state can make appear or disappear. `render()` is a pure function of (ctx, G) in PLAYING — its only
+  // wall-clock input is drawTitle's Date.now() blink, which the PLAYING path never reaches — so
+  // repeating a render is a determinism test rather than an assumption, and it is run as one.
+  const STATES = [
+    { name: 'unarmed', arm: -1, allTaken: false },
+    { name: 'spent', arm: -1, allTaken: true },
+    { name: 'armed', arm: 0, allTaken: null },
+    { name: 'banked', arm: -2, allTaken: true },
+  ];
+  const setArmState = (level, st) => {
+    const idx = st.arm === -2 ? level.checkpoints.length - 1 : st.arm;
+    G.checkpointIndex = idx;
+    G.checkpointX = idx < 0 ? 0 : level.checkpoints[idx].x;
+    for (const c of level.checkpoints) c.taken = st.allTaken === null ? c.x <= G.checkpointX : st.allTaken;
+  };
+  const NO_POST_SPOT = 'no post on screen';
+  const CAM_SPOTS = [
+    { name: 'post centred', at: 120 },
+    { name: 'post at the left edge', at: 32 },
+    { name: 'post at the right edge', at: C.VIEW_W - 48 },
+    { name: NO_POST_SPOT, at: null },
+  ];
 
-  level.checkpoints = [];
-  const emptied = shot();
-  level.checkpoints = cps;
+  const diffs = [];
+  let nRects = 0;
+  let comparisons = 0;
+  let firstLevel = null;   // the frame the canary is painted into (1-1, post centred)
+  const probeCases = [];
+  for (const def of LEVELS) {
+    const level = parseLevel(def);
+    const cps = level.checkpoints;
+    assert(cps.length >= 2, `${def.label} ships ${cps.length} checkpoints — there is nothing here to be invisible about`);
+    installLevel(level);
+    // A canonical HUD, so the figure this check prints and the stream it diffs do not depend on what
+    // the previous check left behind in G.score / G.lives / G.muted.
+    G.score = 0; G.lives = C.START_LIVES; G.fruitCount = 0; G.muted = false; G.bannerT = 0;
+    const maxCam = Math.max(0, level.widthPx - C.VIEW_W);
+    for (const spot of CAM_SPOTS) {
+      const camX = spot.at === null ? 0 : Math.min(Math.max(0, cps[0].x - spot.at), maxCam);
+      G.cam.x = camX;
+      if (spot.at === null) {
+        const live = cps.filter((c) => c.x - camX >= 0 && c.x - camX < C.VIEW_W);
+        assert(live.length === 0, `the harness meant to render ${def.label} with no post on screen and found ${live.length} inside the view — the "identical to the frame with nothing in it" comparison below would be comparing an empty frame`);
+      } else {
+        const sx = cps[0].x - camX;
+        assert(sx >= 0 && sx < C.VIEW_W, `the harness parked the camera so ${def.label}'s first post lands at screen x=${sx}, outside the ${C.VIEW_W}px view — the diff below would be comparing a frame with nothing in it`);
+      }
+      for (const st of STATES) {
+        setArmState(level, st);
+        const where = `${def.label} @cam ${camX} (${spot.name}) state=${st.name}`;
+        const authored = shot();
+        if (!nRects) { nRects = JSON.parse(authored)[0].length; firstLevel = level; }
+        const kept = level.checkpoints;
+        level.checkpoints = [];
+        const emptied = shot();
+        level.checkpoints = kept;
+        comparisons++;
+        if (emptied !== authored) diffs.push(`${where}: a checkpoint changed the frame — ${firstDiff(authored, emptied)} (${nRects} fillRect calls with the level's ${cps.length} posts, ${JSON.parse(emptied)[0].length} with none)`);
+      }
+      // (b) arming must be invisible, array and all: same level, same camera, same hero, same taken
+      // flags as the arming rules produce — only G.checkpointIndex / G.checkpointX differ.
+      setArmState(level, STATES[0]);
+      const unarmed = shot();
+      eq(shot(), unarmed, `rendering ${def.label}'s PLAYING state twice through src/render.js produced two different draw streams — the harness is not deterministic, so nothing in this check can call anything identical`);
+      setArmState(level, STATES[2]);
+      const armed = shot();
+      comparisons++;
+      if (armed !== unarmed) diffs.push(`${def.label} @cam ${camX} (${spot.name}) arming: raising the left authority (checkpointIndex -1 → 0, checkpointX 0 → ${cps[0].x}) changed the frame — ${firstDiff(unarmed, armed, 'unarmed', 'armed')}`);
+      // (b2) with the intro banner UP. Every comparison so far renders with `bannerT = 0`, which is the
+      // right baseline for diffing terrain, but it means a marker that extended the banner STRING
+      // (`'WORLD ' + label + (cp.taken ? ' ✔' : '')`) rather than drawing a sprite would be invisible to
+      // all of them. The banner is drawn from `level.label` at y=60 (`render.js:308-314`), i.e. outside
+      // the probe's band, so this pair is the only thing that watches it.
+      G.bannerT = 1.5;
+      setArmState(level, STATES[2]);
+      const bannerArmed = shot();
+      const keptB = level.checkpoints;
+      level.checkpoints = [];
+      const bannerEmptied = shot();
+      level.checkpoints = keptB;
+      comparisons++;
+      if (bannerEmptied !== bannerArmed) diffs.push(`${def.label} @cam ${camX} (${spot.name}) banner up: a checkpoint changed the framed banner — ${firstDiff(bannerArmed, bannerEmptied)}`);
+      setArmState(level, STATES[0]);
+      const bannerUnarmed = shot();
+      comparisons++;
+      if (bannerArmed !== bannerUnarmed) diffs.push(`${def.label} @cam ${camX} (${spot.name}) banner up + arming: ${firstDiff(bannerUnarmed, bannerArmed, 'unarmed', 'armed')}`);
+      G.bannerT = 0;
+      probeCases.push({ def, level, camX, spot: spot.name });
+    }
+  }
+  assert(diffs.length === 0, diffs[0]);
 
-  // and a banked post is invisible too: cp.taken may not be readable on screen in any form. The
-  // deleted art recoloured a spent flag (pumpkin → used), which is the regression this clause catches
-  // now that there is no sprite to colour-compare.
-  for (const c of cps) c.taken = true;
-  const banked = shot();
-  cps.forEach((c, i) => { c.taken = takenBefore[i]; });
-
-  eq(shot(), authored, 'rendering the same PLAYING state twice through src/render.js produced two different draw streams — the harness is not deterministic, so nothing in this check can call anything identical');
-  assert(emptied === authored, `a checkpoint changed the frame: ${firstDiff(authored, emptied)} — nothing may be drawn at a post (${nRects} fillRect calls with the level's ${cps.length} posts, ${JSON.parse(emptied)[0].length} with none)`);
-  assert(banked === authored, `a banked checkpoint is drawn differently from a live one: ${firstDiff(authored, banked)} — cp.taken must not be visible at all. This is what R38's deleted "banked art differs" clause used to prove by colour, and colour comparison is not available for a sprite that does not exist`);
+  // (c) THE ABSOLUTE PROBE — what a post's own band of screen inks, measured against the same band on a
+  // version of that map with every checkpoint and every non-ground tile removed.
+  //
+  // Why this exists: (a) and (b) are DIFFERENTIALS, so a marker can only be caught by something the
+  // test changes. The audit's third surviving variant was a marker whose coordinates came from the map
+  // data rather than from `level.checkpoints`, and no amount of checkpoint-state coverage makes such a
+  // draw appear in one render and not the other — it is in both, and a diff of a frame against itself
+  // cannot see it. So this half asks a non-comparative question instead: the box main.js arms on
+  // (`CHECKPOINT_TRIGGER_*`, rows cp.row-3…cp.row over post±2, the same band R38 holds clear of terrain)
+  // must contain nothing but the parallax. Ground, fruit, turnips, the hero and the banner are taken out
+  // of the probe state (an actor that legitimately inks the post's tile would swallow a marker with it);
+  // what is left in the box, on a map with no `K` and no solid above the ground line, is sky, hills,
+  // clouds and bushes — and those layers are `(ctx, camX)`-only functions, which is why the same camera
+  // on the stripped map is a legitimate reference rather than a different picture.
+  //
+  // A CANARY closes the loop on this probe's own wiring, because a probe that always returns the same
+  // string would pass for exactly the same reason a vacuous diff does: after the comparison, the harness
+  // paints one 1×1 fillRect of its own inside the first post's box and requires the probe to notice.
+  // That proves the machinery is sensitive to a single pixel at the post (which is the sensitivity floor
+  // R45 claims); it does NOT claim anything about a marker the probe's box does not cover — see the
+  // MEASURED SENSITIVITY note in the header above this check.
+  // What the probe reports per box is the set of `x,y=colour` pairs the frame inked inside it, last
+  // write wins (the same overwrite semantics the shared recorder uses), so a marker that paints over
+  // sky reads as a difference and a marker painted over by terrain does not hide.
+  const bandBoxes = (level) => level.checkpoints.map((cp) => ({
+    tx: cp.x / C.TILE,
+    x0: cp.x - CLEARANCE_BAND_COLS * C.TILE, x1: cp.x + (CLEARANCE_BAND_COLS + 1) * C.TILE,
+    y0: (cp.row + CHECKPOINT_BAND_ROW_OFFSETS[0]) * C.TILE,
+    y1: (cp.row + CHECKPOINT_BAND_ROW_OFFSETS[CHECKPOINT_BAND_ROW_OFFSETS.length - 1] + 1) * C.TILE,
+  }));
+  const fmtBox = (m) => [...m.entries()].sort((p, q) => (p[0] < q[0] ? -1 : 1)).map((e) => e.join('=')).join(';');
+  const probeShot = (boxes, camX) => {
+    const r = mkRecorder();
+    r.glyphInk = false;
+    r.inkRects = false;
+    const hits = boxes.map(() => new Map());
+    r.inkRects = true;
+    r.ink = (x, y, color) => {
+      for (let i = 0; i < boxes.length; i++) {
+        const b = boxes[i];
+        if (x >= b.x0 - camX && x < b.x1 - camX && y >= b.y0 && y < b.y1) hits[i].set(x + ',' + y, color);
+      }
+    };
+    const ctx = mkCtx(r);
+    renderScene(ctx, G);
+    return { ctx, boxReport: (i) => fmtBox(hits[i]) };
+  };
+  const inkDiff = (a, b) => {
+    const A = a.split(';');
+    const B = b.split(';');
+    for (let i = 0; i < Math.max(A.length, B.length); i++) if (A[i] !== B[i]) return `with the level's posts present: ${A[i] || '(nothing inked there)'}, on the same map stripped of them: ${B[i] || '(nothing inked there)'}`;
+    return 'the two boxes differ in ink count only';
+  };
+  const airCache = new Map();
+  const bareState = (camX, pinX) => {
+    G.score = 0; G.lives = C.START_LIVES; G.fruitCount = 0; G.muted = false; G.bannerT = 0;
+    G.enemies = []; G.items = [];
+    G.cam.x = camX;
+    // With pinX the hero stands ON the post's tile — the state R36 pins a banked checkpoint in, and the
+    // one a marker could hide behind. Without it the hero is parked off the left edge of the view: it is
+    // 12 px wide and stands on row 12, i.e. exactly inside the box being probed, so anywhere near the
+    // post it becomes part of what the probe has to explain. Both renders of a pair put the hero in the
+    // SAME place, so its own ink cancels and only what the post adds is left.
+    G.player.x = pinX === null ? camX - 64 : pinX;
+    G.player.y = GROUND_TOP - G.player.h;
+    G.player.vx = 0; G.player.vy = 0; G.player.invulnT = 0; G.player.animT = 0;
+  };
+  const probe = (def, level, camX, st) => {
+    const boxes = bandBoxes(level);
+    const pinX = st.pin ? level.checkpoints[0].x : null;
+    installLevel(level);
+    level.bumps.length = 0;
+    bareState(camX, pinX);
+    setArmState(level, STATES[st.arm ? 2 : 0]);
+    const mine = probeShot(boxes, camX);
+    // The reference is ALWAYS unarmed. It is meant to be "what the bare world inks here", and a
+    // checkpoint state is not part of the world: feeding the reference an armed G would let a marker
+    // gated on `g.checkpointIndex >= 0` ink the reference too and cancel itself out of the diff.
+    const key = camX + '|' + (st.pin ? 'pinned' : 'parked');
+    if (!airCache.has(key)) {
+      // This map, same width (so the parallax hash lands on the same columns), ground kept, everything
+      // else removed: every solid above the ground line, every enemy, every pickup, every `K`. And a
+      // label no shipped level has, so a marker gated on `level.label === '1-3'` cannot be inked here
+      // and passed off as background either.
+      const air = synth({
+        label: `${def.label} (bare)`,
+        name: `${def.name} bare`,
+        map: def.map.map((row, ty) => Array.from(row).map((ch) => (ch === 'H' || ch === 'G' || ch === 'F') ? ch : (ty >= C.ROWS - 2 && isSolid(ch) ? ch : '.')).join('')),
+      });
+      installLevel(air);
+      air.bumps.length = 0;
+      bareState(camX, pinX);
+      G.checkpointIndex = -1;
+      G.checkpointX = 0;
+      const bare = probeShot(boxes, camX);
+      airCache.set(key, boxes.map((_, i) => bare.boxReport(i)));
+    }
+    const ref = airCache.get(key);
+    for (let i = 0; i < boxes.length; i++) {
+      comparisons++;
+      if (mine.boxReport(i) !== ref[i]) diffs.push(`${def.label} @cam ${camX} probe=${st.name}: the col-${boxes[i].tx} post's trigger band (cols ${boxes[i].tx - CLEARANCE_BAND_COLS}…${boxes[i].tx + CLEARANCE_BAND_COLS}, rows ${boxes[i].y0 / C.TILE}…${boxes[i].y1 / C.TILE - 1}) holds ink the bare world does not produce — ${inkDiff(mine.boxReport(i), ref[i])}`);
+    }
+    return mine;
+  };
+  const PROBE_STATES = [
+    { name: 'unarmed/parked', arm: false, pin: false },
+    { name: 'armed/parked', arm: true, pin: false },
+    { name: 'armed/hero pinned on the post', arm: true, pin: true },
+  ];
+  let canaryProbe = null;
+  for (const c of probeCases) {
+    if (c.spot === NO_POST_SPOT) continue; // every box is off-screen there — nothing to probe
+    for (const st of PROBE_STATES) {
+      const got = probe(c.def, c.level, c.camX, st);
+      if (!canaryProbe && c.def.label === LEVELS[0].label && c.spot === CAM_SPOTS[0].name) canaryProbe = { got, camX: c.camX };
+    }
+  }
+  assert(diffs.length === 0, diffs[0]);
+  // The CANARY, last: one 1×1 fillRect painted by the harness itself, through the same mock context,
+  // inside the first post's box. If the probe cannot see that, its PASS lines mean nothing — which is
+  // the same reason the determinism repeat above is a real render and not a comment.
+  {
+    const box = bandBoxes(firstLevel)[0];
+    const before = canaryProbe.got.boxReport(0);
+    canaryProbe.got.ctx.fillStyle = C.PALETTE.pumpkin;
+    canaryProbe.got.ctx.fillRect(box.x0 - canaryProbe.camX + 4, box.y0 + 4, 1, 1);
+    const after = canaryProbe.got.boxReport(0);
+    assert(after !== before, `R45's own ink probe did not notice a 1×1 fillRect painted into the col-${box.tx} post's trigger band — the probe sees nothing, so every probe PASS above is worth nothing`);
+    assert(after.includes(C.PALETTE.pumpkin), `the canary pixel changed the probe's box but is not in its report (${after.slice(0, 140)}…) — the probe is reporting the wrong region`);
+  }
 
   // ---- (2) a real arrival is silent AND still arms
   const fl = flagLevel({ cols: 120, flag: [C.ROWS - 3, 40] });
@@ -3982,7 +4386,7 @@ check('R45', () => {
   input.run = false;
   eq(p.x, post.x, `holding left after a silent bank left the hero at x=${p.x.toFixed(2)} instead of pinned on the post at ${post.x} — the invisible checkpoint stopped clamping the hero`);
   eq(G.cam.x, post.x - CAMERA_FOLLOW_X, `the silent bank did not give the camera its floor (cam.x=${G.cam.x} against ${post.x - CAMERA_FOLLOW_X})`);
-  return `nothing drawn at a post (${nRects} fillRect calls identical with ${cps.length} posts live, ${cps.length} removed and ${cps.length} banked) | RUN_MAX arrival at x=${post.x} over ${frames} frames: ${heard.length} sfx, 0 items, banner ${banner0} → ${G.bannerT.toFixed(2)} (peak ${bannerMax.toFixed(4)}), still armed, hero pinned on ${post.x}, camera floored on ${post.x - CAMERA_FOLLOW_X}`;
+  return `nothing drawn at a post: ${comparisons} render comparisons (${LEVELS.length} maps x ${CAM_SPOTS.length} cameras x ${STATES.length} checkpoint states, draw streams identical with the posts present and emptied + armed identical to unarmed; each post's trigger band ink-matched against the same map stripped bare; canary pixel seen) — the 1-1 reference frame is ${nRects} fillRects | RUN_MAX arrival at x=${post.x} over ${frames} frames: ${heard.length} sfx, 0 items, banner ${banner0} → ${G.bannerT.toFixed(2)} (peak ${bannerMax.toFixed(4)}), still armed, hero pinned on ${post.x}, camera floored on ${post.x - CAMERA_FOLLOW_X}`;
 });
 
 // MARKER:CHECKS

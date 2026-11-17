@@ -28,6 +28,31 @@ const CAM_EPS = 1e-6;
 // The floor is clamped under the ceiling, so a checkpoint past the last legal scroll position
 // can never produce a range with no valid cam.x inside it.
 //
+// WHAT `minX` ACTUALLY PROTECTS, because it is easy to read the line below as gameplay-enforced and
+// it is not (measured 2026-11-17): passing `0` at the call site — i.e. deleting the checkpoint floor
+// outright — leaves the whole suite GREEN (`R36`/`R44`/`R45` still print "rests exactly on 544",
+// because every one of them judges a camera that has already been carried to 544 by the follow). It is
+// an EQUIVALENT MUTANT in every reachable state, and here is why, exactly: main.js clamps the HERO to
+// the same bound (`updatePlayer`'s minX, player.js:135-138, from the same checkpointBounds() pair), so a
+// playable state always has `p.x >= checkpointX`, hence `target = p.x - CAMERA_FOLLOW_X >= checkpointX -
+// CAMERA_FOLLOW_X = lo`. Measured over the whole suite to make sure that is not hand-waving: 22,335
+// updateCamera frames, `lo > 0` on 4,446 of them, and `target < lo` with a non-zero `lo` on 350 — all
+// 350 inside R20 clause 1, which drives the follow with a hand-parked player at x=0 against FLOOR=640.
+// That is precisely the state player.js's clamp exists to make un-buildable, and it is the branch's only
+// customer. (`target < lo` with `lo === 0` is routine, 3,366 frames: that is the world's left edge,
+// which is the same clamp doing its ordinary job.)
+//
+// The suite deliberately does NOT get a new scenario for this. An assertion that shoves `cam.x` under
+// `lo` and then measures its recovery is the one thing that CANNOT tell `minX` from `minX = 0`: with
+// the hero pinned on the post, `target` is 544 either way, so the camera converges on the same number
+// at the same rate and both builds print the same "rests exactly on 544". R36 already runs exactly that
+// shove (forced to 0, floor 544) and passes on both. Anything tighter would have to assert a property
+// the shipped code does not have — e.g. that `cam.x` never sits below `lo`, which is precisely the wall
+// this function was rewritten to stop being, and R44 exists to keep it that way. So the guarantee is
+// documented here rather than tested: `minX` is a guard for unreachable states, not a gameplay bound,
+// and a change to it must be argued from `checkpointBounds()`/`player.js` being unchanged, not from a
+// green suite.
+//
 // The bounds are applied to the TARGET, before the lerp, never to `cam.x` after it. That is the
 // whole difference between a bound and a wall. Clamping the result meant that whenever the floor
 // moved forward — a checkpoint banking while the hero ran right — the camera, which always trails

@@ -990,7 +990,13 @@ checkpoint feedback.
 (`sprites.js` `drawBrick`), `pumpkin`/`pumpkinDark`/`pumpkinLit` are the block art, `stone`/`stoneDark`
 are stone tiles *and* the gate's arch; `P.white` is eyes, HUD, popups and the gate's highlight. Every one
 of them still has users after the deletion. `tools/verify.mjs` never enumerates palette entries — it
-names only `PALETTE.black`/`.white`/`.stone`/`.turnipTip` — so nothing asserted palette contents, and
+names only `PALETTE.black`/`.white`/`.stone`/`.turnipTip` — [SUPERSEDED 2026-11-17, FIX PASS 6 (NIT-2):
+the list was incomplete when written and is shorter than the file today. Measured with
+`grep -o "PALETTE\\.[a-zA-Z]*" tools/verify.mjs | sort | uniq -c`: `black` 5, `white` 4, `pumpkin` 2 (one
+of which is the new `R45` canary), `turnipTip` 1, `turnipBody` 1, `stone` 1, `sky` 1, plus a bare `P.red`.
+`.sky` and `.turnipBody` were the two the sentence missed. The conclusion is unaffected: no clause
+enumerates or iterates palette contents, so deleting an entry could not go red — which is exactly why
+nothing was deleted.] so nothing asserted palette contents, and
 nothing was removed anyway.
 
 ## Files touched
@@ -1129,3 +1135,296 @@ R30 R24 R23 R18 R04 SMOKE` 16/16 · `R36 R45` 2/2 · `R45 R36` 2/2 · `R38 R45 R
   checks' own text now says plainly that a "flag" is a checkpoint marker, not a drawn object.
 - Not touched: the deferred `R35` boss-freeze item, the `R39` `Q` double-award candidate, and
   `docs/REVIEW-2026-11-15.md` (its §11 quotes pass-2/4 numbers that this pass does not change).
+
+---
+
+# FIX PASS 6 — 2026-11-17 (a strict audit of pass 5: one BLOCKING harness claim that was false as measured, five MINORs, three NITs, and the held camera-step item)
+
+**Suite before:** `43/43`, exit 0, md5 `29facdb9f516030c782681717e9f5ac1` ×3, `ca8e85f` clean.
+**Suite after:** `43/43`, exit 0, md5 **`55f4c28b9688a76677adf5e4676efd5c`** ×3, 43 unique ids, `R34`/`R35`/`R39`
+still unregistered, `node --check` clean on all 13 files (12 `src/*.js` + `tools/verify.mjs`).
+**No product behaviour changed.** `src/` diff is `src/camera.js` **comment only** — `git diff -U0
+src/camera.js` has no `+`/`-` line that is not a comment — and the suite's output md5 is unaffected by it.
+Everything else is `tools/verify.mjs`, `architecture.md`, this file.
+
+Every experiment below ran in a throwaway copy: `git archive HEAD | tar -x` into the session temp, with the
+uncommitted pass-6 files overlaid so the code under test is this pass (a floor-less copy of `ca8e85f` was
+used whenever the question was what the OLD harness could or could not see). The repo tree was never
+mutated to test anything.
+
+## BLOCKING 1 — `R45` clause 1's universality claim was false; the clause was rebuilt to match the prose
+
+The old clause rendered ONE level (`newGame()` → 1-1), ONE camera (`cps[0].x − 120`), ONE frame, with
+`G.checkpointIndex === -1`, and cancelled only code that reads `level.checkpoints` — while its comment
+(`tools/verify.mjs:3845-3851`) and `architecture.md:151` both asserted that a post drawing anything
+"anywhere in the frame, taken or not, cannot survive it, **at any camera position**". The auditor's
+three marker variants walked through that at 43/43. Clause 1 now renders:
+
+* all **three** `LEVELS` definitions (not just the one `newGame()` happens to load),
+* **four** camera positions per level — post centred (`cam = cp0.x − 120`), post at the left edge (−32),
+  post at the right edge (`VIEW_W − 48`), and `cam = 0`, where an assert confirms no post is on screen at
+  all (so the "empty frame" comparison cannot quietly become the only real one),
+* **four** checkpoint states — `unarmed` (index −1, none taken), `spent` (index −1, **every post taken**:
+  isolates `cp.taken` from the index), `armed` (index 0, `checkpointX = cp0.x`, taken flags derived by
+  main.js's own rule), `banked` (index last, all taken),
+* the **arming axis** as its own comparison: armed vs unarmed, same level, same camera, array intact. This
+  is the axis the old clause did not have at all, and it is what kills a marker gated on the arm state
+  even when that marker's coordinates come from nowhere near `level.checkpoints`,
+* one **banner-up** pair per level × camera (`bannerT = 1.5`), because every other render runs with the
+  banner down and a marker could live in the banner *string* instead of in a draw call,
+* and, because a differential can only see what a test changes, one **absolute** comparison that is not a
+  differential at all: each post's `CHECKPOINT_TRIGGER_*` band (cols post±2 × rows cp.row−3…cp.row, i.e.
+  derived from the same constants as `R38`'s band) must ink exactly what the same box inks on **that map
+  stripped** — same width (so the parallax hash lands identically), ground kept, every solid above the
+  ground line and every `K` removed, and a label no shipped level has. Rendered in three states:
+  unarmed/parked, armed/parked, **armed with the hero pinned on the post** (the hero is 12 px wide on row
+  12, i.e. inside the box, so it is placed identically in both renders and cancels itself out). The
+  reference is deliberately always unarmed: a checkpoint state is not part of the bare world, and an
+  armed reference would let a `checkpointIndex`-gated marker ink both sides and cancel out.
+* The clause ends with a **canary**: the harness paints one 1×1 `fillRect` of its own into the first
+  post's band through the same mock context and requires the probe to report it. A probe that always
+  returned one string would otherwise pass for exactly the reason a vacuous diff does.
+
+**Total: 138 comparisons** (`PASS R45 nothing drawn at a post: 138 render comparisons (…) — the 1-1
+reference frame is 1138 fillRects | RUN_MAX arrival at x=640 over 259 frames: 0 sfx, 0 items, banner
+0.75 → 0.00 (peak 0.7333), still armed, hero pinned on 640, camera floored on 544`). Clause 2 (silence +
+still arms, one real RUN_MAX crossing) is unchanged.
+
+### The three previously-surviving variants, re-run as tooth-proofs — **all three now FAIL**
+
+The `before` column was re-measured here rather than taken on trust: `ca8e85f` extracted clean (no
+overlay) with each marker injected reproduces the auditor's result exactly — `43/43 pass, 0 fail` for all
+three, and `43/43` for the unmutated control.
+
+| injected marker (`src/render.js`) | on `ca8e85f` | after this pass |
+|---|---|---|
+| gated on `g.checkpointIndex >= 0`, coords from nowhere, at `(4,120)` | 43/43 | **42/43**, red on the arming axis |
+| gated on `level.label === '1-3'`, drawn from `level.checkpoints` | 43/43 | **42/43**, red on 1-3 |
+| coords derived from the authored **map strings**, not `level.checkpoints` | 43/43 | **42/43**, red on the absolute probe |
+
+Quoted FAIL lines (whole-suite run; each produced exactly one FAIL, `42/43 pass, 1 fail`):
+
+```
+FAIL R45 1-1 @cam 760 (post centred) arming: raising the left authority (checkpointIndex -1 → 0, checkpointX 0 → 880) changed the frame — fillRect #495: unarmed [1880,128,2,80,"#e8e0c0",null,495], armed [4,120,6,6,"#ffd23e",null,495]
+FAIL R45 1-3 @cam 552 (post centred) state=unarmed: a checkpoint changed the frame — fillRect #502: with checkpoints [120,168,4,8,"#f08c1e",null,502], without them [1454,164,1,1,"#1a1a1a",null,502] (1138 fillRect calls with the level's 2 posts, 1286 with none)
+FAIL R45 1-1 @cam 760 probe=unarmed/parked: the col-55 post's trigger band (cols 53…57, rows 9…12) holds ink the bare world does not produce — with the level's posts present: 120,184=#b35c0a, on the same map stripped of them: 120,184=#9be3f5
+```
+
+Sensitivity floor re-proved on the new clause (the 1×1 the old one had, kept):
+
+```
+FAIL R45 1-1 @cam 760 (post centred) state=unarmed: a checkpoint changed the frame — fillRect #495: with checkpoints [128,200,1,1,"#e8434f",null,495], without them [1880,128,2,80,"#e8e0c0",null,495]   (1×1 fillRect at the post, 42/43)
+FAIL R45 1-1 @cam 760 (post centred) state=unarmed: a checkpoint changed the frame — fillRect #495: with checkpoints [120,192,4,16,"#f08c1e",null,495], without them [1880,128,2,80,"#e8e0c0",null,495]   (the deleted flagpost draw restored, 42/43)
+FAIL R45 1-1 @cam 760 probe=armed/hero pinned on the post: the col-55 post's trigger band (cols 53…57, rows 9…12) holds ink the bare world does not produce — with the level's posts present: 126,186=#ffd23e, …   (marker that only paints while the hero stands in the post tile, 42/43)
+FAIL R45 1-1 @cam 760 (post centred) banner up: a checkpoint changed the framed banner — fillRect #1138: with checkpoints [35,63,1,1,"#1a1a1a",1,1138], without them [41,63,1,1,"#1a1a1a",1,1138]   (extra `#1` character in the banner string, 42/43)
+FAIL R45 1-1 @cam 760 (post centred) state=unarmed: a checkpoint changed the frame — fillRect #495: with checkpoints [702,186,4,4,"#ffd23e",null,495], without them [1880,128,2,80,"#e8e0c0",null,495]   (marker on the SECOND post only, 42/43)
+```
+
+### `R45` clause 1's REAL guarantee, and what still escapes (this is the sentence the audit asked for)
+
+It guarantees that, for the three shipped maps, at four camera positions, in four checkpoint states, plus
+the arming pair and the banner-up pair, the whole frame is byte-identical with the posts present and
+removed, and that each post's trigger band inks no more than the same map stripped bare, in three hero/arm
+states — **down to a single 1×1 fillRect of any colour** (proved above, and re-proved inside the check by
+the harness's own canary pixel).
+
+It does **not** guarantee that "nothing is drawn at a post" in general. Measured survivor, stated plainly
+rather than implied caught:
+
+> `ctx.fillRect(4, 120, 4, 4)` in `PALETTE.bush`, painted **unconditionally** at a fixed screen position
+> far from every post's band → **`43/43 pass, 0 fail`**.
+
+That marker depends on no checkpoint state and lands outside every probed box, so no checkpoint
+differential can see it and the band probe does not look there. It is not a checkpoint marker in any
+useful sense (it draws identically with or without a `K` in the game), but this check cannot tell the two
+apart and no longer claims to. The other escapes, each an edge of the design rather than an oversight: ink
+in the band that matches the colour already there (invisible by definition); ink in the frame outside
+every post's band (the probe's box is the trigger box, not the screen); and any state the clause does not
+render — PAUSED / LEVEL_CLEAR / WIN / GAME_OVER / TITLE, camera positions other than the four, checkpoint
+states other than the four, hero positions other than parked / pinned-on-post-0, banner phases other than
+the `bannerT = 1.5` pair, levels other than the three shipped, and anything that depends on a **live**
+crossing (a draw that exists only on the frame a hero runs through the band, or only for the first N
+frames). Clause 2 covers the audible/pushable half of that last one, on one real crossing.
+
+## MINOR-1 / MINOR-5 — `R38`'s band bounds are derived, and both sweeps are audited against what they walked
+
+The band is now computed once from the product: `CHECKPOINT_BAND_ROW_OFFSETS` from
+`CHECKPOINT_TRIGGER_TOP/BOTTOM` (`cp.row − TOP/TILE + 1 … cp.row + BOTTOM/TILE − 1` = `[-3,-2,-1,0]`), and
+the width from one named constant `CLEARANCE_BAND_COLS = 2`, with
+`assert(CLEARANCE_BAND_COLS * TILE >= CHECKPOINT_TRIGGER_W)` so the swept ring can never become narrower
+than the box the game arms on. Both sweeps iterate those values, and **what each loop actually iterated is
+collected and compared** (`sweptAirRows` / `sweptAirCols` / `sweptGroundCols`) — an audit derived from the
+same constant as the loop is tautological, so what it catches is precisely the hand-narrowed bound the
+audit measured as silent.
+
+Baseline reproduction (before the fix, on the pass-5 tree): row loop narrowed to `cp.row-3…cp.row-1` →
+**43/43**; ground sweep narrowed to `d = 0` → **43/43**. After:
+
+| mutation (throwaway copy) | before fix | after fix |
+|---|---|---|
+| `'X'` planted at 1-2 (114,12), clean loops | `FAIL R38 1-2: the flag at col 112 has X in the walk-up column 114,12` (41/43) | unchanged (41/43) |
+| **same plant + row loop narrowed** | **R38 silent, 42/43** | `FAIL R38 the AIR sweep of the clearance band walked rows -3,-2,-1 around each post, but CHECKPOINT_TRIGGER_TOP/BOTTOM make the trigger box rows -3,-2,-1,0 — every row of that box is required clear over the post's column and both walk-up columns (the row that dropped out is the one the respawned hero's own box sits in)` (41/43; R43 is also red there for an unrelated reason, and was red in the silent run too) |
+| ground dug at 1-1 col 93 (post 91), clean loops | `FAIL R38 1-1: the flag at col 91 stands over a pit (col 93 row 13)` (41/43) | unchanged (41/43) |
+| **same dig + ground sweep narrowed to `[0]`** | **R38 silent, 42/43** | `FAIL R38 the GROUND-under-post sweep walked columns 0, but the same ±2 ring applies: digging out under the post's shoulder (measured at 1-1's col-91 post, ground removed at col 93) has to be visible to this check, and a sweep narrowed to the post's own column alone measured 43/43 while it stood` (41/43) |
+| air ring narrowed to `[0]`, no map edit | 43/43 | `FAIL R38 the AIR sweep of the clearance band walked columns 0 around each post, but the ring is ±2 …` (42/43) |
+| row loop narrowed, no map edit | 43/43 | the swept-rows FAIL above (42/43) |
+| `CLEARANCE_BAND_COLS = 1`, no map edit | 43/43 | `FAIL R38 R38 sweeps ±1 column(s) around each post (16px each way) but main.js's trigger box is 32px wide from cp.x …` (42/43) |
+
+**A pin of mine was unreachable and I had to move an existing audit to fix it.** The first version of the
+width assert sat *below* the `CLEARANCE_EXCEPTIONS` hits audit, and `CLEARANCE_BAND_COLS = 1` stopped
+consulting the `(114,9)` exception, so `hits === 0` printed and the width line was never executed — the
+same defect this pass deleted `rowsTop + rowsBottom >= 2` for, caught only because I ran the mutation my
+own comment claimed it caught. The exception audit now runs **after** the band pins (ORDER MATTERS note in
+the check), and its own documented proof (1-2's post at col 105 → `…was consulted 0 time(s)…`) was
+re-run and still prints that message (41/43).
+
+**One published figure moved, by design.** `R38`'s pass line used to print `5-row x post±2-col clearance
+band held to CHECKPOINT_TRIGGER_* (32x80px)` while the loop actually cleared **4** rows (`cp.row-3…cp.row`,
+64 px) — `rowsTop + rowsBottom` counted the shared row twice. It now prints
+`4-row x post±2-col clearance band held to CHECKPOINT_TRIGGER_* (32x64px), swept set audited (4x5 air, 5
+ground)`, which is what the code checks.
+
+## NIT-1 — deleted, not re-pointed
+
+`assert(rowsTop + rowsBottom >= 2, …)` is gone. Re-measured with the audit's own method:
+`CHECKPOINT_TRIGGER_BOTTOM = 0` fails at `eq(rowsBottom, 1)` (`expected 1, got 0`) and never reaches it,
+and with the two constant `eq`s in place the sum is 5 on every path that could get there. Non-degeneracy
+is credited to those pins, which is where it is actually caught; the deletion is recorded inline so the
+next reader does not "restore" it. (Two *reachable* replacements exist now by accident of the redesign:
+`eq(CHECKPOINT_BAND_ROW_OFFSETS.join(','), '-3,-2,-1,0', …)` catches the derivation drifting while the
+constants stand still, and the three swept-set `eq`s catch a loop that walks less than the box.)
+
+## Held item — `STEP_FACTOR` and `SPIKE` 2 → 1.5, both halves proved
+
+**(a) clean tree at 1.5:** `43/43 pass, 0 fail`, exit 0, md5 stable across repeated runs — and that is the tree this
+pass commits (final md5 `55f4c28b9688a76677adf5e4676efd5c`).
+**(b) the escape it closed.** `if (cam.x < lo) cam.x += 0.20 * (lo - cam.x);` after the lerp — a wall
+wearing a lerp's clothes — measured **43/43 pass, 0 fail** at 2.0 (reproduced from `ca8e85f` first). At
+1.5 it is red twice over, `41/43 pass, 2 fail`:
+
+```
+FAIL R36 flagLevel turn-around at RUN_MAX (camera seeded one run lag under the floor, by play): at frame 1 the camera moved 5.278px in one frame when its target at 544.00 (hero x 640.00, floor 544) could produce at most 3.958px — 2.0 frames of follow compressed into one, which is a camera cut, not a follow
+FAIL R44 WALK_MAX: in the 31-frame window that starts on the frame the flag at x=640 banked (frame 336), the camera stepped 3.122px in one frame (frame 337, from cam 535.722 to 538.844 with its floor at 544) while the largest step anywhere else in the run was 1.833px — …
+FAIL R44 RUN_MAX: in the 31-frame window that starts on the frame the flag at x=640 banked (frame 199), the camera stepped 5.622px in one frame (frame 200, from cam 528.556 to 534.178 with its floor at 544) while the largest step anywhere else in the run was 3.167px — …   (measured with the WALK leg removed, so both legs are quoted)
+```
+
+Why 2.0 could not see it: its bank-frame step is **exactly** the old bound (15.833/6 × 2 = 5.278 px), so
+it survived on `STEP_TOL` — a mutant parked one float-epsilon under a tuned constant.
+
+**Re-added regression still caught** (`if (cam.x < lo) cam.x = lo;` restored, at 1.5): `41/43 pass, 2
+fail` —
+`FAIL R36 flagLevel turn-around at RUN_MAX …: at frame 1 the camera moved 15.833px … could produce at most 3.958px — 6.0 frames of follow compressed into one` and
+`FAIL R44 WALK_MAX: … the camera stepped 8.278px in one frame (frame 337, from cam 535.722 to 544.000 with its floor at 544) while the largest step anywhere else in the run was 1.833px`.
+`CAM_EPS = 40` also still reddens twice: `FAIL R36 1-1 flag 0 camera follow step: … 38.389px … at most 9.597px` (was 12.796 at 2.0).
+
+**Margin, checked rather than assumed.** The shipped traces sit at ratio **exactly 1.000** of the
+unscaled allowance — `assertFollowStep` is an equality on a legitimate follow and the measured overshoot
+over all four traces is **0.000 px**, and `R44`'s own line prints the bank window peaking at 1.833 px
+walking / 3.167 px running against the same figure everywhere else in the run. So the bound at 1.5 has a
+third of the allowance unused, while the escape sits at **1.70** (walk) and **1.77** (run). Nothing
+legitimate is close to 1.5, and no clause was tuned down to a measured trace; the comments say that, and
+say that going under ~1.2 starts cutting into the margin for no measured gain. The `could produce at most
+N px` figures quoted in the pass-4 proof table were printed at 2.0 and are left as measured, with a
+bracketed note giving the 1.5 re-measures (3.958, 9.597).
+
+## Stale figure corrected
+
+`CAM_SETTLE_FRAMES`'s comment said "GAMEPLAY traces top out at 91 frames" in the same block that records
+**101** for the 87.506 px seed — and that seed is the deepest **shipped** one (`R36` prints `deepest
+shipped seed 87.51px`). Re-measured against the real `updateCamera` from a hero pinned at 544: **88 / 91 /
+101 / 111** frames to rest for depths 9.167 / 15.833 / 87.506 / 544 px. Both places (`CAM_SETTLE_FRAMES`
+and `R36`'s shove clause note) now say 101, and the window's arithmetic is `101 + 49` rather than
+`91 + ~60`. `CAM_SETTLE_FRAMES` itself is unchanged at 150.
+
+## MINOR-3 — the published figures were made *reproducible*, not annotated (a third option, with the root cause)
+
+The brief offered two options (reset the recorder's counter, or annotate the figures as canonical-order
+artifacts). Neither was right, because the cause was not the counter — `rec.reset()` already zeroes it
+every frame. The real leak: **`R24` sets `G.muted = true` to measure the worst-case HUD layout and nothing
+ever cleared it**, so every check running after it drew the 5-character `MUTED` badge — 55 extra
+`fillRect`s, and the lives cluster shifted. Measured, exactly as the audit reported: `R19` printed
+`draw #1153 vs #1154` in canonical order and `#1208 vs #1209` shuffled, and `R45`'s rect count moved
+`1425 → 1370`; the 55-rect difference is the badge.
+
+Fix: `G.muted = false` added to the harness's `toTitle()` — the canonical fresh-state reset that
+`newGame()` and the runner's post-check reset both call — with the measurement in the comment. That is a
+state reset (option 1's spirit) rather than an annotation, and it fixes the class for every check, not
+just the two whose prose was noticed. Evidence it works, with the runner's sort defeated (the runner sorts
+ids, so argv order proves nothing — these copies mutate `ALL_IDS` itself):
+
+| run | pass | `R19` figure | `R45` figure |
+|---|---|---|---|
+| canonical ×3 | 43/43, exit 0, md5 identical | `#1153 vs #1154` | 1138 fillRects |
+| fully **reversed** (`R45 … SMOKE` first) | 43/43 | `#1153 vs #1154` | 1138 |
+| shuffled, seed 1234 (starts `R32`) | 43/43 | `#1153 vs #1154` | 1138 |
+| shuffled, seed 999 | 43/43 | `#1153 vs #1154` | 1138 |
+| every id alone (43 runs) | 43 × `1/1` | — | — |
+
+Before this change the same reversed/shuffled runs were also 43/43 (both assertions are relative), so
+**nothing about pass/fail ordering changed** — what changed is that the two published figures are now
+properties of the code rather than of the run order, and `WORKFLOW_STATE` can stop claiming "in every
+subset combination tried" as an empirical hedge. `R45`'s own figure is **1138**, not comparable to pass 5's
+1425/1370: clause 1's reference frame is an installed level with the banner down (pass 5's was
+`newGame()`'s frame with the intro banner up) and with the HUD canonical.
+
+## MINOR-2 — documented, not tested, with the reason
+
+Chose "document" over "add a shove-camera-below-floor scenario" and said why in `camera.js`: with the hero
+clamped to the same bound, `target = p.x − CAMERA_FOLLOW_X ≥ checkpointX − CAMERA_FOLLOW_X = lo`, so the
+`target < lo` branch with a non-zero `lo` cannot be reached by a state `main.js` builds. Measured to make
+sure that is not a hand-wave: over the suite's **22,335** `updateCamera` frames, `lo > 0` on 4,446 and
+`target < lo` with `lo > 0` on **350 — all 350 inside `R20` clause 1**, which hand-parks a synthetic
+player at x=0 against FLOOR=640 (the state `player.js:135-138` exists to prevent). Equivalence confirmed
+by mutation: `updateCamera(G.cam, dt, p, G.level.widthPx, 0)` — the floor deleted at the call site — is
+**`43/43 pass, 0 fail`**, and `R36`/`R44`/`R45` still print `rests exactly on 544` / `floored on 544`.
+No scenario was added because the scenario that would be needed does not discriminate: shove `cam.x`
+under `lo`, and with the hero pinned on the post `target` is 544 with or without the floor, so the camera
+converges on the same number at the same rate and both builds print the same line — which is exactly why
+`R36`'s existing forced-0 shove passes on both. Anything stronger would assert a property the shipped code
+deliberately does not have (`cam.x` never below `lo`), i.e. the wall `R44` exists to keep out. Behaviour
+untouched: the diff in `src/camera.js` is comments only.
+
+## MINOR-4 — the dead sentence in `architecture.md:152`
+
+Restored the swallowed subject: `… and  with the other per-level resets, so a future kill site that
+forgets to cannot be handed a stale clock …` → `… and `loadLevel()` zeroes `G.dyingT` along with the other
+per-level resets, so a future kill site that forgets to zero it cannot be handed a stale clock that
+resolves on the new level's first frame (`main.js:102-109`, the zero itself at `main.js:109`).` Doubled
+space and the mangled "forgets to" gone; the sentence was read end-to-end after the edit (the two items of
+"Two more from the second fix pass" are now `[SUPERSEDED …]` and the `loadLevel()` zero). **Cite drift in
+the brief:** it said `main.js:105` for that zero; the zero is `main.js:109` (105 is the first line of the
+comment above it).
+
+## Also fixed (the audit's optional item)
+
+`architecture.md:10` and `:42` cited the rAF accumulator at `main.js:483-488` / dt clamp at `main.js:483`.
+Re-derived: accumulator `main.js:571-588`, dt clamp `main.js:583`; both re-cited, each marked as a
+correction so the next reader knows the old number was stale rather than wrong-by-edit.
+
+## Files touched
+
+`tools/verify.mjs` (R45 clause 1 rebuilt + its header rewritten; R38 band derived + three swept-set
+audits + unreachable pin deleted + audit order; `STEP_FACTOR`/`SPIKE` 2 → 1.5 with the measurements;
+`toTitle()` resets `G.muted`; two stale frame-count notes) · `src/camera.js` (**comments only**) ·
+`architecture.md` (the R45 sentences at :141/:151 rewritten to what is measured; :152's dead sentence;
+accumulator cites) · `WORKFLOW_STATE.md` (this section + the `[SUPERSEDED]` pointer at the palette-name
+list, NIT-2).
+
+## Deliberately NOT done (pass 6)
+
+* **No product behaviour change**, and none of the audit's findings asked for one: `git diff` touches
+  `src/camera.js` comments, `tools/verify.mjs`, `architecture.md`, this file. No id registered or
+  retired (still 43, `R34`/`R35`/`R39` reserved), no check deleted, no threshold loosened — `STEP_FACTOR`
+  and `SPIKE` went the tight way.
+* **Did not annotate `R19`/`R45`'s figures as order artifacts** (MINOR-3's "simpler" option), because the
+  55-rect difference was traceable to a leaked `G.muted` and resetting it is one line in the harness's own
+  state reset. Annotating would have preserved a leak that can silently move any future pixel figure.
+* **No new `R36`/`R44` scenario for the camera floor** — argued above with the 350-frame measurement and
+  the call-site mutation; a non-discriminating scenario is decoration, and the file's own rule (NIT-1) is
+  no decoration.
+* **`R45` does not probe outside the trigger band, and does not claim to.** Extending the absolute probe to
+  the whole frame would need a colour-legality model of the parallax layers, and would produce a check
+  nobody can say the edges of. The ungated fixed-screen marker is named in the check's header as a
+  measured survivor instead.
+* Clause 2 of `R45`, clause 1's `cps.length >= 2` precondition, the shipped maps, the palette, the
+  checkpoint trigger band's *values*, and every camera constant are untouched.
