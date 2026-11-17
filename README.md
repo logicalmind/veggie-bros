@@ -31,7 +31,7 @@ The on-screen bar appears on any device with a coarse pointer (`(any-pointer: co
 
 ## Goal
 
-Collect Sunfruit, stomp Turnip Troopers, and grow with the Mega Berry. Reach the Melon Gate at the end of 1-1 and 1-2, then defeat Bromely the Pineapple King in 1-3. Flagposts stand along the way: walking past one (from the left) banks it, you can no longer travel (or scroll) back left past it, and if you fall you come back at the last flag you banked instead of at the start of the level.
+Collect Sunfruit, stomp Turnip Troopers, and grow with the Mega Berry. Reach the Melon Gate at the end of 1-1 and 1-2, then defeat Bromely the Pineapple King in 1-3. Progress is one-way: a few invisible checkpoints sit along each level, and once you have run past one (from the left) you can no longer travel or scroll back left past it — and if you fall, you come back at the last one you passed instead of at the start of the level. Nothing marks them: no flag, no banner, no sound. The rule to play by is simply that as far as you have got is the place you come back to, and retreating left into one does not claim it.
 
 ## Structure
 

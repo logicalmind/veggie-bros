@@ -11,16 +11,18 @@ updated in the same change to match the shipped code, and harness check `R20` is
 Active worktree: none (main workspace) — `/Users/jasonjordan/repos/veggie_bros`
 
 Suite: baseline before any edit **34/34 pass, 0 fail**; after the checkpoint feature **37/37**; after
-**FIX PASS 1** 40/40; after **FIX PASS 2** 41/41; **FIX PASS 3** stays 41/41; **after FIX PASS 4 42/42
-pass, 0 fail, exit 0** (new id `R44`; the pass-4 baseline it was handed was **40/41, exit 1** — see
-that section's Blockers) — byte-identical across consecutive runs and stable in every subset combination
-tried.
-Registered ids: `SMOKE` + `R01`–`R33` + `R36`/`R37`/`R38` + `R40`/`R41`/`R42`/`R43`/`R44` = **42, no
-duplicates** (`grep -c "^check(" tools/verify.mjs` → 42). **`R34`, `R35` and `R39` are NOT registered**
+**FIX PASS 1** 40/40; after **FIX PASS 2** 41/41; **FIX PASS 3** stays 41/41; **FIX PASS 4** 42/42
+pass, 0 fail, exit 0 (new id `R44`; the pass-4 baseline it was handed was **40/41, exit 1** — see
+that section's Blockers); **after FIX PASS 5 43/43 pass, 0 fail, exit 0** (new id `R45`; the baseline
+pass 5 was handed was **42/42, exit 0**, and the camera work it inherited is commit `44ac4bf`) —
+byte-identical across consecutive runs and stable in every subset combination tried.
+Registered ids: `SMOKE` + `R01`–`R33` + `R36`/`R37`/`R38` + `R40`/`R41`/`R42`/`R43`/`R44`/`R45` = **43,
+no duplicates** (`grep -c "^check(" tools/verify.mjs` → 43). **`R34`, `R35` and `R39` are NOT registered**
 — `R34` is the docs-only queue entry, `R35` stays RESERVED for the deferred boss-freeze item, `R39`
 stays RESERVED for the `Q` double-award candidate that `docs/REVIEW-2026-11-15.md` had first floated as
 `R36`. Ids used by this work: `R36`/`R37`/`R38` (checkpoint feature), `R40`/`R41`/`R42` (fix pass 1),
-`R43` (fix pass 2), `R44` (fix pass 4 — the per-frame camera-step bound on a live checkpoint crossing).
+`R43` (fix pass 2), `R44` (fix pass 4 — the per-frame camera-step bound on a live checkpoint crossing),
+`R45` (fix pass 5 — the invisible/silent checkpoint guard).
 **FIX PASS 3 added no ids** — it hardened `R36` and `R43` in place.
 
 ## Checklist
@@ -70,7 +72,7 @@ stays RESERVED for the `Q` double-award candidate that `docs/REVIEW-2026-11-15.m
       **[AMENDED — see FIX PASS 1 F4 (`INVULN_TIME`), F5.2 (`G.bannerT = 0` on this path only) and
       F5.3 (out-of-range index → plain restart, no throw), plus FIX PASS 2 C3 (`p.prevX` pinned to
       `cp.x`); those are the authority on the respawn as shipped.]**
-- [x] 7. `src/sprites.js` + `src/render.js` — `drawCheckpoint(ctx, x, y, taken)` next to
+- [x] 7. `src/sprites.js` + `src/render.js` — `drawCheckpoint(ctx, x, y, taken)` next to **[SUPERSEDED by FIX PASS 5 (2026-11-16): that sprite and its draw call are DELETED — a checkpoint is invisible now; `R45` is the guard.]**
       `drawGate`, `px()`/fillRect only, PALETTE-only, inked rows exactly the trigger band;
       banked uses the `used`/`usedDark` pair (the used-pumpkin language). Drawn next to the
       gate with manual `- camX`; no `ctx.translate` introduced; HUD/overlays untouched.
@@ -146,7 +148,7 @@ the camera cannot disagree.
 | camera floor deleted (`lo = 0`) | `R20` FAIL "cam.x fell to 637.17, below the checkpoint floor at 640"; `R36` FAIL "the camera scrolled to 526.44, left of the checkpoint floor at 544" |
 | respawn reverted to plain `loadLevel` | `R37` FAIL "the hero respawned at x=34.0 — that is the level start, not the checkpoint at 880" |
 | trigger loop disabled | `R36` + `R37` FAIL "…never armed it (checkpointIndex=-1…)" |
-| `drawCheckpoint` ignores `taken` | `R38` FAIL "a banked flag is not drawn differently from a live one" |
+| `drawCheckpoint` ignores `taken` | `R38` FAIL "a banked flag is not drawn differently from a live one" | **[SUPERSEDED by FIX PASS 5: `drawCheckpoint` and `R38`'s art clause are both deleted, so this row can no longer fire. The claim that survives is "a banked post is not distinguishable from a live one on screen", now asserted the other way round by `R45` (identical draw streams with the posts banked). See FIX PASS 5's coverage-lost table.]**
 
 Every new/rewritten check also PASSES with the shipped fix, and `R37`'s second scenario pins
 the no-flag path to the old `H`-spawn restart (so a future "improvement" that always respawns
@@ -522,8 +524,8 @@ moved: pit check `main.js:508`, enemy mirror `main.js:320`, death freeze `main.j
 | 1-2's two posts pushed 70 columns apart | `R38 1-2: the two flags are 70 columns apart, expected roughly two screens (24..48)` |
 | 1-2 post to col 105 (inside the screen window, 15 cols from the lip) | `R43 1-2: the flag at col 105 respawns the hero with NO route across the pit 120-125 ahead of it (0 of 180 run+jump timings get across; 180 fell in, 0 stopped short)` — **and** `R38 the R38 clearance exception for 1-2 (114,9) 'P' was consulted 0 time(s), expected exactly 1`, i.e. the whitelist audit catches the same map edit from the other side. `R36` clause 4 still PASSes it: the post is walkable, which is exactly the gap `R43` exists to fill |
 | `p.prevX = p.x;` deleted from the respawn | `R37 flag 0: the respawn left p.prevX at 34 — the crossing test reads it as the last accepted x, so it has to be the checkpoint: expected 880, got 34` (`R40`/`R41` stay green — they never cross a respawn) |
-| `if (!p.dead)` removed from the trigger feedback | `R41 banking a flag on the frame the hero dies still played the fanfare (1 × audio.sfx('power')) under the death cry: expected 0, got 1` |
-| same, popup only | `R41 banking a flag on the frame the hero dies still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments later: expected 0, got 1` |
+| `if (!p.dead)` removed from the trigger feedback | `R41 banking a flag on the frame the hero dies still played the fanfare (1 × audio.sfx('power')) under the death cry: expected 0, got 1` | **[SUPERSEDED by FIX PASS 5: the whole feedback block and its guard are deleted from `main.js`; `R41` has no audio or popup asserts left and was re-measured on state (FIX PASS 5).]**
+| same, popup only | `R41 banking a flag on the frame the hero dies still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments later: expected 0, got 1` | **[SUPERSEDED by FIX PASS 5: that popup and both of `R41`'s absence asserts are deleted — with no producer on any frame they were unfailable, which is why they were removed rather than left as vacuous green. `R45` asserts the absence where it can still fail.]**
 | `G.dyingT = 0` deleted from `loadLevel` | `R42 a level load inherited the death clock — the next kill would resolve on that same frame and skip the death arc: expected 0, got 9` |
 
 ## Deviations from the reviewer's suggested wording (all measured, none applied blind)
@@ -662,9 +664,9 @@ compared with each other or with a survival margin. **`1-2@77` is NOT a harsh-re
 
 | mutation | observed result |
 |---|---|
-| `CHECKPOINT` popup producer deleted (`main.js:486`) | **pre-pin harness: `41/41 pass, exit 0`** (the defect); **now: `FAIL R36 a live left-to-right crossing of an unbanked flag pushed 0 CHECKPOINT popup(s), expected exactly 1 …: expected 1, got 0`** — 40/41 |
+| `CHECKPOINT` popup producer deleted (`main.js:486`) | **pre-pin harness: `41/41 pass, exit 0`** (the defect); **now: `FAIL R36 a live left-to-right crossing of an unbanked flag pushed 0 CHECKPOINT popup(s), expected exactly 1 …: expected 1, got 0`** — 40/41 | **[SUPERSEDED by FIX PASS 5: the producer is deleted ON PURPOSE and its `R36` popup clause with it — that FAIL text is history, not a defect signal. `R36` clause 1 now reads state; `R45` clause 2 fails if a popup comes back.]**
 | `if (!p.dead)` guard removed, feedback kept | `FAIL R41 banking a flag on the frame the hero dies still played the fanfare (1 × audio.sfx('power')) under the death cry: expected 0, got 1` — 40/41 (the popup assert does NOT fire) |
-| guard removed **and** `audio.sfx('power')` deleted | `FAIL R41 …still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments later: expected 0, got 1` + R36 + R40 — 38/41 (the only way R41's popup clause fires) |
+| guard removed **and** `audio.sfx('power')` deleted | `FAIL R41 …still pushed 1 CHECKPOINT popup(s) that loadLevel() discards moments later: expected 0, got 1` + R36 + R40 — 38/41 (the only way R41's popup clause fires) | **[SUPERSEDED by FIX PASS 5: both asserts involved are deleted with the feedback (see FIX PASS 5); `R41`'s ordering proof was re-measured and still fires alone.]**
 | 1-2 pit cols 120-125 filled with `X` | **pre-pin harness: `41/41`, and `R43` prints `1-2@112 pit 132-135 21/180 (f91-111)`** while `R33` re-baselines to `6 pits (widest 4) … 19.8px @cols 23-24` (the defect, re-verified); **now: `FAIL R43 1-2: the pit inventory R43 measures on has changed — pinned [12-14 … 120-125 …] (7 pits, widest 6), found [12-14 … 132-135 160-161] (6 pits, widest 4) …`** — 40/41 |
 | lone `X` at 1-3 (60,12) — re-aim touching no pit | `FAIL R43 1-3: the flag at col 42 is now measured on wall 60-60, but this check publishes its margin as pit 64-66 …` — 40/41, R43 alone |
 | 1-2 post → col 90 | R36 + R38 + `FAIL R43 1-2@90: this shipped flagpost has no pinned hazard in RESPAWN_HAZARDS … it measures pit 100-102 (27/180, 153 deaths)` — 38/41 |
@@ -910,7 +912,7 @@ blocks rewritten with the quotes above.
   mutations were run, from the closed form (`1/FOLLOW_RATE = 6` frames is a full snap; 2 keeps a 3x
   margin), and both mutation directions (spike assert off, R36 legs off) are reported.
 - `main.js:100`/`:182`, `makeCamera()`'s `{ x: 0 }`, `CAMERA_FOLLOW_X`'s export, `render.js:289`'s
-  `Math.floor(cam.x)`, and all checkpoint FLAG ART / feedback code (`sprites.js drawCheckpoint`,
+  `Math.floor(cam.x)`, and all checkpoint FLAG ART / feedback code (`sprites.js drawCheckpoint`, **[SUPERSEDED by FIX PASS 5: that is exactly the code pass 5 deleted, on a new explicit user decision. Pass 4 was right that it was out of scope FOR PASS 4.]**
   `render.js:295-298`, `main.js:484-488`) untouched — that queue item's ground did not move.
 - No terrain, tile, flagpost column, pit or pipe edited. No id reused; `R34`/`R35`/`R39` stay
   unregistered.
@@ -918,3 +920,212 @@ blocks rewritten with the quotes above.
   citation, `src/main.js:540` → `architecture.md:41`), the `Q` double-award candidate (`R39`), and the
   `R20`-only coverage of `lo = 0` argued above — reported rather than fixed, because the assert it would
   need contradicts the contract this pass documents.
+
+---
+
+# FIX PASS 5 — 2026-11-16 (invisible checkpoints: the flag art AND the arrival feedback come out, every line of checkpoint logic stays)
+
+Suite handed to this pass: **42/42 pass, 0 fail, exit 0** (the reviewer-approved camera work, committed
+first as **`44ac4bf`** — see STEP 0 below — on top of `c58ea65`). Suite handed back: **43/43 pass, 0
+fail, exit 0** (new id **`R45`**, exactly one; `grep -c "^check(" tools/verify.mjs` → **43**, no
+duplicates; `R34`/`R35`/`R39` still unregistered). `node --check` clean on all 12 `src/*.js` plus
+`tools/verify.mjs`.
+
+**STEP 0, done first:** the tree arrived with 4 modified files (`src/camera.js`, `tools/verify.mjs`,
+`architecture.md`, `WORKFLOW_STATE.md`) that were a reviewer-APPROVED camera change sitting uncommitted.
+Committed as its own commit — `44ac4bf camera: smooth the checkpoint floor instead of hard-clamping
+cam.x` — before a single line of this pass was written, then verified green (`42/42`, exit 0) from a
+clean `git archive` of that commit. This pass's code+harness commit is **`dfaf107`**; this docs commit
+follows it. No amend, no rebase, no push.
+
+## Goal
+
+The user wants checkpoints that leave **nothing on screen**: no flag/banner sprite, and no arrival
+announcement either — no `CHECKPOINT` popup, no banner re-raise, no `power` fanfare. The feature itself
+must keep working exactly as it did: a checkpoint still arms on a left-to-right crossing, still clamps
+the hero leftward, still floors the camera, and is still the respawn point. **Removing the art had to
+not remove the feature** — and the `K` tiles are how checkpoints are authored, so they stay in all three
+maps.
+
+## The boundary: feedback out, logic in
+
+**Removed (art and feedback only):**
+
+- `src/sprites.js` — `drawCheckpoint(ctx, x, y, taken)` and its comment block deleted (17 lines). A
+  3-line pointer comment records why nothing is there and names `R45` as the guard.
+- `src/render.js` — the import entry, and the per-frame `for (const cp of level.checkpoints)
+  drawCheckpoint(...)` loop with its comment; a comment states that `level.checkpoints` stays live
+  gameplay state with no draw call. This was the **only** render path for a post: `parseLevel` converts
+  the `K` tile to `'.'` (`level.js:105-110`), so no tile pass can paint one either.
+- `src/main.js` — the trigger's whole feedback block (`audio.sfx('power')`, the `'CHECKPOINT'` popup,
+  `G.bannerT = 1`) **and the `if (!p.dead)` guard that gated it**.
+
+**Untouched, deliberately:** the `CHECKPOINT_TRIGGER_*` constants and the band they build, the crossing
+test (`p.prevX <= cp.x && p.x > cp.x`), `cp.taken`/`G.checkpointIndex`/`G.checkpointX`/the re-mark loop,
+the loop's position **above** the `if (p.dead) return;` short-circuit, `checkpointBounds()`,
+`respawnAtCheckpoint()`, `player.js`'s `minX` clamp, every `K` in `src/levels.js`, `src/camera.js`.
+
+**The guard deletion was read before it was made.** Every arming write sits *outside* `if (!p.dead)`, so
+the guard could only ever gate noise, never the arming; removing it cannot move a bank off the death
+frame. Re-measured after the deletion (mutation **M6**, arming skipped on the death frame): `R41` fails
+**alone**, 42/43. So the death-frame bank is still pinned, by state.
+
+**The two `respawnAtCheckpoint()` lines the brief asked to evaluate — both KEPT:**
+
+- `p.invulnT = INVULN_TIME` — kept (default). The flagpost cell was never authored as safe ground, and
+  `R42` measures the grace rather than assuming it (a turnip parked on the respawn cannot kill inside
+  it, and does kill after it expires).
+- `G.bannerT = 0` — **kept, and it is NOT dead weight**. The brief predicted the checkpoint-respawn half
+  of `R42` "becomes trivially true once nothing sets `bannerT = 1`". It does not, for a reason unrelated
+  to the trigger: `respawnAtCheckpoint()` calls `loadLevel()` **first**, and `loadLevel()` raises the
+  WORLD banner to 1.5 (`main.js:101`), so this line is the only thing between a resume and a
+  stage-intro card. Measured (mutation **M5**): `R42` fails alone, 42/43, with `bannerT=1.50`. Kept as a
+  two-way guard (it also fails if anyone re-raises a banner on the respawn path), and `R42`'s comment now
+  says what it actually proves rather than describing a re-raise that no longer exists.
+
+**The level-intro banner** (`WORLD 1-1 — STRAWBERRY FIELDS`, `loadLevel`) is untouched: it is not
+checkpoint feedback.
+
+**The palette is untouched, with the grep behind it.** `used`/`usedDark` are the popped-block language
+(`sprites.js` `drawBrick`), `pumpkin`/`pumpkinDark`/`pumpkinLit` are the block art, `stone`/`stoneDark`
+are stone tiles *and* the gate's arch; `P.white` is eyes, HUD, popups and the gate's highlight. Every one
+of them still has users after the deletion. `tools/verify.mjs` never enumerates palette entries — it
+names only `PALETTE.black`/`.white`/`.stone`/`.turnipTip` — so nothing asserted palette contents, and
+nothing was removed anyway.
+
+## Files touched
+
+`src/sprites.js` (art deleted) · `src/render.js` (import + draw loop deleted, comment added) ·
+`src/main.js` (feedback block + guard deleted, comment added) · `src/config.js` (**comment only** — the
+`CHECKPOINT_TRIGGER_*` block no longer claims the band "straddles the post `drawCheckpoint()` paints") ·
+`tools/verify.mjs` (`R36`/`R38`/`R40`/`R41`/`R42` re-pointed, `R45` registered) · `README.md` ·
+`architecture.md` · `WORKFLOW_STATE.md`.
+
+## Every harness clause the greps turned up (`'power'` · `CHECKPOINT` · `popup` · `bannerT` · `drawCheckpoint` · `checkpoints`)
+
+| hit | disposition |
+|---|---|
+| `const { … drawCheckpoint … } = spritesModule` (import) | entry removed; without it `R38` **threw** `fn is not a function` the moment the sprite went. Added `const { render: renderScene }` for `R45` |
+| `R38` art clauses: `drawInto(drawCheckpoint, 0, 192, false/true)`, "inked nothing", "banked art differs", art rows inside 128..207, art x-extent ≤ `CHECKPOINT_TRIGGER_W` | **deleted** (art only). **Every map-data clause kept**: 2 flags/level, sorted by x, before the exit, marker tile cleared to `.`, solid ground under post ±2, the full 4-row × ±2-column clearance band, `CLEARANCE_EXCEPTIONS` + its "consulted exactly once" audit, and the 24–48 column gap rule. The band is now justified by the TRIGGER constants and pinned to them by three new `eq`s (`CHECKPOINT_TRIGGER_TOP/TOP/W` → 4 tiles / standing surface / 2 tiles), replacing the coupling the art used to provide. Header rewritten with a `[SUPERSEDED]` block |
+| `R36` clause 1: `bannerT > 0`, `sfx('power') > 0`, and "exactly 1 `CHECKPOINT` popup at `cp.x`, `cp.y − TILE`" | replaced by **state**: `G.checkpointIndex === 0`, `G.checkpointX === cp.x`, `cp.taken`, `armed.x > cp.x` (crossing, not overlap), **plus a new clause 1b** that holds the two derived floors on that state (`p.x === cp.x`, `cam.x === FLOOR`). 1b runs its own `installLevel` + the identical crossing and re-crosses at the end, so clauses 2/2b/3/3b start from exactly the state they were written against — verified, not assumed: `R36`'s PASS line is byte-identical to the pre-pass line (below) |
+| `R40` clause 2: `sfx('power') > 0` | replaced by state: slot armed, `checkpointX`, `cp.taken`, hero pinned on the post after a 120-frame run-back, camera within `CAM_REST_EPS` of `cp.x − CAMERA_FOLLOW_X` |
+| `R41` silence clauses: `eq(sfx('power'), 0)` and `eq(ghosts.length, 0)` on the death frame | **deleted, not left behind** — with no producer on any frame they were unfailable, which is the vacuity this file refuses (its own header had already caught this trap once). Replaced by state the bank has to buy: hero on the post, `checkpointIndex`/`checkpointX` surviving the rebuild, the rebuilt level marking that post `taken`, and `cam.x` on the post's floor. Core ordering proof unchanged and re-measured |
+| `R42` `eq(G.bannerT, 0)` on the checkpoint respawn (+ the 1.5 baselines) | **kept as a regression guard**, with the comment corrected to name what it pins (`G.bannerT = 0` in `respawnAtCheckpoint`, against `loadLevel`'s 1.5) and the FAIL wording re-measured |
+| `R18` / `R25` popup clauses (`'+100'`, the `+1000` gate popup) | **not checkpoint code — untouched** |
+| `R37`'s `checkpoints[j].taken` loop, `installLevel`'s per-level checkpoint reset, `R43`'s `level.checkpoints` walk, `R44` | untouched (already state-based); all still green |
+| historical `[CORRECTED …]` paragraphs in `R36`/`R41` quoting the popup-producer FAIL and the fanfare FAIL | kept verbatim inside new `[SUPERSEDED …]` blocks, with the claim marked dead and the measurement kept |
+
+## Discrimination proofs (each in its own throwaway copy under the session temp; the repo tree was never mutated)
+
+Control **M0**, an unmodified copy of the working tree: `43/43 pass, 0 fail`, exit 0.
+
+| mutation (throwaway copy) | observed result |
+|---|---|
+| **M1** `drawCheckpoint` + its import + the deleted render loop restored (the removal reversed) | **42/43, exit 1 — `R45` alone:** `FAIL R45 a checkpoint changed the frame: fillRect #495: with checkpoints [127,128,2,80,"#e8e0c0",null,495], without them [1880,128,2,80,"#e8e0c0",null,495] — nothing may be drawn at a post (1455 fillRect calls with the level's 2 posts, 1425 with none)` |
+| **M2a** the whole feedback block re-added to the trigger | **42/43 — `R45` alone:** `FAIL R45 the arrival pushed 1 item(s) into G.items — a checkpoint pushes nothing at all now. …: expected 0, got 1` |
+| **M2b** popup line only | **42/43 — `R45` alone**, same items line (the items assert fires first; the popup-count and `banner`/`power` asserts sit behind it as separate legs) |
+| **M2c** `audio.sfx('power')` only | **42/43 — `R45` alone:** `FAIL R45 the arrival made 1 audio.sfx('power') call(s). That sound is not dead code — main.js still plays it for berries and berry blocks — but a checkpoint may not use it: expected 0, got 1` |
+| **M2d** `G.bannerT = 1` only | **42/43 — `R45` alone:** `FAIL R45 the crossing raised the banner: it peaked at 0.9833 against 0.7500 when the run started, and updateState only ever subtracts 0.0167 from it per frame, so a rise is a re-raise — checkpoints do not get banners` |
+| **M3a** silent **and** not arming (all arming writes deleted) | **36/43:** `R45` `FAIL … the hero at RUN_MAX never crossed the post at x=640 (checkpointIndex=-1 after 400 frames) — the scenario never performed the arrival it is here to measure`, plus `R36`/`R37`/`R40`/`R41`/`R42`/`R44` |
+| **M3b** arms the slot, never raises the bound | **36/43:** `R45` `FAIL … the silent crossing did not raise the left bound to the post it crossed (checkpointX=0, post 640): expected 640, got 0`, plus `R36`/`R37`/`R40`/`R41`/`R42`/`R44` |
+| **M4** `cp.taken = true;` deleted | **43/43 pass** — see "equivalent mutants" below |
+| **M9** the re-mark loop deleted, direct write kept | **43/43 pass** — same |
+| **M9b** BOTH marking writes deleted | **39/43:** `R36` `the flag reports itself banked once crossed: expected true, got false`, and the same claim red in `R40`/`R41`/`R45` |
+| **M5** `G.bannerT = 0;` dropped from `respawnAtCheckpoint` | **42/43 — `R42` alone:** `FAIL R42 a checkpoint respawn shows the 1-1 stage-intro banner (bannerT=1.50) — loadLevel() raised it inside the respawn and respawnAtCheckpoint() must take it back: on a resume the player did not ask for, that reads as "level restarted": expected 0, got 1.5` |
+| **M6** arming skipped when the crossing frame is the death frame | **42/43 — `R41` alone:** `FAIL R41 a fatal hit inside the band of an unbanked flag skipped the checkpoint (crossed to x=882.17, checkpointIndex=-1) — the trigger loop must run before the dead-return short-circuit` |
+| **M7** solid planted at 1-2 (110,9), inside a post's clearance band | **42/43 — `R38` alone:** `FAIL R38 1-2: the flag at col 112 has X in the walk-up column 110,9` (the surviving map clauses still have teeth after the art clause went) |
+| **M8** ground dug out under 1-2 col 112 | **38/43:** loader-first `…'K' at 12,112 has no solid tile below` in `R30`/`R36`/`R38`, plus `R29`/`R43` |
+
+**Two equivalent mutants, recorded so nobody writes a test chasing them.** `cp.taken = true;` and the
+re-mark loop (`for (const other of …) if (other.x <= G.checkpointX) other.taken = true;`) each mark the
+crossed post on their own, so **deleting either one alone is behaviour-preserving and measures 43/43**
+(M4, M9). Only deleting **both** is observable, and then exactly the four state clauses light up (M9b).
+`R36`'s comment says this in place, because "delete any writer in the arming block and this goes red" is
+a claim that would have been false.
+
+## Coverage deliberately lost (and what, if anything, replaces it)
+
+| lost | replaced by |
+|---|---|
+| the post art exists and inks (`drawCheckpoint inked nothing`) | **nothing, on purpose** — there is no art. `R45` clause 1 asserts the opposite (identical draw streams with the posts present, emptied and banked), which is the user's actual requirement and can still go red (M1) |
+| banked art differs from live art (`taken` was a colour change) | `R45` clause 1's third render: with every post `taken`, the frame must still be **identical**, i.e. `taken` is not readable on screen in any form. State-wise `taken` is pinned by `R36`/`R40`/`R41`/`R45`/`R37` |
+| art rows sit inside the trigger band 128..207; art x-extent ≤ `CHECKPOINT_TRIGGER_W` | `R38` now pins the band to `CHECKPOINT_TRIGGER_TOP/BOTTOM/W` directly (3 `eq`s + the non-degenerate-box assert). The coupling the art provided for free is now an assertion instead of a coincidence |
+| "arming a flag makes a sound / a banner / exactly one popup" (`R36` clause 1) | state (slot, bound, `taken`, both floors) + `R45` clause 2's silence, which is the direction that is now a requirement |
+| "the death frame is silent" (`R41`'s two absence asserts) | deleted rather than kept vacuous; `R45` asserts silence where a regression can still trip it (live crossing, real loop, live banner baseline) |
+| `R38`'s art clause as the check that catches a checkpoint **rendering** regression | `R45` clause 1 is strictly stronger: whole-scene draw-stream diff vs the same level with `level.checkpoints = []`, at a camera position with the post on screen |
+
+**Nothing else changed in the suite.** Full output diff vs the pre-pass `42/42` baseline (`git archive`
+of `44ac4bf`) touches exactly four lines: `R38` and `R41` (their pass text, by design), `R45` (new), and
+**`R19`** — see the disclosure below. `R36`'s, `R37`'s, `R40`'s, `R42`'s, `R43`'s, `R44`'s and every
+camera/pixel check's line is byte-identical, which is the evidence that re-pointing five clauses did not
+quietly move a threshold: `R36` still prints `8.99px of lag … crosses back over its own floor on frame
+6 … deepest shipped seed 87.51px … largest shipped step 39.47px … worst screen x 80`, and `R44` still
+prints `bank frame 336 steps 1.833px … 15.44px under … rests exactly on 544`.
+
+## Pixel asserts that WERE counting flagpost pixels (disclosed, not rebaselined)
+
+**`R19`** (the `LEVEL_CLEAR` flash must be drawn **before** the overlay text) compares **draw sequence
+numbers** from the shared frame recorder, and every shipped level's two posts were part of that
+sequence. Deleting them shifted both numbers by exactly the 30 removed `fillRect`s: `draw #1183 vs
+#1184` → `draw #1153 vs #1154`. **No threshold changed and no baseline was edited** — the clause is a
+relative comparison (`flash[6] > firstText`), so it keeps proving the same ordering; but its printed
+figures are not comparable to the ones quoted in earlier passes, and the brief asked for that to be said
+out loud rather than absorbed. No check asserts an absolute rect/pixel count, so nothing else was
+affected: `SMOKE`/`R04`/`R18`/`R23`/`R24`/`R30`/`R33` came back byte-identical, and no pixel assert had
+to be rebaselined.
+
+## Order-independence and byte-stability
+
+Full run md5 **identical across three consecutive runs** (`29facdb9f516030c782681717e9f5ac1`). The whole
+registry run **backwards** (`R45 R44 R43 … R01 SMOKE`) is `43/43` and its output is identical to the
+forward run once sorted (`diff` empty). Subsets, all green: `R45 R44 R43 R42 R41 R40 R38 R37 R36 R33
+R30 R24 R23 R18 R04 SMOKE` 16/16 · `R36 R45` 2/2 · `R45 R36` 2/2 · `R38 R45 R43` 3/3 · `R41 R42 R45`
+3/3 · `SMOKE R45 R01 R44 R20` 5/5 · `R45 R45` 1/1 (a check run twice must be idempotent — `R45` mutates
+`level.checkpoints` and restores it). Each of `R36`/`R37`/`R38`/`R40`/`R41`/`R42`/`R44`/`R45` alone:
+1/1.
+
+## Where this pass disagrees with the brief (all measured)
+
+1. **`R42`'s checkpoint-respawn `bannerT === 0` is not "trivially true"**. `loadLevel()` inside the
+   respawn raises 1.5 and `G.bannerT = 0` is the only suppression, so the clause still has a mutation to
+   catch — M5, `R42` alone, 42/43. It was therefore kept as the brief preferred, but for a different
+   stated reason, and the comment now names that reason.
+2. **`R40`/`R41` never used `sfx('power')` as evidence that arming did NOT happen.** `R40`'s retreat
+   clause and jump-over clause already read `checkpointIndex`/`checkpointX`/`cp.taken`; audio appeared
+   only as *positive* evidence in `R40` clause 2 and as *absence* in `R41`. Both were re-pointed; nothing
+   else in those checks needed touching.
+3. **The arming block has two redundant marking writes** (M4/M9 both green) — the brief's framing
+   implies each writer is separately observable, and it is not. Recorded rather than "fixed": the
+   redundancy is harmless, deleting either write is not this pass's remit, and a test aimed at a single
+   one would be asserting nothing.
+4. **Deleting the sprite broke `R38` by THROWING (`fn is not a function`), not by a clean FAIL**, which
+   silenced every later clause in that check including the map-data clauses. Worth knowing for the next
+   removal: an import-time destructure of a deleted export turns a targeted red into a whole-check blind
+   spot. The `drawCheckpoint` entry is now gone from the import list entirely.
+5. **Cite drift, reported not silently rebaselined.** The brief's `render.js:289` (`Math.floor(cam.x)`)
+   is `render.js:288` now, and `main.js:100`/`:182` (the banner writers) are `:101`/`:181`; both were
+   already off before this pass. `architecture.md`'s HUD/banner and bitmap-font citations were stale from
+   the camera pass and are re-derived here (`render.js:304-306`, `render.js:308-314`, `main.js:101`,
+   `main.js:511`, `sprites.js:335-339,405-426`, `sprites.js:407`), which also **closes the font-citation
+   drift item fix pass 3 and pass 4 were both still carrying as open**. The one still open is `src/main.js:540` →
+   `architecture.md:41`.
+
+## Deliberately NOT done (pass 5)
+
+- **No checkpoint-logic change of any kind**: no geometry, trigger band, crossing test, arming write,
+  re-mark loop, loop ordering, respawn, clamp, camera floor, or `K` tile edited. No tile, pit, pipe,
+  platform or flagpost column moved (M7/M8 prove the map clauses still watch them).
+- **No palette entry removed** — each of `pumpkin`/`pumpkinDark`/`used`/`usedDark`/`stone`/`stoneDark`
+  still has users (grep in the Goal section), and no harness clause enumerates palette contents.
+- **`src/camera.js` untouched**, as instructed; `makeCamera()`'s `{ x }` shape, `render.js:288`'s
+  `Math.floor(cam.x)`, `main.js:101`/`:181` and the floor logic are all as the camera pass left them,
+  and no camera check was edited — `R20`/`R36`/`R44` came back byte-identical.
+- `p.invulnT = INVULN_TIME` and `G.bannerT = 0` on the respawn path kept (evaluated above, both live).
+- Exactly **one** id registered (`R45`); `R34`/`R35`/`R39` stay unregistered; no id reused; no
+  check deleted — `R36`/`R38`/`R40`/`R41`/`R42` were all re-pointed in place, so the suite's shape is
+  still the same five checkpoint checks plus the new guard.
+- The harness helper names (`flagLevel()`, `installLevel()`'s comment, `R36`'s "flag" wording) keep the
+  old flag vocabulary: renaming them would churn 200 lines of proofs for no new coverage, and the
+  checks' own text now says plainly that a "flag" is a checkpoint marker, not a drawn object.
+- Not touched: the deferred `R35` boss-freeze item, the `R39` `Q` double-award candidate, and
+  `docs/REVIEW-2026-11-15.md` (its §11 quotes pass-2/4 numbers that this pass does not change).
