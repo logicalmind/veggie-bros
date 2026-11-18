@@ -20,6 +20,7 @@
 import { VIEW_W, VIEW_H, TILE, ROWS, FX_SCALE } from './config.js';
 import { makeLayer, bakeRadial, parseColor, rgbToHex } from './pixels.js';
 import { tileAt } from './level.js';
+import { emissive } from './atlas.js';
 
 // The only resolution budget knob (plan §4); exported because S-09's boot sizing reads
 // it. NOT parity with config.js's MAX_SCREEN_PX / MAX_LAYERS, which §3 measures wrong.
@@ -130,7 +131,7 @@ function lightmapLayer() {
 // ---------------------------------------------------------------- dynamic lightmap (§7)
 //
 // Rebuilt every frame from frozen state only: one `fillRect` of the ambient base, then `'lighter'`
-// blits of pre-baked glow discs. No gradient / pattern / filter / shadow API is reachable at
+// blits of pre-baked glow discs. No gradient / pattern / blur-op / shadow-cast API is reachable at
 // runtime at all — `pixels.bakeRadial` stacks alpha discs rather than baking a gradient object,
 // and it runs once per bucket, lazily, on first use.
 //
@@ -272,7 +273,130 @@ export function applyLightmap(sceneCtx) {
   sceneCtx.globalCompositeOperation = 'source-over';
 }
  
+// ---------------------------------------------------------------- bloom (§7)
+//
+// The bloom ACCUMULATOR, never the scene. §7's chain has no threshold, so a bright-but-large area
+// (the sky, which S-07 draws behind the world) would bloom wholesale. The fix is structural, not a
+// runtime blur-op: this buffer is only ever filled from (b) the ≤ MAX_LIGHTS sources the frame's
+// drawLightmap already gathered and (c) baked emissive masks of on-screen entities. Neither can hold
+// sky; the `clearRect` below is what keeps the lightmap's ambient base fill — the whole screen —
+// out of bloom. So `drawLightmap` must run first in the frame: LIGHTS/LIGHT_B/lightN are that
+// gather, and re-walking `level.tiles` here would double a per-frame scan for no new information.
+//
+// Geometry: lightmap is 0.5 of logical, bloom is 0.25 (64x60, bloomHalf 32x30), so every coordinate
+// and footprint below is a lightmap value times FX_SCALE again. Smoothing on those two buffers is
+// the whole blur; §7 forbids escalating to a blur-op, a shadow-cast, or a second blur mechanism.
+const BLOOM_SCALE = FX_SCALE * FX_SCALE;
+// Per-'lighter'-pass gain of the energy boost. 0.5 is a 2.25x total gain, which measured (S-06 probe
+// b3/b4, one 1-1 frame with 6 lights + 3 masks) leaves 27 clipped px of 403 inked px and a peak
+// energy of 243.7/255 — cores clip, the falloff keeps its shape. A 1.0 gain is a 4x total, i.e. that
+// same peak clipping ~1.6x over, which is §7's "looks muddy" failure mode. 0.5 keeps applyBloom's
+// ceiling a ceiling rather than a whitener.
+const BLOOM_GAIN = 0.5;
+// Keys that own a baked `<key>:emissive` mask. atlas.js exposes no enumeration API, so this is the
+// `grep -n "emissive" src/sprites.js` list verbatim as of 2026-11-18 — FIVE keys, one per `register`
+// call that passes an `emissive` opt: :831 pumpkin, :836 gate, :837 fruit, :838 berry, :847 fx.spark.
+// A stale entry is self-policing: atlas.emissive counts it in `missing` (the suite asserts 0).
+export const EMISSIVE_KEYS = Object.freeze(['pumpkin', 'gate', 'fruit', 'berry', 'fx.spark']);
+const EMISSIVE_SET = new Set(EMISSIVE_KEYS);
+const FRUIT_K = EMISSIVE_KEYS.indexOf('fruit'), BERRY_K = EMISSIVE_KEYS.indexOf('berry');
+// The emissive cap is MAX_LIGHTS again, and the cull margins are the widest mask extents in the set
+// (gate is 2 tiles wide and its art runs 103 logical px above its origin).
+const EM_CULL_X = 64, EM_CULL_UP = 112, EM_CULL_DOWN = 64;
+let bloomAlpha = 0, emitN = 0;
+
+let bloomLay = null, halfLay = null;
+function bloomLayer() {
+  const want = layout().layers.bloom;
+  if (bloomLay === null || bloomLay.w !== want.w || bloomLay.h !== want.h) {
+    const L = layers();                       // layers() is what turns smoothing ON for both
+    bloomLay = L.bloom; halfLay = L.bloomHalf;
+  }
+  return bloomLay;
+}
+
+// `atlas.drawRec` floors its own destination from the anchor, so these stay fractional: passing
+// screen px here (not bloom px) is what keeps the mask registered on its own art at 0.25 scale.
+function emitMask(ctx, ki, frame, sx, sy) {
+  if (emitN >= MAX_LIGHTS) return;
+  if (sx < -EM_CULL_X || sx > VIEW_W + EM_CULL_X || sy < -EM_CULL_UP || sy > VIEW_H + EM_CULL_DOWN) return;
+  emitN++;
+  emissive(ctx, EMISSIVE_KEYS[ki], frame, sx * BLOOM_SCALE, sy * BLOOM_SCALE);
+}
+
+// Returns the emissive mask count; the bucket count is metrics().lights (this frame's gather). `baked`
+// is §7's signature slot and stays unread for the same reason drawLightmap's does: the baked ambient
+// IS the sky art, and sky is exactly what must never reach this buffer.
+export function buildBloom(g, baked) {
+  const bl = bloomLayer(), hc = halfLay.ctx, ctx = bl.ctx;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.clearRect(0, 0, bl.w, bl.h);
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < lightN; i++) {
+    const bk = glowBucket(LIGHT_B[i]);
+    const a = bk.a * LIGHTS[i * 3 + 2];
+    if (a <= 0) continue;
+    ctx.globalAlpha = clamp(a, 0, 1);
+    const dw = bk.dw * FX_SCALE;
+    ctx.drawImage(bk.c, LIGHTS[i * 3] * FX_SCALE - dw / 2, LIGHTS[i * 3 + 1] * FX_SCALE - dw / 2, dw, dw);
+  }
+  ctx.globalAlpha = 1;
+  emitN = 0;
+  const camX = g.cam.x, items = g.items, enemies = g.enemies;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    // fruit/berry only: `pop`/`shard`/`popup` share the list and draw art that owns no mask.
+    if (it.kind === 'fruit') emitMask(ctx, FRUIT_K, Math.floor(it.t * 8) % 4, it.x - camX, it.y);
+    else if (it.kind === 'berry') emitMask(ctx, BERRY_K, 0, it.x - camX, it.y);
+  }
+  for (let i = 0; i < enemies.length; i++) {
+    const e = enemies[i];
+    const key = e.type === 'boss' ? 'boss' : 'turnip';
+    if (!EMISSIVE_SET.has(key)) continue;
+    emitMask(ctx, EMISSIVE_KEYS.indexOf(key), e.frame | 0, e.x - camX, e.y);
+  }
+  // Energy boost (self-composite ×2, still 'lighter'), then the mip blur. The up-pass is 'copy'
+  // because the blur REPLACES the sharp accumulator — 'source-over' would re-add it and the boost
+  // would run away. `bloomHalf` is cleared so the down-pass cannot inherit the last frame's halo.
+  ctx.globalAlpha = BLOOM_GAIN;
+  ctx.drawImage(bl.c, 0, 0);
+  ctx.drawImage(bl.c, 0, 0);
+  ctx.globalAlpha = 1;
+  hc.globalCompositeOperation = 'source-over';
+  hc.globalAlpha = 1;
+  hc.imageSmoothingEnabled = true;
+  hc.clearRect(0, 0, halfLay.w, halfLay.h);
+  hc.drawImage(bl.c, 0, 0, bl.w, bl.h, 0, 0, halfLay.w, halfLay.h);
+  ctx.imageSmoothingEnabled = true;
+  ctx.globalCompositeOperation = 'copy';
+  ctx.drawImage(halfLay.c, 0, 0, halfLay.w, halfLay.h, 0, 0, bl.w, bl.h);
+  // R47's balanced-frame rule: every later pass inherits a clean bloom ctx.
+  ctx.globalCompositeOperation = 'source-over';
+  return emitN;
+}
+
+// One blit, quarter-res -> logical, `'lighter'`, and the ONLY place the §7 ceiling is applied:
+// Math.min here means a caller (or a later slice) cannot ask for more than BLOOM_MAX_ALPHA.
+export function applyBloom(sceneCtx, alpha) {
+  const bl = bloomLayer();
+  const s = layout();
+  const sm = sceneCtx.imageSmoothingEnabled;
+  const a = Math.min(BLOOM_MAX_ALPHA, alpha === undefined ? BLOOM_MAX_ALPHA : alpha);
+  bloomAlpha = a;
+  sceneCtx.imageSmoothingEnabled = true;
+  sceneCtx.globalCompositeOperation = 'lighter';
+  sceneCtx.globalAlpha = a;
+  sceneCtx.drawImage(bl.c, 0, 0, bl.w, bl.h, 0, 0, s.sceneW, s.sceneH);
+  sceneCtx.imageSmoothingEnabled = sm;
+  sceneCtx.globalAlpha = 1;
+  sceneCtx.globalCompositeOperation = 'source-over';
+  return a;
+}
+
+// bloomAlpha is the ceiling-clamped alpha applyBloom LAST used (0 before the first call), so a
+// probe can read back what the composite actually asked for instead of trusting its own argument.
 export function metrics() {
   return { allocations, bytes: layout().bytes, config: cfg,
-           glowBuckets: glowBakes, lights: lightN };
+           glowBuckets: glowBakes, lights: lightN, emissives: emitN, bloomAlpha: bloomAlpha };
 }
