@@ -197,6 +197,198 @@ const mkImageData = (w, h) => {
   return { width: W, height: H, colorSpace: 'srgb', data: new Uint8ClampedArray(W * H * 4) };
 };
 
+// ---------------------------------------------------------------------------
+// THE INK MODEL — what colour a pixel of a modelled surface ends the frame at.
+//
+// Surfaces talk to each other only through `drawImage`, so the chain has to work
+// end to end (§8.1 item 1): `pixels.js` bakes a sprite with one `fillRect` per
+// MATRIX CELL × ART_SCALE (§5 "letters, never a raster read-back"), `atlas.js`'s
+// `bakeAll` packs those canvases into ONE atlas canvas with a 3-arg `drawImage`,
+// and `atlas.blit` blits an atlas CELL — source rect in ART px, destination in
+// LOGICAL px (`sw/dw === ART_SCALE`), sometimes mirrored through
+// `save/translate/scale(-1,1)` — onto the game canvas. Bake canvases therefore
+// model ink from the moment they exist (see `mkOffscreen`), and blit ink samples
+// the source at one art pixel per DESTINATION pixel (nearest) instead of walking
+// the source rect: cost is destination area, so a frame that blits the same atlas
+// cell 40 times pays that cell's dest area 40 times and nothing more.
+//
+// PARTIAL ALPHA (`a` = the destination context's `globalAlpha`; a baked cell
+// remembers the css the bake painted it with, so translucent art — soft AO, dither,
+// the emissive mask — carries its own alpha through the blit for free; effective
+// source alpha is `srcAlpha × a`):
+//   a <= 0 / srcAlpha 0   NOTHING is written, the destination keeps its ink. This
+//                         is what stops atlas gutters and the transparent matrix
+//                         pad from blanking what is already on screen.
+//   effective 1           the source colour string is stored VERBATIM, so the
+//                         palette-equality predicates the ink checks are built on
+//                         (`c === C.PALETTE.bush`) keep working on atlas art.
+//   0 < effective < 1 onto inked destination: real Porter-Duff source-over on the
+//                         stored rgba. Onto an EMPTY destination, or when the
+//                         destination colour is not parseable: identity — the
+//                         source colour verbatim, the same convention `fillRect`
+//                         ink already uses for a translucent fillStyle. `inkAt`
+//                         then answers "what is painted here", not "what did it
+//                         blend into"; a lone translucent blit has no backdrop in
+//                         the model to blend against.
+// COMPOSITE (`globalCompositeOperation` on the destination context):
+//   'source-over'  blend as above.
+//   'lighter'      additive: unpremultiplied channels `(src·sa + dst·da)/(sa+da)`
+//                  with `sa = srcAlpha·a`, alpha `min(1, sa + da)`, channels clamped
+//                  to 255 — two emissive-mask blits into a lightmap saturate to
+//                  white exactly as the browser does, and the result stays on the
+//                  FX buffer's recorder (§7): ink never crosses surfaces except by
+//                  a blit whose DESTINATION is the surface being modelled.
+//   'multiply'     the separable blend `src·dst/255` composited source-over.
+//   any other mode last-write-wins AND names itself in `rec.unmodelledOps`, so a
+//                  check can see the model went vague rather than silently guessing.
+//   Every separable mode onto an empty destination behaves like source-over, which
+//   is what the compositing spec's B() term gives when the backdrop alpha is 0.
+//
+// TOLERANCE (§8/R49): modelled ink is EXACT BY CONSTRUCTION — a `#rrggbb` fillRect
+// inks `#rrggbb` and a blit of it stores `#rrggbb`. A real browser drifts: headless
+// WebKit reads an opaque fillRect back ±1 LSB, canvas→canvas `drawImage` drifts
+// ±3 LSB through the premultiplied backing store, and only `putImageData`
+// round-trips are byte-exact (forbidden in `src/`, §7). So: comparing model ink with
+// model ink may use `===` (the model has no drift to forgive — a check that used
+// `colorNear` here would be hiding a real off-by-one in its own maths), while
+// comparing model ink with a SCREENSHOT must use `colorNear(a, b, INK_TOL)`
+// (±3 per channel) and every count derived from colours (R49's ≥90 distinct colours,
+// its per-tile tone bands) must be derived on the MODEL, where drift can neither
+// split one colour into two nor merge two into one. On a screenshot the same count
+// is a sanity check only, after `quantiseInk(c, 8)` — a bucket coarser than the
+// drift, so it can under-count colours the model keeps <8 apart but never invents
+// density the model does not have.
+const INK_TOL = 3;
+const INK_CAP = 1 << 18; // entries per surface; beyond it ink is DROPPED and counted
+const NAMED_INK = { black: '#000000', white: '#ffffff', transparent: 'rgba(0,0,0,0)' };
+
+// '#rgb' | '#rrggbb' | '#rrggbbaa' | 'rgb[ a]()' | a few names -> {r,g,b,a} | null.
+// null means "unparseable": the model treats such a pixel as opaque identity.
+function parseInk(c) {
+  if (typeof c !== 'string') return null;
+  const s = c.trim().toLowerCase();
+  if (s[0] === '#') {
+    const h = s.slice(1);
+    if (!(h.length === 3 || h.length === 4 || h.length === 6 || h.length === 8)) return null;
+    const v = [];
+    for (let i = 0; i < h.length; i += h.length > 4 ? 2 : 1) {
+      const n = parseInt(h[i] + (h.length > 4 ? h[i + 1] : h[i]), 16);
+      if (!Number.isFinite(n)) return null;
+      v.push(h.length > 4 ? n : n * 17);
+    }
+    return { r: v[0], g: v[1], b: v[2], a: v.length > 3 ? v[3] / 255 : 1 };
+  }
+  const m = /^rgba?\(([^()]*)\)$/.exec(s);
+  if (m) {
+    const p = m[1].split(/[,/\s]+/).filter((x) => x !== '').map(Number);
+    if (p.length < 3 || p.slice(0, 4).some((n) => !Number.isFinite(n))) return null;
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+  return NAMED_INK[s] ? parseInk(NAMED_INK[s]) : null;
+}
+// Canonical css for a modelled colour — the same shape `pixels.js`'s `colorToCss`
+// bakes with, so a baked cell and a modelled blend are byte-comparable.
+const inkHex = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+const inkCss = (c) => (c.a >= 1 ? `#${inkHex(c.r)}${inkHex(c.g)}${inkHex(c.b)}`
+  : `rgba(${Math.round(c.r)},${Math.round(c.g)},${Math.round(c.b)},${Math.round(c.a * 1000) / 1000})`);
+const inkOver = (src, sa, dst) => {
+  if (!dst) return { r: src.r, g: src.g, b: src.b, a: sa };
+  const oa = sa + dst.a * (1 - sa);
+  if (oa <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+  const ch = (s, d) => (s * sa + d * dst.a * (1 - sa)) / oa;
+  return { r: ch(src.r, dst.r), g: ch(src.g, dst.g), b: ch(src.b, dst.b), a: oa };
+};
+const inkPlus = (src, sa, dst) => {
+  if (!dst) return { r: src.r, g: src.g, b: src.b, a: sa };
+  const oa = Math.min(1, sa + dst.a);
+  if (oa <= 0) return { r: 0, g: 0, b: 0, a: 0 };
+  const ch = (s, d) => (s * sa + d * dst.a) / oa;
+  return { r: ch(src.r, dst.r), g: ch(src.g, dst.g), b: ch(src.b, dst.b), a: oa };
+};
+const inkTimes = (src, sa, dst) => inkOver(
+  { r: (src.r * dst.r) / 255, g: (src.g * dst.g) / 255, b: (src.b * dst.b) / 255, a: 1 }, sa, dst);
+
+const colorNear = (a, b, tol = INK_TOL) => {
+  const A = parseInk(a);
+  const B = parseInk(b);
+  if (!A || !B) return String(a) === String(b);
+  return Math.abs(A.r - B.r) <= tol && Math.abs(A.g - B.g) <= tol
+    && Math.abs(A.b - B.b) <= tol && Math.abs(A.a - B.a) <= 0.02;
+};
+const quantiseInk = (c, step = 8) => {
+  const p = parseInk(c);
+  return p ? `q${Math.round(p.r / step)}-${Math.round(p.g / step)}-${Math.round(p.b / step)}` : String(c);
+};
+const inkLum = (c) => {
+  const p = parseInk(c);
+  return p === null ? null : 0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b;
+};
+
+// The destination CTM, tracked because `atlas.blit`'s flip is
+// `save(); translate(dx+dw, dy); scale(-1, 1); drawImage(..., 0, 0, dw, dh)` and a
+// destination inked at (dx,dy) would answer mirrored pixels backwards. It is applied
+// to BLIT ink only: fillRect/fillText ink stays in the coordinate space the existing
+// ink checks were written in (R18's popup zone, R24's HUD bands) — the shipped
+// renderer never translates ("manual -camX arithmetic (this renderer never calls
+// ctx.translate)", src/render.js:298), so nothing moves today, and if the new
+// composite.js starts translating, that is a wave-4 re-expression, not a silent
+// shift of 20-year-old assertions under the checks' feet.
+const CTM_ID = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+const ctmMul = (m, n) => ({
+  a: m.a * n.a + m.c * n.b,
+  b: m.b * n.a + m.d * n.b,
+  c: m.a * n.c + m.c * n.d,
+  d: m.b * n.c + m.d * n.d,
+  e: m.a * n.e + m.c * n.f + m.e,
+  f: m.b * n.e + m.d * n.f + m.f,
+});
+const CTM_DEPTH_CAP = 64; // a leaked save() must not grow the harness
+const ctmSix = (a) => (a.length >= 6
+  ? { a: a[0], b: a[1], c: a[2], d: a[3], e: a[4], f: a[5] }
+  : Object.assign({}, CTM_ID, a[0] || {})); // setTransform(DOMMatrixInit)
+// 'x,y' key inside the half-open rect? (the ink map's only coordinate parse)
+const inkXY = (key, x0, x1, y0, y1) => {
+  const c = key.indexOf(',');
+  const x = Number(key.slice(0, c));
+  const y = Number(key.slice(c + 1));
+  return x >= x0 && x < x1 && y >= y0 && y < y1;
+};
+
+// Ink one `drawImage` onto `rec`: nearest source art pixel per destination px,
+// mapped through `rec.ctm`. Sampling the DESTINATION rather than the source is the
+// whole point — an atlas source rect is `ART_SCALE²` bigger than what it covers.
+function inkBlit(rec, src, sx, sy, sw, sh, dx, dy, dw, dh, seq, alpha, op) {
+  if (!rec.inkRects) return;
+  if (!(alpha > 0) || !(sw > 0) || !(sh > 0) || !(dw > 0) || !(dh > 0)) return;
+  if (!src.pixels || src.pixels.size === 0) return;
+  const W = Math.round(dw);
+  const H = Math.round(dh);
+  const m = rec.ctm || CTM_ID;
+  if (m.b || m.c) rec.unmodelledOps.add('transform(b|c)'); // skew/rotate: floor the origin
+  const same = src === rec; // §7's self-composited bloom blur reads what it writes
+  const pending = same ? [] : null;
+  for (let v = 0; v < H; v++) {
+    const syv = Math.floor(sy + (v + 0.5) * (sh / H));
+    for (let u = 0; u < W; u++) {
+      const color = src.pixels.get(Math.floor(sx + (u + 0.5) * (sw / W)) + ',' + syv);
+      if (color === undefined) continue;
+      let x0 = m.a * (dx + u) + m.e;
+      let x1 = m.a * (dx + u + 1) + m.e;
+      let y0 = m.d * (dy + v) + m.f;
+      let y1 = m.d * (dy + v + 1) + m.f;
+      if (x1 < x0) { const t = x0; x0 = x1; x1 = t; }
+      if (y1 < y0) { const t = y0; y0 = y1; y1 = t; }
+      // A scale that smears one dest px over several integer cells keeps its first
+      // covered cell (§4's upscale is always an integer k, so this never fires).
+      const px = Math.floor(x0);
+      const py = Math.floor(y0);
+      if (same) pending.push([px, py, color]);
+      else rec.ink(px, py, color, seq, alpha, op);
+    }
+  }
+  for (const p of pending || []) rec.ink(p[0], p[1], p[2], seq, alpha, op);
+}
+
 const mkCtx = (rec, owner) => new Proxy({}, {
   get(t, k) {
     if (k in t) return t[k];
@@ -246,36 +438,42 @@ const mkCtx = (rec, owner) => new Proxy({}, {
         SDH = argc >= 5 ? sh : (img && img.height);
         SSX = 0; SSY = 0; SSW = img && img.width; SSH = img && img.height;
       }
+      const gOp = hasOwn(t, 'globalCompositeOperation') ? String(t.globalCompositeOperation) : CTX_STATE.globalCompositeOperation;
+      const gAlpha = hasOwn(t, 'globalAlpha') ? Number(t.globalAlpha) : CTX_STATE.globalAlpha;
       log(rec, rec.drawImages, {
         seq, src: srcId(img), srcName: srcName(img), argc,
         sx: SSX, sy: SSY, sw: SSW, sh: SSH, dx: SDX, dy: SDY, dw: SDW, dh: SDH,
-        op: hasOwn(t, 'globalCompositeOperation') ? String(t.globalCompositeOperation) : CTX_STATE.globalCompositeOperation,
-        alpha: hasOwn(t, 'globalAlpha') ? Number(t.globalAlpha) : CTX_STATE.globalAlpha,
+        op: gOp,
+        alpha: gAlpha,
         smoothing: hasOwn(t, 'imageSmoothingEnabled') ? !!t.imageSmoothingEnabled : CTX_STATE.imageSmoothingEnabled,
       });
       const src = img && img._rec;
       // An empty source cannot ink anything, and every baked layer starts empty:
       // without this guard a 240-blit frame would scan source-pixel Maps by hand.
-      if (!src || !src.pixels || src.pixels.size === 0) return;
-      for (let j = 0; j < sh; j++) {
-        for (let i = 0; i < sw; i++) {
-          const srcKey = Math.floor(sx + i) + ',' + Math.floor(sy + j);
-          const color = src.pixels.get(srcKey);
-          if (color === undefined) continue;
-          const u = Math.floor((i + 0.5) * (dw / sw));
-          const v = Math.floor((j + 0.5) * (dh / sh));
-          rec.ink(Math.floor(dx) + u, Math.floor(dy) + v, color, seq);
-        }
-      }
+      // Only a surface the checks model gets ink (§8.1-1): an FX buffer's own ink
+      // stays on ITS recorder, so a 'lighter' emissive blit into a lightmap can
+      // never pollute the game canvas' `rec.pixels`.
+      if (!src) return;
+      inkBlit(rec, src, Number(SSX) || 0, Number(SSY) || 0, Number(SSW) || 0, Number(SSH) || 0,
+        Number(SDX) || 0, Number(SDY) || 0, Number(SDW) || 0, Number(SDH) || 0, seq, gAlpha, gOp);
     };
     if (k === 'clearRect') return (x, y, w, h) => {
       bump(rec, 'clearRect');
-      if (rec) log(rec, rec.clears, [x, y, w, h, rec.seq++]);
+      if (!rec) return;
+      log(rec, rec.clears, [x, y, w, h, rec.seq++]);
+      // A real clearRect leaves transparent black behind, so modelled ink has to go
+      // with it: the §7 FX buffers are bake-scope recorders that are NEVER reset
+      // between frames, and a stale lightmap pixel would outlive its own frame.
+      if (!rec.inkRects) return;
+      const x0 = Math.floor(Math.min(x, x + w));
+      const y0 = Math.floor(Math.min(y, y + h));
+      rec.clearInk(x0, y0, Math.ceil(Math.max(x, x + w)), Math.ceil(Math.max(y, y + h)));
     };
     if (k === 'save') return () => {
       bump(rec, 'save');
       if (!rec) return;
       rec.depth++;
+      if (rec.ctmStack.length < CTM_DEPTH_CAP) rec.ctmStack.push(Object.assign({}, rec.ctm));
       log(rec, rec.stateLog, ['save', rec.depth, rec.seq]);
     };
     // `depth` is the point: save/restore must balance inside a frame, and a
@@ -284,20 +482,36 @@ const mkCtx = (rec, owner) => new Proxy({}, {
       bump(rec, 'restore');
       if (!rec) return;
       rec.depth--;
+      const back = rec.ctmStack.pop();
+      if (back) rec.ctm = back;
       log(rec, rec.stateLog, ['restore', rec.depth, rec.seq]);
     };
     if (k === 'scale') return (sx, sy) => {
       bump(rec, 'scale');
-      if (rec) log(rec, rec.scaleCalls, [sx, sy]);
+      if (rec) {
+        log(rec, rec.scaleCalls, [sx, sy]);
+        rec.ctm = ctmMul(rec.ctm, { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 });
+      }
     };
     if (k === 'translate') return (tx, ty) => {
       bump(rec, 'translate');
-      if (rec) log(rec, rec.translateCalls, [tx, ty]);
+      if (rec) {
+        log(rec, rec.translateCalls, [tx, ty]);
+        rec.ctm = ctmMul(rec.ctm, { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty });
+      }
     };
     if (k === 'rotate' || k === 'transform' || k === 'setTransform' || k === 'resetTransform') {
       return (...a) => {
         bump(rec, 'transform');
-        if (rec) log(rec, rec.transformCalls, [k, ...a]);
+        if (!rec) return;
+        log(rec, rec.transformCalls, [k, ...a]);
+        if (k === 'resetTransform') rec.ctm = Object.assign({}, CTM_ID);
+        else if (k === 'setTransform') rec.ctm = ctmSix(a);
+        else if (k === 'rotate') {
+          const cos = Math.cos(a[0]);
+          const sin = Math.sin(a[0]);
+          rec.ctm = ctmMul(rec.ctm, { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 });
+        } else rec.ctm = ctmMul(rec.ctm, ctmSix(a));
       };
     }
     if (k === 'createLinearGradient' || k === 'createRadialGradient' || k === 'createConicGradient') {
@@ -351,16 +565,94 @@ function recordingDom(target, label) {
   });
 }
 
-function mkRecorder(scope = 'scratch') {
+function mkRecorder(scope = 'scratch', dims = null) {
   const r = {
     scope,
+    // `dims` is the canvas this recorder draws into, read live: it is what keeps a
+    // bake surface's ink memory bounded to its own pixel count (acceptance §3),
+    // and it is deliberately null for the game recorder, whose ink is in LOGICAL
+    // px while its backing store is css×dpr (§4) — clamping there could clip ink
+    // a check legitimately reads. `INK_CAP` bounds that surface instead, and
+    // `reset()` frees it every frame.
+    dims,
     rects: [], text: [], blits: [], drawImages: [], clears: [], gradients: [], patterns: [], imageOps: [],
     pixels: new Map(), textInk: [], scaleCalls: [], translateCalls: [], transformCalls: [], stateLog: [],
     seq: 0, glyphInk: true, inkRects: false, depth: 0, unknown: new Set(),
-    ink(x, y, color, seq) {
+    // `inkRects` is the ONE switch for "this surface models ink": it gates
+    // fillRect/fillText ink AND ink landing on this surface from a blit.
+    ctm: Object.assign({}, CTM_ID), ctmStack: [], unmodelledOps: new Set(), inkDropped: 0,
+    // The ink funnel. `(x, y)` is a pixel cell of THIS surface, `color` the css the
+    // paint carries, `a` the context's globalAlpha and `op` the composite mode —
+    // both only ever supplied by `inkBlit`, so every pre-existing 3/4-arg call site
+    // (fillRect, fillText, R45's own override of this method) keeps the old
+    // last-write-wins semantics byte for byte. Rules are in the ink-model header.
+    ink(x, y, color, seq, a, op) {
+      const eff = a === undefined || a === null || !(a < 1) ? 1 : a; // NaN-safe: NaN ⇒ 1
+      if (eff <= 0) return;
+      const src = parseInk(color);
+      if (src !== null && src.a <= 0) return; // transparent paint changes nothing
+      const d = this.dims ? this.dims() : null;
+      if (d && d.w > 0 && d.h > 0 && (x < 0 || y < 0 || x >= d.w || y >= d.h)) { this.inkDropped++; return; }
       const key = x + ',' + y;
-      this.pixels.set(key, color);
-      log(this, this.textInk, { x, y, color, seq });
+      if (!this.pixels.has(key) && this.pixels.size >= INK_CAP) { this.inkDropped++; return; }
+      let out = color;
+      const mode = op === undefined || op === '' || op === 'source-over' ? 'over' : op;
+      const dst = eff < 1 || mode !== 'over' ? parseInk(this.pixels.get(key)) : null;
+      if (dst !== null) {
+        const sa = (src === null ? 1 : src.a) * eff;
+        if (sa <= 0) return;
+        let res;
+        if (mode === 'over') res = inkOver(src, sa, dst);
+        else if (mode === 'lighter') res = inkPlus(src, sa, dst);
+        else if (mode === 'multiply') res = inkTimes(src, sa, dst);
+        else { this.unmodelledOps.add(mode); res = null; }
+        if (res !== null) out = inkCss(res);
+      }
+      this.pixels.set(key, out);
+      log(this, this.textInk, { x, y, color: out, seq });
+    },
+    clearInk(x0, y0, x1, y1) {
+      if (!(x1 > x0 && y1 > y0)) return;
+      const d = this.dims ? this.dims() : null;
+      if (d && d.w > 0 && d.h > 0 && x0 <= 0 && y0 <= 0 && x1 >= d.w && y1 >= d.h) { this.pixels.clear(); return; }
+      for (const key of this.pixels.keys()) if (inkXY(key, x0, x1, y0, y1)) this.pixels.delete(key);
+    },
+    // ---- READ HELPERS for wave 4 (§8/R49). `inkAt` answers the modelled colour at
+    // a LOGICAL coordinate (floored, like `blit`'s destination), or null when the
+    // pixel is transparent in the model. Exact-string comparisons are honest inside
+    // the model; a comparison against a real screenshot goes through `colorNear`
+    // with `INK_TOL` and every colour COUNT comes from the model — see the
+    // tolerance paragraph in the ink-model header.
+    inkAt(x, y) {
+      return this.pixels.get(Math.floor(x) + ',' + Math.floor(y)) || null;
+    },
+    // Distinct colours a rect holds — R49's "≥ 90 distinct colours on a frame" and
+    // its per-tile colour clause. Pass `quantum` (e.g. 8) to bucket first, which is
+    // what a screenshot cross-check must do; leave it 0 for the model's own exact count.
+    coloursIn(x0, x1, y0, y1, quantum) {
+      const set = new Set();
+      for (const [key, color] of this.pixels) {
+        if (!inkXY(key, x0, x1, y0, y1)) continue;
+        set.add(quantum ? quantiseInk(color, quantum) : color);
+      }
+      return [...set].sort();
+    },
+    // Per-tile tone bands: the distinct rounded luminances in a rect, skipping
+    // translucent pixels so dither and soft AO cannot fake a tone band.
+    lumsIn(x0, x1, y0, y1) {
+      const set = new Set();
+      for (const [key, color] of this.pixels) {
+        if (!inkXY(key, x0, x1, y0, y1)) continue;
+        const p = parseInk(color);
+        if (p === null || p.a < 1) continue;
+        set.add(Math.round(0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b));
+      }
+      return [...set].sort((a, b) => a - b);
+    },
+    // Memory bound: entries never exceed INK_CAP or the surface's own pixel count,
+    // and everything refused is counted, so a blind surface is loud, not silent.
+    inkStats() {
+      return { entries: this.pixels.size, dropped: this.inkDropped, cap: INK_CAP, unmodelledOps: [...this.unmodelledOps].sort() };
     },
     reset() {
       this.rects.length = 0; this.text.length = 0; this.blits.length = 0; this.drawImages.length = 0;
@@ -368,6 +660,7 @@ function mkRecorder(scope = 'scratch') {
       this.scaleCalls.length = 0; this.translateCalls.length = 0; this.transformCalls.length = 0;
       this.stateLog.length = 0;
       this.pixels.clear(); this.textInk.length = 0; this.seq = 0; this.depth = 0; this.unknown.clear();
+      this.ctm = Object.assign({}, CTM_ID); this.ctmStack.length = 0; this.inkDropped = 0;
     },
     rowsOf(x0, x1, y0, y1) {
       const rows = new Set();
@@ -452,7 +745,13 @@ els.set('game', gameEl);
 function mkOffscreen(tag = 'canvas') {
   const el = mkEl('offscreen');
   el.tagName = String(tag).toUpperCase();
-  el._rec = mkRecorder('bake');
+  // §8.1 item 1, the lever: a bake canvas models ink FROM BIRTH. `pixels.js`'s
+  // `bakeMatrix` paints one `fillRect` per matrix cell, `atlas.bakeAll` packs those
+  // canvases into the atlas with `drawImage`, and `atlas.blit` blits atlas cells —
+  // so ink has to survive the whole chain or every sprite check reads red on a
+  // correct render. `dims` bounds each surface's ink to its own pixel count.
+  el._rec = mkRecorder('bake', () => ({ w: el.width, h: el.height }));
+  el._rec.inkRects = true;
   el._bakedAtFrame = framesDone;
   offscreenCanvases.push(el);
   bumpEnv('offscreenCanvases');
