@@ -100,12 +100,17 @@ function stamp(rows, block, bx, by) {
   return out;
 }
 
-// Move an outline inside the box: every cell already on the silhouette takes the entry's
-// darkest mapped tone. Only cell VALUES change — an inked cell stays inked, a transparent one
-// stays transparent, and no cell is added — so the inked box that the frozen hitboxes and HUD
-// rects measure cannot move. `keep` protects emissive cells (they are light sources), specular
-// glints and ink lines.
-function rim(rows, deep, keep = 'EWK') {
+// Move an outline inside the box, in TWO tones, so the silhouette still carries the set's one
+// light direction (§5.2) instead of collapsing to a flat contour: cells facing AWAY from the key
+// light (transparent neighbour to the right or below) take `deep`, cells the key RAKES (transparent
+// above or to the left) take `lit`. Away wins on a cell that is both, so a 1 px limb never loses
+// its dark contour — silhouette first (§5.3). Only cell VALUES change: an inked cell stays inked,
+// a transparent one stays transparent, nothing is added, so the inked box that the frozen hitboxes
+// and HUD rects measure cannot move. `keep` protects emissive cells (they are light sources),
+// specular glints and ink lines. `lit` DEFAULTS TO `deep`: an entry that must hold one true
+// contour tone — the Sunfruit ring is real `K`, and R24 counts that black ink against the HUD
+// rect `textW` reserves — passes no lit tone and stays single-tone, exactly as before.
+function rim(rows, deep, lit = deep, keep = 'EWK') {
   const w = rows.reduce((n, r) => (r.length > n ? r.length : n), 0);
   const on = (x, y) => y >= 0 && y < rows.length && x >= 0 && x < rows[y].length &&
     rows[y][x] !== '.' && rows[y][x] !== ' ';
@@ -113,8 +118,9 @@ function rim(rows, deep, keep = 'EWK') {
     let s = '';
     for (let x = 0; x < w; x++) {
       const c = x < r.length ? r[x] : '.';
-      const edge = !on(x - 1, y) || !on(x + 1, y) || !on(x, y - 1) || !on(x, y + 1);
-      s += c !== '.' && c !== ' ' && edge && !keep.includes(c) ? deep : c;
+      const tone = !on(x + 1, y) || !on(x, y + 1) ? deep
+        : !on(x - 1, y) || !on(x, y - 1) ? lit : null;
+      s += tone === null || c === '.' || c === ' ' || keep.includes(c) ? c : tone;
     }
     return s;
   });
@@ -794,13 +800,23 @@ const DITHER = { dither: true };
 
 // Keys whose box the harness measures wear their rim INSIDE the matrix, because the pad outline
 // would ink a row the frozen geometry does not know about. `rim` recolours cells that are
-// already on the silhouette, so the inked box it reports is the box that gets painted.
-const HERO_SMALL_RIM = HERO_SMALL.map((f) => rim(f, 'l'));
-const HERO_BIG_RIM = HERO_BIG.map((f) => rim(f, 'l'));
+// already on the silhouette, so the inked box it reports is the box that gets painted. The lit
+// tone is the same material one ramp step up (`m` is `heroBody.shade` in `M_HERO`), so what is
+// recovered is a ramp step, not an invented colour. Measured by atlas readback, distinct colours
+// per key before -> after: hero.small 29->34, hero.big 25->28, lives 19->21, boss 16->24,
+// shard 11->14.
+// `turnip` stays SINGLE-TONE, deliberately: a distinct lit letter pulls its key-lit silhouette
+// cells into bakeMatrix's directional pass, which at shade.strength 1 replaces the cell colour
+// with a ramp step outright (src/pixels.js:302-326), collapsing 6 body tones into one `lit` —
+// 22 colours -> 19, tone bands 17 -> 15. `deep` is the tone that pass leaves alone, so a
+// one-tone rim keeps the turnip its ramp. Both `2` and `3` as the lit tone measured identically,
+// so this is the pass, not the letter.
+const HERO_SMALL_RIM = HERO_SMALL.map((f) => rim(f, 'l', 'm'));
+const HERO_BIG_RIM = HERO_BIG.map((f) => rim(f, 'l', 'm'));
 const TURNIP_RIM = TURNIP.map((f) => rim(f, '1'));
 const TURNIP_SQUASH_RIM = rim(TURNIP_SQUASH, '1');
-const BOSS_RIM = BOSS.map((f) => rim(f, '1'));
-const SHARD_RIM = rim(SHARD, '1');
+const BOSS_RIM = BOSS.map((f) => rim(f, '1', '2'));
+const SHARD_RIM = rim(SHARD, '1', '2');
 
 register({ key: 'hero.small', frames: HERO_SMALL_RIM, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
 register({ key: 'hero.big', frames: HERO_BIG_RIM, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
