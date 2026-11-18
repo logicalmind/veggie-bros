@@ -2302,10 +2302,25 @@ check('R23', () => {
   e.y = 100;               // airborne corpse: nothing else inks the band around it
   e.vy = 0;
   const screenX = Math.floor(e.x - Math.floor(G.cam.x));
+  // The read is taken off the `scene` recorder, not the live one: `scene` is 256x240 LOGICAL and
+  // stays logical through §4's DPR pass (`backing = css x dpr`, `scene -> upscale` by integer k,
+  // `upscale -> canvas`), so a world-ink read taken there is correct at any k, while the live
+  // recorder is about to hold DEVICE pixels (k x) and a logical window there finds nothing. The
+  // `{ ink: true }` scope is what opens the demand gate that lets `scene` model ink at all.
+  // `sr` is a `bake` recorder: its op log is never reset and stops appending at BAKE_LOG_CAP, so
+  // the frame under test starts from an empty log (same as R18's scene read) — `rowsWhere` reads
+  // `.pixels`, which render.js:260's whole-surface clearRect already keeps frame-fresh.
+  const sr = sceneRec();
+  sr.rects.length = 0;
+  sr.scaleCalls.length = 0;
   renderFrames(1, { ink: true });
   const isCorpse = (c) => c === C.PALETTE.turnipBody || c === C.PALETTE.turnipTip;
-  const rows = rec.rowsWhere(screenX - 2, screenX + e.w + 2, 92, 122, isCorpse);
-  const frac = rec.scaleCalls.filter(([, sy]) => !Number.isInteger(sy));
+  const rows = sr.rowsWhere(screenX - 2, screenX + e.w + 2, 92, 122, isCorpse);
+  // Guard BOTH surfaces, not just the live one: since S-08 the corpse is drawn into `scene`, and
+  // `fillRect` ink is modelled in pre-CTM coordinates, so a fractional `scale` on the surface the
+  // world actually draws into never reaches `rec.scaleCalls` — measured: `sc.scale(1, 0.5)` around
+  // `render.js:270`'s player draw PASSES on the live-only guard and FAILS on this one.
+  const frac = [...sr.scaleCalls, ...rec.scaleCalls].filter(([, sy]) => !Number.isInteger(sy));
   if (frac.length) {
     assert(false, `scale(${frac[0][0]}, ${frac[0][1].toFixed(4)}) is applied while drawing the squashed turnip — fillRect antialiases the fractional geometry into ${rows.length} blurry rows (${rows.join(',')}); draw the 12x4 corpse directly or re-derive integer rows`);
   }
