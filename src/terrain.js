@@ -111,8 +111,16 @@ function rgba(rgb, a) {
   return colorToCss({ r: rgb.r, g: rgb.g, b: rgb.b, a: Math.max(0, Math.min(1, a)) });
 }
 
+// Alpha rides along: every consumer hands the result to `colorToCss`, which formats a
+// missing alpha as `rgba(r,g,b,NaN)` — an INVALID css colour the canvas silently ignores, so
+// that fill draws in whatever fillStyle was last valid (measured in the browser: assigning it
+// leaves `fillStyle` unchanged, and the fields mid layer's clouds came out `#eff9e4` instead
+// of `#ffffff`). The same string is unparseable ink in the harness' ink model, which throws
+// the moment such a pixel is blitted with globalAlpha < 1. Both inputs here are always opaque
+// — `rgb()` and this function both set `a: 1` — so the blend is opaque by construction.
 function mix(a, b, t) {
-  return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t };
+  return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t,
+    a: a.a === undefined ? 1 : a.a };
 }
 
 function rgb(css, fallback) {
@@ -641,7 +649,12 @@ function drawMid(ctx, th, spec, look, salt) {
       const cx = Math.round(seeded(k * 5 + salt, 21) * (P - 24)) + 12;
       const cy = Math.round(24 + seeded(k * 5 + salt + 1, 22) * 58);
       const r = 7 + Math.round(seeded(k * 5 + salt + 2, 23) * 7);
-      const cloud = { r: 255, g: 255, b: 255 };
+      // `a: 1` is not decoration: `puff` stringifies these objects with `colorToCss`, and an
+      // alpha-less one becomes `rgba(255,255,255,NaN)` — invalid css the canvas ignores, so the
+      // cloud rows drew in the previous fillStyle (measured: 21035 px of `#eff9e4` and 0 px of
+      // `#ffffff` before, 16592 px of `#ffffff` after) and the harness' ink model threw on that
+      // layer's 0.96-alpha blit.
+      const cloud = { r: 255, g: 255, b: 255, a: 1 };
       for (let m = 0; m * P < w + P; m++) {
         const x = cx + m * P;
         puff(ctx, x, cy, r, cloud, cloud, mix(cloud, th.fog, 0.5));

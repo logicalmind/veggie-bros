@@ -1,22 +1,16 @@
-import { PALETTE, ROWS, SOLID, VIEW_H, VIEW_W } from './config.js';
+import { ART_SCALE, PALETTE, VIEW_H, VIEW_W } from './config.js';
+import { shakeOffset } from './fx.js';
+import { ambientFor, bakeLevel, parallaxFor, visibleStrips } from './terrain.js';
 import {
   TEXT_PITCH,
   drawBerry,
-  drawBrick,
   drawBoss,
-  drawBush,
-  drawCloud,
   drawFruit,
   drawGate,
   drawGround,
   drawHero,
-  drawHill,
-  drawPipe,
   drawPixelText,
-  drawPlatform,
-  drawPumpkin,
   drawShard,
-  drawStone,
   drawTurnip,
 } from './sprites.js';
 
@@ -42,13 +36,6 @@ const MUTED_GAP = 4;
 // top of the 6 px text row instead of floating 2 px above the text it labels
 const LIVES_ICON_Y = 6;
 
-// deterministic pure-integer hash of i (no Math.random)
-function hash(i) {
-  let h = Math.imul(i, 0x9e3779b1) ^ 0x85ebca6b;
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-  return (h ^ (h >>> 16)) >>> 0;
-}
-
 function textW(text, scale = 1) {
   return text.length * TEXT_PITCH * scale;
 }
@@ -57,110 +44,74 @@ function centerText(ctx, text, y, color, scale = 1) {
   drawPixelText(ctx, text, (VIEW_W - textW(text, scale)) / 2, y, color, scale);
 }
 
-function drawSky(ctx) {
-  ctx.fillStyle = P.sky;
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+// The three shipped levels' terrain themes, in level order — the same mapping
+// /tmp/vb-w2-logic.mjs sweeps, and the only three names terrain.js's THEMES table carries.
+const THEME_NAMES = ['fields', 'canyon', 'palace'];
+// One bake PLAN per level, keyed on the level object identity plus the theme: loadLevel()
+// re-parses the level, so a restart re-plans and terrain's own bundle/strip cache re-blits
+// instead of re-baking (R48). A plan allocates no canvas — strips, ambient and parallax
+// appear on first sight inside the three accessors below — so `bakeLevel` runs once per
+// level and never inside a steady frame.
+let bakedFor = null;
+function worldFor(g) {
+  const theme = THEME_NAMES[g.levelIndex] || 'fields';
+  if (bakedFor && bakedFor.level === g.level && bakedFor.theme === theme) return bakedFor.baked;
+  bakedFor = { level: g.level, theme, baked: bakeLevel(g.level, theme) };
+  return bakedFor.baked;
 }
 
-// far hills, 96 px steps, 0.25x scroll, alternating far/near with +/-8 height variance
-function drawHills(ctx, camX) {
-  const off = camX * 0.25;
-  const i0 = Math.floor((off - 48) / 96);
-  const i1 = Math.ceil((off + VIEW_W + 48) / 96);
-  for (let i = i0; i <= i1; i++) {
-    const v = (hash(i) % 17) - 8;
-    const sx = Math.floor(i * 96 - off);
-    if (i & 1) drawHill(ctx, sx, 168, 28 + v, P.hillNear);
-    else drawHill(ctx, sx, 150, 40 + v, P.hillFar);
+// The whole background in 1 + 3 + (4..6) blits: baked sky wash, the three parallax depths,
+// then the level's terrain strips. `o` is fx's ONE signed shake int, applied as (o, -o) to
+// the destination coordinates — this renderer never sets a canvas transform, so the jolt is
+// arithmetic and R45's draw-stream diff keeps working.
+function drawWorld(ctx, baked, camX, o, oy) {
+  // The ambient ramp is screen-aligned by terrain's contract, so it takes no shake: a
+  // shifted full-view blit would leave a transparent row along one edge of the frame.
+  ctx.drawImage(ambientFor(baked, camX).canvas, 0, 0, VIEW_W, VIEW_H);
+  // Parallax is queried with the TRUE camera (its depth factors are scroll, not shake) and
+  // shifted by the whole offset, so the jolt moves the frame rigidly.
+  const layers = parallaxFor(baked, camX);
+  for (let i = 0; i < layers.length; i++) {
+    const L = layers[i];
+    ctx.globalAlpha = L.alpha;
+    // The layer canvases are art-scale: dest is their logical size, (VIEW_W + period) wide.
+    ctx.drawImage(L.canvas, L.dx + o, oy, L.canvas.width / ART_SCALE, L.canvas.height / ART_SCALE);
+  }
+  ctx.globalAlpha = 1;
+  // Strips. The coverage query takes the shake-shifted camera (camX - o) so the 1-3 px the
+  // view gains at the trailing edge is painted too, and `dx` is then already relative to
+  // that camera — no extra dest offset. The dest is the FULL strip width: a 63-px dest
+  // leaves a 1-px uncovered column at every boundary and fakes seam gaps (the seam probe's
+  // control measured maxD 233 that way).
+  const strips = visibleStrips(baked, camX - o);
+  for (let i = 0; i < strips.length; i++) {
+    ctx.drawImage(strips[i].canvas, strips[i].dx, oy, baked.stripW, VIEW_H);
   }
 }
 
-// clouds (128 px steps) and bushes (160 px steps), 0.5x scroll, behind tiles
-function drawBackdrops(ctx, camX) {
-  const off = camX * 0.5;
-  const c0 = Math.floor((off - 16) / 128);
-  const c1 = Math.ceil((off + VIEW_W + 16) / 128);
-  for (let i = c0; i <= c1; i++) {
-    drawCloud(ctx, Math.floor(i * 128 - off), 20 + (hash(i + 777) % 51));
-  }
-  const b0 = Math.floor((off - 40) / 160);
-  const b1 = Math.ceil((off + VIEW_W + 40) / 160);
-  for (let i = b0; i <= b1; i++) {
-    const h = hash(i + 1234);
-    if (h % 5 === 0) continue;
-    drawBush(ctx, Math.floor(i * 160 - off) + (h % 24), 219);
-  }
-}
-
-function bumpOffset(level, tx, ty) {
-  for (const b of level.bumps) {
-    if (b.x === tx && b.y === ty) return -4 * Math.sin((Math.PI * b.t) / 0.15);
-  }
-  return 0;
-}
-
-function drawTiles(ctx, level, camX) {
-  const cols = level.tiles[0].length;
-  const tx0 = Math.floor(camX / 16);
-  for (let tx = tx0; tx <= tx0 + 16; tx++) {
-    if (tx < 0 || tx >= cols) continue;
-    const sx = tx * 16 - camX;
-    for (let ty = 0; ty < ROWS; ty++) {
-      const ch = level.tiles[ty][tx];
-      if (ch === '.' || ch === ' ' || ch === undefined) continue;
-      const sy = ty * 16;
-      const above = ty > 0 ? level.tiles[ty - 1][tx] : '.';
-      switch (ch) {
-        case 'X':
-          drawGround(ctx, sx, sy, !SOLID.includes(above));
-          break;
-        case 'S':
-          drawStone(ctx, sx, sy);
-          break;
-        case 'B':
-          drawBrick(ctx, sx, sy + bumpOffset(level, tx, ty));
-          break;
-        case 'P':
-        case 'Q':
-          drawPumpkin(ctx, sx, sy + bumpOffset(level, tx, ty), false);
-          break;
-        case 'U':
-          drawPumpkin(ctx, sx, sy, true);
-          break;
-        case '=':
-          drawPlatform(ctx, sx, sy);
-          break;
-        case '|': {
-          const isLeft = tx === 0 || level.tiles[ty][tx - 1] !== '|';
-          drawPipe(ctx, sx, sy, above !== '|', isLeft);
-          break;
-        }
-      }
-    }
-  }
-}
-
-function drawItems(ctx, items, camX) {
+// `oy` is the vertical half of the camera shake (fx's offset negated); it defaults to 0 so
+// every non-shaking call site and harness path draws exactly where it always did.
+function drawItems(ctx, items, camX, oy = 0) {
   for (const it of items) {
     const ix = it.x - camX;
     switch (it.kind) {
       case 'fruit':
-        drawFruit(ctx, ix, it.y, Math.floor(it.t * 8) % 4);
+        drawFruit(ctx, ix, it.y + oy, Math.floor(it.t * 8) % 4);
         break;
       case 'berry':
-        drawBerry(ctx, ix, it.y, 0);
+        drawBerry(ctx, ix, it.y + oy, 0);
         break;
       case 'pop': {
-        const py = it.y - 16 * (it.t / 0.25);
+        const py = it.y - 16 * (it.t / 0.25) + oy;
         if (it.what === 'berry') drawBerry(ctx, ix, py, 0);
         else drawFruit(ctx, ix, py, 0);
         break;
       }
       case 'shard':
-        drawShard(ctx, ix, it.y, it.k, it.t);
+        drawShard(ctx, ix, it.y + oy, it.k, it.t);
         break;
       case 'popup': {
-        const py = it.y - 20 * (it.t / 0.6);
+        const py = it.y - 20 * (it.t / 0.6) + oy;
         // INK backing pass first (offset down-right), then the white text on top,
         // so the popup stays legible over the light sky and stone tiles
         drawPixelText(ctx, it.text, ix + POPUP_BACKING_DX, py + POPUP_BACKING_DY, INK);
@@ -171,7 +122,7 @@ function drawItems(ctx, items, camX) {
   }
 }
 
-function drawEnemies(ctx, enemies, camX) {
+function drawEnemies(ctx, enemies, camX, oy = 0) {
   for (const e of enemies) {
     if (!e || e.dead) continue;
     const ex = e.x - camX;
@@ -180,9 +131,9 @@ function drawEnemies(ctx, enemies, camX) {
       if (e.defeated) {
         // 3-frame flip spin over the 1.5 s defeat window
         const spin = Math.floor(e.defeatT * 8) % 3;
-        drawBoss(ctx, ex, e.y, spin, spin & 1 ? -facing : facing, false);
+        drawBoss(ctx, ex, e.y + oy, spin, spin & 1 ? -facing : facing, false);
       } else {
-        drawBoss(ctx, ex, e.y, e.frame || 0, facing, e.hurtT > 0);
+        drawBoss(ctx, ex, e.y + oy, e.frame || 0, facing, e.hurtT > 0);
       }
     } else {
       const frame = e.frame || 0;
@@ -192,25 +143,25 @@ function drawEnemies(ctx, enemies, camX) {
         // Squashing with ctx.scale(1, 4 / 14) instead landed the art on fractional rows
         // (8.29..12.29 of the 14 px-tall art), and fillRect antialiases fractional
         // geometry, so the corpse came out as a faint blurry band.
-        const top = e.y + e.h - CORPSE_H;
+        const top = e.y + e.h - CORPSE_H + oy;
         ctx.fillStyle = P.turnipBody;
         ctx.fillRect(ex - 1, top, e.w, CORPSE_H);
         ctx.fillStyle = P.turnipTip;
         ctx.fillRect(ex - 1 + (e.w - CORPSE_TIP_W) / 2, top + CORPSE_H - CORPSE_TIP_H, CORPSE_TIP_W, CORPSE_TIP_H);
       } else {
-        drawTurnip(ctx, ex, e.y, frame, facing);
+        drawTurnip(ctx, ex, e.y + oy, frame, facing);
       }
     }
   }
 }
 
-function drawPlayer(ctx, player, camX) {
+function drawPlayer(ctx, player, camX, oy = 0) {
   const p = player;
   if (!p || (p.dead && p.deadPit)) return;
   if (p.invulnT > 0 && Math.floor(p.t * 8) % 2 === 1) return; // blink
   const pose = p.dead ? 'jump' : !p.onGround ? 'jump' : Math.abs(p.vx) > 10 ? 'run' : 'idle';
   const frame = pose === 'run' ? Math.floor(p.t * 10) % 2 : 0;
-  drawHero(ctx, p.x - camX, p.y, p.facing, p.big, pose, frame);
+  drawHero(ctx, p.x - camX, p.y + oy, p.facing, p.big, pose, frame);
 }
 
 function drawHud(ctx, g) {
@@ -287,19 +238,20 @@ export function render(ctx, g) {
   const level = g.level;
   const camX = Math.floor(g.cam.x);
 
-  drawSky(ctx);
-  drawHills(ctx, camX);
-  drawBackdrops(ctx, camX);
-  drawTiles(ctx, level, camX);
+  // Camera shake enters as arithmetic: fx hands over ONE signed int, and the world is drawn
+  // at (o, -o) by shifting the camera it is measured against. This file sets no canvas
+  // transform anywhere (R45 diffs the draw stream), and never the HUD or the overlays (R52).
+  const o = shakeOffset();
+  drawWorld(ctx, worldFor(g), camX, o, -o);
   // Checkpoints draw NOTHING. `level.checkpoints` stays live gameplay state — the arming band, the
   // hero's left clamp and the camera floor all read it (main.js) — but a banked post is invisible,
   // so there is deliberately no draw call here. `R45` renders a level with and without its
   // checkpoints and requires identical draw streams; the gate below stays world furniture drawn by
-  // manual -camX arithmetic (this renderer never calls ctx.translate).
-  if (level.gate) drawGate(ctx, level.gate.x - camX, level.gate.y);
-  drawItems(ctx, g.items, camX);
-  drawEnemies(ctx, g.enemies, camX);
-  drawPlayer(ctx, g.player, camX);
+  // manual -camX arithmetic, and it sets no canvas transform.
+  if (level.gate) drawGate(ctx, level.gate.x - (camX - o), level.gate.y - o);
+  drawItems(ctx, g.items, camX - o, -o);
+  drawEnemies(ctx, g.enemies, camX - o, -o);
+  drawPlayer(ctx, g.player, camX - o, -o);
 
   if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'LEVEL_CLEAR') {
     drawHud(ctx, g);
