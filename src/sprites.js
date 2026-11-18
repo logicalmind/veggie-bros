@@ -12,11 +12,13 @@
 // crown bob 1 px above the body box while the body stayed glued to it; the hero's run bob
 // instead moves the whole blit up 1 px at draw time, which is what old code did to the sprite.
 //
-// OUTLINE: the atlas pad puts bakeMatrix's 1 px `deep` silhouette outline OUTSIDE the matrix,
-// so it can never eat art or move a box. It is on for characters and particles, which read
-// against terrain, and off for anything whose matrix box is a tile, a hitbox or a physics box
-// (tiles meet tiles; `berry`'s box IS its pickup rect, per items.js) — those author their own
-// 1 px `deep` rim inside the box, which is still §5.3.
+// OUTLINE: nothing in the pad. bakeMatrix's pad outline inks 1 px OUTSIDE the matrix, and the
+// harness measures real ink against frozen geometry (R21 counts the rows a turnip paints
+// against its 12 px hitbox; R24 measures the fruit icon's ink against the HUD rect `textW`
+// reserves), so a padded box is a moved box. Every key whose matrix box is a tile, a hitbox, a
+// pickup rect or a HUD layout rect carries its 1 px `deep` rim INSIDE the matrix — the terrain
+// and props author it by hand, the characters, `turnip` and `shard` get it from `rim` below.
+// The pad survives only on `fx.*`: puff centres with no hitbox, no pickup rect, no layout rect.
 //
 // LETTER GRAMMAR, shared by every matrix below: `1`-`5` are the deep→hi steps of the entry's
 // first material, `a`-`e` and `f`-`j` the same steps of its second and third; `l`/`m`/`n` are
@@ -96,6 +98,26 @@ function stamp(rows, block, bx, by) {
     out[y] = s;
   }
   return out;
+}
+
+// Move an outline inside the box: every cell already on the silhouette takes the entry's
+// darkest mapped tone. Only cell VALUES change — an inked cell stays inked, a transparent one
+// stays transparent, and no cell is added — so the inked box that the frozen hitboxes and HUD
+// rects measure cannot move. `keep` protects emissive cells (they are light sources), specular
+// glints and ink lines.
+function rim(rows, deep, keep = 'EWK') {
+  const w = rows.reduce((n, r) => (r.length > n ? r.length : n), 0);
+  const on = (x, y) => y >= 0 && y < rows.length && x >= 0 && x < rows[y].length &&
+    rows[y][x] !== '.' && rows[y][x] !== ' ';
+  return rows.map((r, y) => {
+    let s = '';
+    for (let x = 0; x < w; x++) {
+      const c = x < r.length ? r[x] : '.';
+      const edge = !on(x - 1, y) || !on(x + 1, y) || !on(x, y - 1) || !on(x, y + 1);
+      s += c !== '.' && c !== ' ' && edge && !keep.includes(c) ? deep : c;
+    }
+    return s;
+  });
 }
 
 // Generated art still ends up as letters, so the one bake pass treats it exactly like
@@ -279,20 +301,24 @@ const BUSH = grid(14, 5, (x, y) => {
 });
 
 // --------------------------------------------------------------------------- props
-// The Sunfruit keeps the eight-point star the old sprite was cut from, and keeps its dark rim
-// authored inside the box (no pad outline), so the 9x9 ink box is exactly the old one. The
-// spin frames squash toward the box's own centre column, again exactly as the old ones did.
-const FRUIT_STAR = mat(
+// The Sunfruit keeps the eight-point star the old sprite was cut from, and keeps its outline
+// INSIDE the 9x9 box: the old sprite ringed every star cell in `black`, and the HUD's fruit
+// counter (R24) measures that black ink against the rect `textW` reserves, so the rim has to be
+// real `K`, not a dark tone. `rim` does the silhouette; the two `K` cells in the middle row are
+// the pip — interior cells, which the bake's shading pass leaves untouched, so the icon keeps a
+// pixel of true black after the ramp pass. The spin frames are 4-6 px wide, where a black ring
+// would eat the body; their rim stays the material's own `deep`.
+const FRUIT_STAR = rim(mat(
   '...E.E...',
   '...EE4...',
   '..44444..',
   '.4E44444.',
-  '444444444',
+  '444KK4444',
   '.4441144.',
   '.41...14.',
   '..41.14..',
   '..2...2..'
-);
+), 'K');
 const FRUIT_SPIN = mat(
   '..EE.....',
   '..E4.....',
@@ -727,16 +753,16 @@ const GATE = (() => {
 
 // --------------------------------------------------------------------------- registration
 // One shared bake opts shape: the same light vector, the same ramp blend, so twenty-odd
-// matrices bake as one art set (§5.2). Outline colour is each sprite's own `deep`.
+// matrices bake as one art set (§5.2). No entry gets an outline from here; `PADDED` is the one
+// way to ask for the pad, and only the particle keys use it.
 const LIGHT = { dx: -1, dy: -1 };
 const SHADE = { strength: 1 };
 
-function opts(deep, extra) {
-  return Object.assign(
-    { light: LIGHT, shade: SHADE, outline: deep ? { color: deep, width: 1 } : null },
-    extra || {}
-  );
+function opts(extra) {
+  return Object.assign({ light: LIGHT, shade: SHADE }, extra || {});
 }
+
+const PADDED = (deep) => ({ outline: { color: deep, width: 1 } });
 
 const M_HERO = mapOf(ramp(RM.heroLeaf, '12345'), ramp(RM.heroBody, 'abcde'), ramp(RM.heroSeed, 'fghij'),
   { l: RM.heroBody.deep, m: RM.heroBody.shade, n: RM.heroBody.base });
@@ -766,33 +792,45 @@ const M_CHIP = mapOf(ramp(RM.brick, '12345'));
 
 const DITHER = { dither: true };
 
-register({ key: 'hero.small', frames: HERO_SMALL, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts(RM.heroBody.deep) });
-register({ key: 'hero.big', frames: HERO_BIG, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts(RM.heroBody.deep) });
-register({ key: 'lives', frames: [HERO_SMALL[0]], map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts(RM.heroBody.deep) });
-register({ key: 'turnip', frames: TURNIP, map: M_TURNIP, anchor: { x: -1, y: -1 }, opts: opts(RM.turnipBody.deep) });
-register({ key: 'turnip.squash', frames: [TURNIP_SQUASH], map: M_TURNIP, anchor: { x: -1, y: 0 }, opts: opts(RM.turnipBody.deep) });
-register({ key: 'boss', frames: BOSS, map: M_BOSS, anchor: { x: -2, y: -3 }, opts: opts(RM.pineapple.deep) });
-register({ key: 'ground.top', frames: [GROUND_TOP], map: M_GROUND, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'ground.body', frames: [GROUND_BODY], map: M_GROUND, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'stone', frames: [STONE], map: M_STONE, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'brick', frames: [BRICK], map: M_BRICK, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'pumpkin', frames: [PUMPKIN], map: M_PUMPKIN, anchor: { x: 0, y: 0 }, opts: opts(null, { emissive: { chars: 'E', color: P.pumpkinLit } }) });
-register({ key: 'pumpkin.used', frames: [PUMPKIN_USED], map: M_USED, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'platform', frames: [PLATFORM], map: M_PLATFORM, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'pipe.cap', frames: [PIPE_CAP], map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'pipe.body', frames: [PIPE_BODY], map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(null, DITHER) });
-register({ key: 'gate', frames: [GATE], map: M_GATE, anchor: { x: 0, y: -103 }, opts: opts(null, { dither: true, emissive: { chars: 'E', color: P.pumpkinLit } }) });
-register({ key: 'fruit', frames: [FRUIT_STAR, FRUIT_SPIN, FRUIT_EDGE, FRUIT_SPIN], map: M_FRUIT, anchor: { x: 0, y: 0 }, opts: opts(null, { emissive: { chars: 'E', color: P.crown } }) });
-register({ key: 'berry', frames: [BERRY], map: M_BERRY, anchor: { x: 0, y: 0 }, opts: opts(null, { emissive: { chars: 'E', color: RM.berryBody.hi } }) });
-register({ key: 'shard', frames: [SHARD], map: M_SHARD, anchor: { x: 0, y: 0 }, opts: opts(RM.brick.deep) });
-register({ key: 'bush', frames: [BUSH], map: M_BUSH, anchor: { x: 0, y: 0 }, opts: opts(null) });
-register({ key: 'hill.far', frames: [hillField(true)], map: M_HILL_FAR, anchor: { x: -48, y: -48 }, opts: opts(null) });
-register({ key: 'hill.near', frames: [hillField(false)], map: M_HILL_NEAR, anchor: { x: -48, y: -48 }, opts: opts(null) });
-register({ key: 'cloud', frames: [CLOUD], map: M_CLOUD, anchor: { x: 0, y: 0 }, opts: opts(null) });
-register({ key: 'fx.dust', frames: [FX_DUST], map: M_DUST, anchor: { x: 0, y: 0 }, opts: opts(RM.dirt.deep) });
-register({ key: 'fx.spark', frames: FX_SPARK, map: M_SPARK, anchor: { x: 0, y: 0 }, opts: opts(null, { emissive: { chars: 'E', color: P.crown, threshold: 0.2 } }) });
-register({ key: 'fx.poof', frames: FX_POOF, map: M_POOF, anchor: { x: 0, y: 0 }, opts: opts(RM.used.deep) });
-register({ key: 'fx.chip', frames: [FX_CHIP], map: M_CHIP, anchor: { x: 0, y: 0 }, opts: opts(RM.brick.deep) });
+// Keys whose box the harness measures wear their rim INSIDE the matrix, because the pad outline
+// would ink a row the frozen geometry does not know about. `rim` recolours cells that are
+// already on the silhouette, so the inked box it reports is the box that gets painted.
+const HERO_SMALL_RIM = HERO_SMALL.map((f) => rim(f, 'l'));
+const HERO_BIG_RIM = HERO_BIG.map((f) => rim(f, 'l'));
+const TURNIP_RIM = TURNIP.map((f) => rim(f, '1'));
+const TURNIP_SQUASH_RIM = rim(TURNIP_SQUASH, '1');
+const BOSS_RIM = BOSS.map((f) => rim(f, '1'));
+const SHARD_RIM = rim(SHARD, '1');
+
+register({ key: 'hero.small', frames: HERO_SMALL_RIM, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
+register({ key: 'hero.big', frames: HERO_BIG_RIM, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
+register({ key: 'lives', frames: [HERO_SMALL_RIM[0]], map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
+register({ key: 'turnip', frames: TURNIP_RIM, map: M_TURNIP, anchor: { x: -1, y: -1 }, opts: opts() });
+register({ key: 'turnip.squash', frames: [TURNIP_SQUASH_RIM], map: M_TURNIP, anchor: { x: -1, y: 0 }, opts: opts() });
+register({ key: 'boss', frames: BOSS_RIM, map: M_BOSS, anchor: { x: -2, y: -3 }, opts: opts() });
+register({ key: 'ground.top', frames: [GROUND_TOP], map: M_GROUND, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'ground.body', frames: [GROUND_BODY], map: M_GROUND, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'stone', frames: [STONE], map: M_STONE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'brick', frames: [BRICK], map: M_BRICK, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'pumpkin', frames: [PUMPKIN], map: M_PUMPKIN, anchor: { x: 0, y: 0 }, opts: opts({ emissive: { chars: 'E', color: P.pumpkinLit } }) });
+register({ key: 'pumpkin.used', frames: [PUMPKIN_USED], map: M_USED, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'platform', frames: [PLATFORM], map: M_PLATFORM, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'pipe.cap', frames: [PIPE_CAP], map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'pipe.body', frames: [PIPE_BODY], map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'gate', frames: [GATE], map: M_GATE, anchor: { x: 0, y: -103 }, opts: opts({ dither: true, emissive: { chars: 'E', color: P.pumpkinLit } }) });
+register({ key: 'fruit', frames: [FRUIT_STAR, FRUIT_SPIN, FRUIT_EDGE, FRUIT_SPIN], map: M_FRUIT, anchor: { x: 0, y: 0 }, opts: opts({ emissive: { chars: 'E', color: P.crown } }) });
+register({ key: 'berry', frames: [BERRY], map: M_BERRY, anchor: { x: 0, y: 0 }, opts: opts({ emissive: { chars: 'E', color: RM.berryBody.hi } }) });
+register({ key: 'shard', frames: [SHARD_RIM], map: M_SHARD, anchor: { x: 0, y: 0 }, opts: opts() });
+register({ key: 'bush', frames: [BUSH], map: M_BUSH, anchor: { x: 0, y: 0 }, opts: opts() });
+register({ key: 'hill.far', frames: [hillField(true)], map: M_HILL_FAR, anchor: { x: -48, y: -48 }, opts: opts() });
+register({ key: 'hill.near', frames: [hillField(false)], map: M_HILL_NEAR, anchor: { x: -48, y: -48 }, opts: opts() });
+register({ key: 'cloud', frames: [CLOUD], map: M_CLOUD, anchor: { x: 0, y: 0 }, opts: opts() });
+// Particles are the only keys that may wear the pad: a puff has no hitbox, no pickup rect and
+// no HUD layout rect, so one inked cell outside its matrix measures nothing.
+register({ key: 'fx.dust', frames: [FX_DUST], map: M_DUST, anchor: { x: 0, y: 0 }, opts: opts(PADDED(RM.dirt.deep)) });
+register({ key: 'fx.spark', frames: FX_SPARK, map: M_SPARK, anchor: { x: 0, y: 0 }, opts: opts({ ...PADDED(RM.crown.deep), emissive: { chars: 'E', color: P.crown, threshold: 0.2 } }) });
+register({ key: 'fx.poof', frames: FX_POOF, map: M_POOF, anchor: { x: 0, y: 0 }, opts: opts(PADDED(RM.used.deep)) });
+register({ key: 'fx.chip', frames: [FX_CHIP], map: M_CHIP, anchor: { x: 0, y: 0 }, opts: opts(PADDED(RM.brick.deep)) });
 
 // Boot drives this; the draw wrappers below also guard, so the module is safe however wave 3
 // sequences the boot (R48 counts these calls and expects exactly one).
