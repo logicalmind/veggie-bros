@@ -24,7 +24,7 @@ grep -c "^export" src/sprites.js                                            # ex
 ```
 If `src/sprites.js` shows a low export count or fails `--check`, an agent died mid-write: the last good copy is `git show HEAD:src/sprites.js`, the last good art-data partial was `/tmp/vb-rescue/sprites-partial-685.js`. Do **not** guess the missing half — re-run slice S-01.
 
-## Tree state (head `298d110`, **15 commits** off `main`@`d16b002`) — **suite green 44/44**
+## Tree state (head `c28be8b`, **16 commits** off `main`@`d16b002`) — **suite green 44/44**
 
 | Commit | What | Verified? |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ If `src/sprites.js` shows a low export count or fails `--check`, an agent died m
 | `b82f86a` | outline pad → particles only; rim inside the matrix | yes: 44/44 twice, 253 `fillRect`/frame |
 | `3b7070e` | docs only | — |
 | `298d110` | `fx.js` one line: `KIND.SPARK` puff box 3×3 → 5×5 to match the baked art box | audited diff, 44/44, syntax clean (integrator's earlier note, re-checked) |
-| S-01c | two-tone rim in `rim()` (this slice, HEAD at time of writing) | yes: 44/44, all 27 atlas inked boxes byte-identical, hero.small 29→34 / boss 16→24 colours |
+| `c28be8b` | S-01c two-tone rim in `rim()` — hero/hero.big/lives/boss/shard two-tone, turnip single-tone | yes: 44/44, all 27 atlas inked boxes byte-identical, hero.small 29→34 / boss 16→24 colours, live tone bands unchanged |
 
 **The art cutover is already live in the browser:** the 18 draw wrappers blit from the atlas (lazily baking on first draw), so the world is no longer procedural — a steady 1-1 frame is **253 `fillRect` + 62-71 `drawImage`** (procedural baseline 1114/0) and the live canvas carries **140→202 unique colours** across a scroll against the old 21. `src/render.js` is still the one doing the calling (no `composite.js` yet), and no module calls `bakeSprites()`/`bakeAll()` at boot — the bake happens lazily on first draw (14-19 ms).
 
@@ -57,11 +57,17 @@ At head, 12 frames sampled over a 1-1 run (cam 0→365, 423 geometry-tile sample
 
 ## Slice queue — run one at a time, in this order
 
+**NEXT UP: S-02** (`src/terrain.js`, 769-line draft at `9e6169c`). Nothing HD-2D renders yet, so it is a validation slice — and most of it is already validated. `/tmp/vb-w2-logic.mjs` is a DOM-free sweep of the real bake path (no-op 2D stub); I ran it at `c28be8b`: **ALL ASSERTIONS PASSED, exit 0**, covering, per level: `stripCount = ceil(cols·16/64)` (1-1: 45 of 180 cols, 2880 px), strip selection = **exactly the minimal cover** with no gap and no double coverage, purity (45/50/40 identical strip keys across the scroll), used-block invalidation (`P@64,5 → U` dirties 2 strips), `live ≤ 12` over a full 1-1 scroll with `stripsBaked == stripCount` (maxLive 12, 7.9 MB resident), 3 parallax layers at integer dx (−97/−66/−27, alpha .92/.96/1), ambient 512×480 art px, and a banned-API scan (none).
+
+Two things S-02 still has to do, and one gate that is **wrong as written**:
+
+1. **The plan's "≤4 strips" bound is unsatisfiable.** A 256 px window over 64 px strips touches 4 strips only when the view start is 64-aligned; at any other offset it touches 5 (`floor(x/64) .. floor((x+255)/64)`). `cam.x` is fractional and never 64-aligned, so the honest bound is 5. Measured: 4 at camX 0/2624, **5 at camX 1312** — which the draft reports as `strips=5 (minimal cover = 5)`, i.e. the draft is right and the clause is wrong. Per §10 this gets reported, not silently loosened; "fixing" it by drawing view-aligned strips would break gotcha 6 (seams).
+2. **The 64 px seam luminance delta is still unmeasured.** The stub does not rasterise, so this needs the browser: bake level 1-1 via `terrain.bakeLevel`, blit the strips into one canvas at an unaligned camera, and diff the two 1-px columns either side of every 64 px boundary against the same columns interior to a strip. Reuse `/tmp/vb-probe-density.js`'s readback plumbing.
 | ID | Slice | File | Gate (must be shown, not asserted) |
 | --- | --- | --- | --- |
 | S-01 | art as matrices: registrations + 18 wrappers + `bakeSprites` | `src/sprites.js` | **done** (`e98a95e`): 57 frames + 9 emissive masks, density floor met, `missing === 0`, bake 18 ms |
 | S-01b | outline-pad policy fix → `R21`/`R24` green | `src/sprites.js` | **done** (`b82f86a`): 44/44, `PADDED()` limited to the four `fx.*` puffs, inked boxes provably unmoved |
-| S-01c | two-tone rim to recover character tones (deep on the away edge, key-lit edge one ramp step up) | `src/sprites.js` | **done (HEAD at time of writing)**, per key by atlas readback: hero.small 29→34 colours / 25→30 bands, hero.big 25→28, lives 19→21, boss 16→24 / 15→19, shard 11→14; `turnip` **left single-tone on purpose** (a distinct lit tone costs it 22→19 colours — see gotcha 14). All 27 inked boxes byte-identical, 44/44. **The live tone-min clause was already met (9-14) before the change and did not move** — see the `R49` section above. |
+| S-01c | two-tone rim to recover character tones (deep on the away edge, key-lit edge one ramp step up) | `src/sprites.js` | **done (`c28be8b`)**, per key by atlas readback: hero.small 29→34 colours / 25→30 bands, hero.big 25→28, lives 19→21, boss 16→24 / 15→19, shard 11→14; `turnip` **left single-tone on purpose** (a distinct lit tone costs it 22→19 colours — see gotcha 14). All 27 inked boxes byte-identical, 44/44. **The live tone-min clause was already met (9-14) before the change and did not move** — see the `R49` section above. |
 | S-02 | validate the terrain draft, fix if it fails | `src/terrain.js` | strip coverage of the 256px view, ≤4 strips, purity across `invalidate()`, `live ≤ 12` over a full 1-1 scroll, max 64px-seam luminance delta |
 | S-03 | finish ink bridge (probe: alpha 0.5 / `lighter` / mirrored blit; list of checks that will see different ink) | `tools/verify.mjs` | **PARKED by the user — run later.** 44/44 byte-identical must survive |
 | S-04 | composite layer buffers + DPR `k`-factor sizing (no drawing yet) | `src/composite.js` (new) | buffer table printed: scene/upscale/lightmap/bloom px at DPR 1/2/3 + 375×667 |
