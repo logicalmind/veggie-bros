@@ -23,7 +23,7 @@ grep -c "^export" src/sprites.js                                            # ex
 ```
 If `src/sprites.js` shows a low export count or fails `--check`, an agent died mid-write: the last good copy is `git show HEAD:src/sprites.js`, the last good art-data partial was `/tmp/vb-rescue/sprites-partial-685.js`. Do **not** guess the missing half — re-run slice S-01.
 
-## Tree state (head `e98a95e`, 11 commits off `main`@`d16b002`)
+## Tree state (head `b82f86a`, 12 commits off `main`@`d16b002`) — **suite green 44/44**
 
 | Commit | What | Verified? |
 | --- | --- | --- |
@@ -34,17 +34,19 @@ If `src/sprites.js` shows a low export count or fails `--check`, an agent died m
 | `9e6169c` | `src/terrain.js` (769) strips + AO + parallax — **draft** | **NO** — its acceptance tests were never run |
 | `6ffaa53` | harness ink bridge (`inkAt`, `inkRects` on offscreen canvases) — **partial** | suite yes (44/44, byte-identical to HEAD harness); blit-ink probe + check-impact list **outstanding** |
 | `e98a95e` | `src/sprites.js` (1025) art as matrices — **2 known reds** | partial: `missing === 0`, density floor met, 128 live colours; `R21`/`R24` RED |
+| `b82f86a` | outline pad → particles only; rim inside the matrix | yes: 44/44 twice, 253 `fillRect`/frame, 121 live colours |
 
-**The art cutover is already live in the browser:** the 18 draw wrappers blit from the atlas (lazily baking on first draw), so the world is no longer procedural — a 1-1 reference frame went **1138 → 253 `fillRect`s** and the live canvas carries 128 unique colours against the old 21. `src/render.js` is still the one doing the calling (no `composite.js` yet), and no module calls `bakeSprites()`/`bakeAll()` at boot.
+**The art cutover is already live in the browser:** the 18 draw wrappers blit from the atlas (lazily baking on first draw), so the world is no longer procedural — a 1-1 reference frame went **1138 → 253 `fillRect`s** and the live canvas carries 121 unique colours against the old 21. `src/render.js` is still the one doing the calling (no `composite.js` yet), and no module calls `bakeSprites()`/`bakeAll()` at boot.
 
-**Current blocker, one cause, two reds (42/44).** `bakeAll`'s outline **pad bakes 1 px outside the matrix**, and the harness inks those pad pixels — so `turnip` paints a row below its frozen 12 px hitbox (`R21`) and the `fruit`/lives icon inks outside the HUD rect `textW` reserves (`R24`). The sprites agent's footprint oracle missed it because it compared the ART box with the pad excluded. Fix is policy, not boxes: **pad only for `fx.*`** (nothing measures a particle's box); every key whose box is a hitbox, pickup rect or layout rect authors its rim **inside** the matrix. S-01b is running that now.
+**Measured reality for `R49` (S-14 will be red on art, not plumbing).** Live now: 121 unique on-screen colours (baseline 21), per-tile tone bands **median 5 / minimum 2** over 86 non-sky tiles. `R49` demands min ≥ 3, so that clause is a genuine art gap: the fix is the queued **S-01c** two-tone rim (deep on the away edge, `shade` on the key-lit edge — the atlas already supports `opts.rim`), never a weakened check.
 
 ## Slice queue — run one at a time, in this order
 
 | ID | Slice | File | Gate (must be shown, not asserted) |
 | --- | --- | --- | --- |
 | S-01 | art as matrices: registrations + 18 wrappers + `bakeSprites` | `src/sprites.js` | **done** (`e98a95e`): 57 frames + 9 emissive masks, density floor met, `missing === 0`, bake 18 ms |
-| S-01b | outline-pad policy fix → `R21`/`R24` green | `src/sprites.js` | **in flight.** Full suite green again; density floor re-verified after the rim moves inside |
+| S-01b | outline-pad policy fix → `R21`/`R24` green | `src/sprites.js` | **done** (`b82f86a`): 44/44, `PADDED()` limited to the four `fx.*` puffs, inked boxes provably unmoved |
+| S-01c | two-tone rim to recover character tones (deep on the away edge, `m` = `heroBody.shade` on the key-lit edge) | `src/sprites.js` | **next.** Character colours back toward 20+ / hero, turnip, boss; live per-tile tone min ≥ 3; boxes unmoved; 44/44 |
 | S-02 | validate the terrain draft, fix if it fails | `src/terrain.js` | strip coverage of the 256px view, ≤4 strips, purity across `invalidate()`, `live ≤ 12` over a full 1-1 scroll, max 64px-seam luminance delta |
 | S-03 | finish ink bridge (probe: alpha 0.5 / `lighter` / mirrored blit; list of checks that will see different ink) | `tools/verify.mjs` | **PARKED by the user — run later.** 44/44 byte-identical must survive |
 | S-04 | composite layer buffers + DPR `k`-factor sizing (no drawing yet) | `src/composite.js` (new) | buffer table printed: scene/upscale/lightmap/bloom px at DPR 1/2/3 + 375×667 |
