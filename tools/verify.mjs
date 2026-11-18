@@ -264,8 +264,22 @@ const NAMED_INK = { black: '#000000', white: '#ffffff', transparent: 'rgba(0,0,0
 
 // '#rgb' | '#rrggbb' | '#rrggbbaa' | 'rgb[ a]()' | a few names -> {r,g,b,a} | null.
 // null means "unparseable": the model treats such a pixel as opaque identity.
+// The same few hundred css strings are re-parsed once per INKED PIXEL, so the tokenise
+// is cached by the string it came from: a hit rebuilds a fresh `{r,g,b,a}` from the
+// cached numbers, so the values are byte-identical and no caller can alias a shared
+// object. `false` is the cached "unparseable", `undefined` the absence of a cache entry.
+const INK_PARSE_CAP = 1 << 14;
+const INK_PARSED = new Map();
 function parseInk(c) {
   if (typeof c !== 'string') return null;
+  const hit = INK_PARSED.get(c);
+  if (hit !== undefined) return hit === false ? null : { r: hit[0], g: hit[1], b: hit[2], a: hit[3] };
+  const p = parseInkRaw(c);
+  if (INK_PARSED.size >= INK_PARSE_CAP) INK_PARSED.clear();
+  INK_PARSED.set(c, p === null ? false : [p.r, p.g, p.b, p.a]);
+  return p;
+}
+function parseInkRaw(c) {
   const s = c.trim().toLowerCase();
   if (s[0] === '#') {
     const h = s.slice(1);
@@ -353,12 +367,79 @@ const inkXY = (key, x0, x1, y0, y1) => {
   const y = Number(key.slice(c + 1));
   return x >= x0 && x < x1 && y >= y0 && y < y1;
 };
+// ---------------------------------------------------------------------------
+// SURFACE ROLES: which module's ink is a canvas allowed to carry?
+//
+// `document.createElement('canvas')` gives every offscreen surface ink modelling
+// from birth (§8.1-1) — right for baked ART (atlas cells, terrain strips), wrong
+// for composite.js's FX scratch. The lightmap, bloom, bloomHalf and upscale are
+// destinations of composite's OWN blits and nothing else, and the ink readers in
+// this file (R16's text buffer, R17/R21/R22's sprite recorders, R23/R24's game
+// recorder, R45's probe recorder) never look at a lighting surface. Measured on
+// `R45` at `036ad19`, modelling them costs 10,936,320 ink writes — the lightmap's
+// 128×120 ambient base, re-filled every frame — plus the bloom chain's walks and
+// 1,424 destination scans of the `multiply`/`lighter` upscales into `scene`, for pixels
+// no assertion reads.
+//
+// SEMANTIC DECISION, stated once: lighting composites do not carry art ink.
+// A canvas whose first draw op is issued by composite.js is FX scratch and stops
+// modelling ink; a canvas first drawn by render.js / sprites.js / atlas.js /
+// terrain.js / pixels.js — the `scene` buffer among them, whose first writer is
+// drawWorld, not applyLightmap — keeps every pixel it models, so world art still
+// reaches the live record through the scene→live blit. The owner is read from
+// that one op's stack and then never re-derived, so composite's `multiply` and
+// `lighter` upscales landing on `scene` leave `scene`'s ink alone — only a surface
+// composite itself allocated is demoted. Measured on `R45`: 3 demoted surfaces
+// (lightmap 128×120, bloom 64×60, bloomHalf 32×30; the upscale layer took no draw
+// op in that run) against 226 atlas/terrain/pixels bakes plus the scene, every one
+// of which keeps all the cells it modelled, digest for digest.
+// ---------------------------------------------------------------------------
+const INK_SCRATCH_OWNER = 'composite.js';
+function resolveInkOwner(rec) {
+  rec.inkRole = false; // one decision per surface, paid by the first draw op
+  const frames = String(new Error().stack || '');
+  const re = /\/src\/([\w.-]+\.js):/g; // a stack LOCATION, not a directory in a path
+  let m;
+  let owner = '(non-src)';
+  while ((m = re.exec(frames)) !== null) {
+    if (m[1] === 'verify.mjs') continue; // a checkout under a `src/` dir must not self-claim
+    owner = m[1];
+    break;
+  }
+  rec.__writer = owner;
+  if (owner === INK_SCRATCH_OWNER) rec.inkRects = false;
+}
+// A composite LAYER — a canvas the composite stack allocated, i.e. one of `scene`,
+// `lightmap`, `bloom`, `bloomHalf`, `upscale` — that carries ART ink (`scene`) is still
+// per-frame scratch: `src/render.js:260` `clearRect`s the scene over its whole area
+// before drawing into it, so everything it holds was drawn by the current frame. Its ink
+// is only ever read by a blit into a surface a check CAN read (the live recorder, or a
+// check's own probe recorder), so it is modelled only while such a destination is open:
+// `inkedRender` is the scope for that, and a frame no check inspects pixel-wise costs
+// nothing — which is exactly the state the harness was in while the world drew straight
+// onto the live canvas. Surfaces that are NOT re-cleared (atlas cells, terrain strips,
+// glow buckets: baked once, read much later) are never gated, so a bake cannot go stale.
+// A future render into a modelled destination that forgets the scope loses its ink and
+// goes RED, which is the loud direction, not the silent one.
+let liveInkUsers = 0;
+function inkedRender(fn) { // one render whose destination surface models ink
+  liveInkUsers++;
+  try { return fn(); } finally { liveInkUsers--; }
+}
+// The gate every ink-writing op asks instead of reading `inkRects` directly.
+function inkModels(rec) {
+  if (rec.inkRole) resolveInkOwner(rec);
+  if (rec.inkVolatile) return liveInkUsers > 0 && rec.inkRects;
+  return rec.inkRects;
+}
 
 // Ink one `drawImage` onto `rec`: nearest source art pixel per destination px,
 // mapped through `rec.ctm`. Sampling the DESTINATION rather than the source is the
-// whole point — an atlas source rect is `ART_SCALE²` bigger than what it covers.
+// whole point — an atlas source rect is `ART_SCALE²` bigger than what it covers —
+// except in the integer-scaled, identity-CTM case, which walks the SOURCE; both
+// walks produce the same (cell, colour) pairs.
 function inkBlit(rec, src, sx, sy, sw, sh, dx, dy, dw, dh, seq, alpha, op) {
-  if (!rec.inkRects) return;
+  if (!inkModels(rec)) return;
   if (!(alpha > 0) || !(sw > 0) || !(sh > 0) || !(dw > 0) || !(dh > 0)) return;
   if (!src.pixels || src.pixels.size === 0) return;
   const W = Math.round(dw);
@@ -366,6 +447,43 @@ function inkBlit(rec, src, sx, sy, sw, sh, dx, dy, dw, dh, seq, alpha, op) {
   const m = rec.ctm || CTM_ID;
   if (m.b || m.c) rec.unmodelledOps.add('transform(b|c)'); // skew/rotate: floor the origin
   const same = src === rec; // §7's self-composited bloom blur reads what it writes
+  // TWO WALKS, ONE RASTERISATION. The loop below samples the DESTINATION, which is
+  // what an atlas blit needs (its source rect is `ART_SCALE²` bigger than the area
+  // it covers) and what a flip, a skew, a fractional scale or a downscale needs. This
+  // branch is the same mapping read FROM the source: with an identity CTM, an
+  // integral source rect and an exact integer `kx × ky` block per source px — §4's
+  // upscale and every layer blit use an integer `k` — the visited (cell, colour)
+  // pairs are exactly the ones the destination scan visits (each destination cell is
+  // still written exactly once by either walk, so last-write-wins and the blend rules
+  // cannot tell them apart) and the cost is one visit per INKED source px instead of
+  // one string-keyed `get()` per destination px. Anything the guards reject stays on
+  // the destination scan; the two paths must keep answering the same pairs, and the
+  // slice's ink census is what proves it.
+  const kx = W / sw;
+  const ky = H / sh;
+  if (!m.b && !m.c && m.a === 1 && m.d === 1 && !m.e && !m.f
+    && Number.isInteger(sx) && Number.isInteger(sy) && Number.isInteger(sw) && Number.isInteger(sh)
+    && kx >= 1 && ky >= 1 && W % sw === 0 && H % sh === 0) {
+    const block = same ? [] : null;
+    for (const [key, color] of src.pixels) {
+      const c = key.indexOf(',');
+      const ox = Number(key.slice(0, c)) - sx;
+      const oy = Number(key.slice(c + 1)) - sy;
+      if (ox < 0 || ox >= sw || oy < 0 || oy >= sh) continue; // outside the source rect
+      for (let j = 0; j < ky; j++) {
+        const py = Math.floor(dy + oy * ky + j);
+        for (let i = 0; i < kx; i++) {
+          const px = Math.floor(dx + ox * kx + i);
+          if (same) block.push([px, py, color]);
+          else rec.ink(px, py, color, seq, alpha, op);
+        }
+      }
+    }
+    // Deferred exactly like the self-composited destination scan: a surface blitting
+    // itself (the bloom energy boost) must never read ink this call has just written.
+    for (const p of block || []) rec.ink(p[0], p[1], p[2], seq, alpha, op);
+    return;
+  }
   const pending = same ? [] : null;
   for (let v = 0; v < H; v++) {
     const syv = Math.floor(sy + (v + 0.5) * (sh / H));
@@ -400,7 +518,7 @@ const mkCtx = (rec, owner) => new Proxy({}, {
       const seq = rec.seq++;
       log(rec, rec.rects, [x, y, w, h, String(t.fillStyle), Number(t.globalAlpha), seq]);
       const color = String(t.fillStyle);
-      if (rec.inkRects) {
+      if (inkModels(rec)) {
         for (let px = Math.floor(x); px < Math.ceil(x + w); px++) {
           for (let py = Math.floor(y); py < Math.ceil(y + h); py++) rec.ink(px, py, color, seq);
         }
@@ -464,7 +582,14 @@ const mkCtx = (rec, owner) => new Proxy({}, {
       // A real clearRect leaves transparent black behind, so modelled ink has to go
       // with it: the §7 FX buffers are bake-scope recorders that are NEVER reset
       // between frames, and a stale lightmap pixel would outlive its own frame.
-      if (!rec.inkRects) return;
+      // A whole-surface clear proves the canvas is a per-frame buffer, which is what
+      // makes it safe to model its ink only inside an `inkedRender` scope (see above).
+      if (rec.inkLayer && !rec.inkVolatile) {
+        const cd = rec.dims ? rec.dims() : null;
+        if (cd && cd.w > 0 && cd.h > 0 && Math.min(x, x + w) <= 0 && Math.min(y, y + h) <= 0
+          && Math.max(x, x + w) >= cd.w && Math.max(y, y + h) >= cd.h) rec.inkVolatile = true;
+      }
+      if (!inkModels(rec)) return;
       const x0 = Math.floor(Math.min(x, x + w));
       const y0 = Math.floor(Math.min(y, y + h));
       rec.clearInk(x0, y0, Math.ceil(Math.max(x, x + w)), Math.ceil(Math.max(y, y + h)));
@@ -579,8 +704,12 @@ function mkRecorder(scope = 'scratch', dims = null) {
     pixels: new Map(), textInk: [], scaleCalls: [], translateCalls: [], transformCalls: [], stateLog: [],
     seq: 0, glyphInk: true, inkRects: false, depth: 0, unknown: new Set(),
     // `inkRects` is the ONE switch for "this surface models ink": it gates
-    // fillRect/fillText ink AND ink landing on this surface from a blit.
+    // fillRect/fillText ink AND ink landing on this surface from a blit. A surface
+    // born from `createElement` additionally carries `inkRole`, which asks the
+    // surface-role test above once, on its first draw op, whether it is allowed to.
     ctm: Object.assign({}, CTM_ID), ctmStack: [], unmodelledOps: new Set(), inkDropped: 0,
+    inkRole: false, __writer: null, // surface-role test: see `resolveInkOwner`
+    inkLayer: false, inkVolatile: false, // composite layer, proven re-cleared per frame
     // The ink funnel. `(x, y)` is a pixel cell of THIS surface, `color` the css the
     // paint carries, `a` the context's globalAlpha and `op` the composite mode —
     // both only ever supplied by `inkBlit`, so every pre-existing 3/4-arg call site
@@ -752,6 +881,13 @@ function mkOffscreen(tag = 'canvas') {
   // correct render. `dims` bounds each surface's ink to its own pixel count.
   el._rec = mkRecorder('bake', () => ({ w: el.width, h: el.height }));
   el._rec.inkRects = true;
+  // Armed for the surface-role test: the first draw op decides whether this canvas
+  // carries art ink (see `resolveInkOwner`). `inkRects` stays true here so a surface
+  // nobody claims keeps the pre-existing "model everything" behaviour.
+  el._rec.inkRole = true;
+  // Allocated by the composite stack? Then this is one of §7's layers, and once it has
+  // proved it is cleared every frame its ink follows the live-ink demand (`inkModels`).
+  el._rec.inkLayer = /\/src\/composite\.js:/.test(String(new Error().stack || ''));
   el._bakedAtFrame = framesDone;
   offscreenCanvases.push(el);
   bumpEnv('offscreenCanvases');
@@ -843,6 +979,23 @@ const spritesModule = await import('../src/sprites.js');
 const { drawBerry, drawBoss, drawHero, drawPixelText, drawTurnip } = spritesModule;
 // R45 renders whole scenes into a mock context to prove nothing is drawn at a checkpoint.
 const { render: renderScene } = await import('../src/render.js');
+const { layers: compositeLayers } = await import('../src/composite.js'); // the §7 layer set, so a world-space op log can be read from the buffer that actually holds it
+
+// The scene layer's recorder. Since S-08 every WORLD-space draw (ground, terrain, items, popups,
+// enemies, the hero) is issued into `composite.layers().scene` and only then blitted 1:1 onto the
+// live canvas (`src/render.js` 260-283), so a live-context op log can never contain one — a check
+// that filters `rec.rects` for world art is blind from S-08 on and only ever passes on ink left
+// behind by an earlier check. The scene recorder is a `bake`-scope recorder: it is NOT reset per
+// frame and its op log is capped (`BAKE_LOG_CAP`), so a reader must bound the query by `seq` —
+// take `sr.seq` before the render and keep only ops from it on. Checks that read modelled INK
+// (`.pixels`, `inkBounds`, `rowsWhere`, …) are unaffected: the scene→live blit transplants the
+// modelled pixels onto whichever recorder the check reads.
+function sceneRec() {
+  const c = compositeLayers().scene.c;
+  if (!c || !c._rec) throw new Fail('the §7 scene layer has no op recorder — world-space draws cannot be asserted');
+  return c._rec;
+}
+
 const { audio } = await import('../src/audio.js');
 const inputMod = await import('../src/input.js');
 const { input, setupTouch } = inputMod;
@@ -1951,7 +2104,7 @@ const allRows = (r) => r.rowsOf(-1e9, 1e9, -1e9, 1e9);
 function renderFrames(n, opts = {}) {
   setGameCanvas();
   rec.inkRects = !!opts.ink;
-  for (let i = 0; i < n; i++) step();
+  for (let i = 0; i < n; i++) opts.ink ? inkedRender(step) : step();
   rec.inkRects = false;
   return rec;
 }
@@ -1991,12 +2144,17 @@ check('R18', () => {
   const p = G.player;
   const it = makePopup(p.x + 40, p.y - 8, '+100'); // clear of the player sprite: with inkRects on the zone must hold popup ink only
   G.items.push(it);
+  const sr = sceneRec(); // '+100' is world-space art, so its op log is the scene buffer's, not the live ctx's
+  // The scene recorder is a `bake` recorder: its op log is never reset and stops appending at
+  // BAKE_LOG_CAP, so the frame under test must start from an empty log or its ops are dropped.
+  sr.rects.length = 0;
+  const seqFrom = sr.seq + 1;
   renderFrames(1);
   const y0 = Math.floor(it.y - 20 * (it.t / 0.6)) - 2;
   const y1 = y0 + 14;
   const x0 = Math.floor(it.x - G.cam.x) - 4;
   const x1 = x0 + 6 * it.text.length + 8;
-  const ink = rec.rects.filter((q) => q[1] >= y0 && q[1] < y1 && q[0] >= x0 && q[0] < x1 && q[3] === 1 && q[2] <= 6); // 1-row runs ≤ pitch: text ink; sky/ground/player rects cannot match
+  const ink = sr.rects.filter((q) => q[6] >= seqFrom && q[1] >= y0 && q[1] < y1 && q[0] >= x0 && q[0] < x1 && q[3] === 1 && q[2] <= 6); // this frame's 1-row runs ≤ pitch: text ink; sky/ground/player rects cannot match
   assert(ink.length > 0, `no ink was drawn where the '+100' popup should be (x ${x0}..${x1}, y ${y0}..${y1}) — the popup is not rendering at all`);
   const first = ink[0];
   const whites = ink.filter((q) => q[4] === C.PALETTE.white).length;
@@ -4825,7 +4983,7 @@ check('R45', () => {
       }
     };
     const ctx = mkCtx(r);
-    renderScene(ctx, G);
+    inkedRender(() => renderScene(ctx, G)); // the probe destination models ink, so §7's layers do too
     return { ctx, boxReport: (i) => fmtBox(hits[i]) };
   };
   const inkDiff = (a, b) => {
