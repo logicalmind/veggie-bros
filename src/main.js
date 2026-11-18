@@ -142,6 +142,12 @@ function onDeathResolved() {
     audio.musicStop();
   } else {
     respawnAtCheckpoint();
+    // The kill sites stopped the loop so the die jingle plays alone, and this is the only way
+    // back into PLAYING that does not go through a state branch (startGame, the pause
+    // transitions and LEVEL_CLEAR all restart it themselves). It sits after the call, not inside
+    // respawnAtCheckpoint(): that function returns early on its no-checkpoint fallback, and a
+    // restart it never reached would leave that — the common, first-death — path silent.
+    audio.musicStart();
   }
 }
 

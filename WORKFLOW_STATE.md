@@ -15,14 +15,17 @@ Suite: baseline before any edit **34/34 pass, 0 fail**; after the checkpoint fea
 pass, 0 fail, exit 0 (new id `R44`; the pass-4 baseline it was handed was **40/41, exit 1** — see
 that section's Blockers); **after FIX PASS 5 43/43 pass, 0 fail, exit 0** (new id `R45`; the baseline
 pass 5 was handed was **42/42, exit 0**, and the camera work it inherited is commit `44ac4bf`) —
-byte-identical across consecutive runs and stable in every subset combination tried.
-Registered ids: `SMOKE` + `R01`–`R33` + `R36`/`R37`/`R38` + `R40`/`R41`/`R42`/`R43`/`R44`/`R45` = **43,
-no duplicates** (`grep -c "^check(" tools/verify.mjs` → 43). **`R34`, `R35` and `R39` are NOT registered**
+byte-identical across consecutive runs and stable in every subset combination tried; **after the death-respawn
+music fix (`R46`) 44/44 pass, 0 fail, exit 0** — that run started from the 43/43 tree at commit `2a71a85`, and is
+again byte-identical across consecutive runs and green both solo (`node tools/verify.mjs R46`) and in the full suite.
+Registered ids: `SMOKE` + `R01`–`R33` + `R36`/`R37`/`R38` + `R40`/`R41`/`R42`/`R43`/`R44`/`R45`/`R46` = **44,
+no duplicates** (`grep -c "^check(" tools/verify.mjs` → 44). **`R34`, `R35` and `R39` are NOT registered**
 — `R34` is the docs-only queue entry, `R35` stays RESERVED for the deferred boss-freeze item, `R39`
 stays RESERVED for the `Q` double-award candidate that `docs/REVIEW-2026-11-15.md` had first floated as
 `R36`. Ids used by this work: `R36`/`R37`/`R38` (checkpoint feature), `R40`/`R41`/`R42` (fix pass 1),
 `R43` (fix pass 2), `R44` (fix pass 4 — the per-frame camera-step bound on a live checkpoint crossing),
-`R45` (fix pass 5 — the invisible/silent checkpoint guard).
+`R45` (fix pass 5 — the invisible/silent checkpoint guard), `R46` (2026-11-17 — a death respawn left the music
+stopped on both respawn routes, so every stage after the first death ran silent to the end of the run).
 **FIX PASS 3 added no ids** — it hardened `R36` and `R43` in place.
 
 ## Checklist

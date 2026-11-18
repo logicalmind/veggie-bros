@@ -4389,6 +4389,104 @@ check('R45', () => {
   return `nothing drawn at a post: ${comparisons} render comparisons (${LEVELS.length} maps x ${CAM_SPOTS.length} cameras x ${STATES.length} checkpoint states, draw streams identical with the posts present and emptied + armed identical to unarmed; each post's trigger band ink-matched against the same map stripped bare; canary pixel seen) — the 1-1 reference frame is ${nRects} fillRects | RUN_MAX arrival at x=${post.x} over ${frames} frames: ${heard.length} sfx, 0 items, banner ${banner0} → ${G.bannerT.toFixed(2)} (peak ${bannerMax.toFixed(4)}), still armed, hero pinned on ${post.x}, camera floored on ${post.x - CAMERA_FOLLOW_X}`;
 });
 
+// R46 — music stayed dead after a respawn: death called audio.musicStop() at all three kill
+// sites and onDeathResolved() restarted it on neither respawn route, so every stage after the
+// first death was silent to the end of the run. MUTATION THIS CHECK DISCRIMINATES AGAINST:
+// delete src/main.js:150 (`audio.musicStart();`, which sits AFTER the respawnAtCheckpoint()
+// call because that helper returns early on its no-checkpoint fallback, src/main.js:165) — then
+// the spy's last musicStop has no later musicStart, musicTick stays null and zero notes reach the
+// context, so both routes below FAIL. Restoring that one line makes them pass.
+check('R46', () => {
+  // Both routes out of a death are exercised: no post banked (respawnAtCheckpoint returns early
+  // at src/main.js:165, so the hero comes back on the level's own spawn) and one post banked (he
+  // comes back on the post). The trigger is always the shipped pit kill site — the hero is let go
+  // over a column that is open from row 2 to the bottom, so main.js:510-514 runs its own
+  // musicStop() + sfx('die') rather than the harness calling killPlayer.
+  const openPitCol = (level) => {
+    for (let col = 20; col < level.tiles[0].length - 8; col++) {
+      let open = true;
+      for (let row = 2; row < C.ROWS - 1; row++) if (isSolid(level.tiles[row][col])) open = false;
+      if (open) return col;
+    }
+    return -1;
+  };
+  // Hand-tick the captured scheduler and count what it put into the audio graph.
+  const notesFromOneTick = (ctx) => {
+    assert(musicTick !== null, 'musicTick is null — the scheduler is not installed, so there is nothing to hand-tick');
+    const before = ctx.tones.length;
+    musicTick();
+    return ctx.tones.length - before;
+  };
+  const route = (label, bankPost) => {
+    newGame();                       // startGame() = audio.init() + audio.musicStart()
+    const p = G.player;
+    assert(musicTick !== null && lastFakeCtx !== null, `${label}: newGame left no music to stop (musicTick=${musicTick === null ? 'null' : 'installed'}, ctx=${lastFakeCtx === null ? 'never built' : 'built'}) — audio.init() failed, so every music claim below would be vacuous`);
+    const ctx = lastFakeCtx;
+    const notesBeforeDeath = notesFromOneTick(ctx);
+    assert(notesBeforeDeath > 0, `${label}: hand-ticking the scheduler that the stage just started scheduled ${notesBeforeDeath} notes into the ctx — music was not audibly running BEFORE the death, so nothing can show it came back`);
+    const livesBefore = G.lives;
+    assert(livesBefore > 1, `${label}: ${livesBefore} lives left, so this death would end the run instead of respawning`);
+    const pitCol = openPitCol(G.level);
+    assert(pitCol >= 0, `${label}: ${G.level.label} has no column open from row 2 to the bottom — no pit the hero can genuinely fall into`);
+    if (bankPost) {
+      const cp = G.level.checkpoints[0];
+      assert(cp, `${label}: ${G.level.label} exposes no flagpost — the armed-checkpoint respawn route cannot be established`);
+      const from = walkableFar(G.level, cp.x - 24, -1);
+      assert(from !== null, `${label}: no standable ground left of the ${G.level.label} post at x=${cp.x} — the hero cannot walk into it to bank it`);
+      p.invulnT = 60;                 // R42's idiom: survive whatever patrols the run-up
+      p.x = from; p.y = GROUND_TOP - p.h; p.vx = 0; p.vy = 0;
+      input.right = true; input.run = true;
+      const armed = until(240, () => (G.checkpointIndex === 0 ? { x: p.x } : null));
+      clearInput();
+      assert(armed, `${label}: running right from x=${from} into the post at x=${cp.x} never armed it (checkpointIndex=${G.checkpointIndex}) — the death below would take the plain restart and this route would go untested`);
+    }
+    eq(G.checkpointIndex, bankPost ? 0 : -1, `${label}: the route was not established before the death`);
+    resetAudioSpy();
+    clearInput();
+    p.x = pitCol * C.TILE + 4; p.y = 2 * C.TILE; p.vx = 0; p.vy = 0;
+    const fell = until(600, () => (p.dead ? { y: p.y } : null));
+    assert(fell, `${label}: letting the hero go over the open column ${pitCol} from y=${2 * C.TILE} never killed him (last y=${p.y.toFixed(0)}) — no kill-site musicStop happened, so this check would prove nothing`);
+    assert(p.deadPit === true, `${label}: the death was not the pit kill site (deadPit=${p.deadPit}) — the musicStop being restarted has to be the one at src/main.js:513, not a stomped or spiked one`);
+    const stopAt = audioCalls.indexOf('musicStop');
+    const dieAt = audioCalls.indexOf('sfx:die');
+    assert(stopAt >= 0 && dieAt > stopAt, `${label}: the pit kill site did not run its own musicStop-then-die-sfx pair (audioCalls=${JSON.stringify(audioCalls)})`);
+    assert(musicTick === null, `${label}: musicStop ran but the scheduler stayed installed (musicTick still callable) — the loop the respawn is supposed to restart was never actually stopped`);
+    const resolved = until(240, () => (G.player !== p ? { x: G.player.x } : null));
+    assert(resolved, `${label}: the 1.2 s death arc never resolved into a respawn (lives=${G.lives}, dyingT=${G.dyingT.toFixed(2)})`);
+    const q = G.player;
+    eq(G.state, 'PLAYING', `${label}: the respawn left state=${G.state}; a run that goes to GAME_OVER or TITLE has no stage left to be silent on`);
+    eq(G.lives, livesBefore - 1, `${label}: lives went ${livesBefore} -> ${G.lives}; the respawn must be the lives-remaining branch of onDeathResolved()`);
+    assert(!q.dead, `${label}: the respawned hero is dead on arrival at y=${q.y.toFixed(0)} — a second death inside this window would add a second musicStop and invalidate the music count below`);
+    const startsAfter = audioCalls.filter((c, i) => c === 'musicStart' && i > stopAt).length;
+    eq(startsAfter, 1, `${label}: ${startsAfter} musicStart call(s) after that death's musicStop at index ${stopAt} (audioCalls=${JSON.stringify(audioCalls)}) — the respawn must restart the loop exactly once: zero means the stage plays silent to the end of the run, two means two schedulers are racing on one ctx`);
+    assert(musicTick !== null, `${label}: the respawn logged a musicStart but no scheduler is installed (musicTick=null) — setInterval never saw it, so the loop is not really running`);
+    assert(lastFakeCtx === ctx, `${label}: the respawn's music rebuilt the AudioContext (lastFakeCtx changed identity) — the notes counted below would not belong to the stage that died`);
+    const notesAfterRespawn = notesFromOneTick(ctx);
+    assert(notesAfterRespawn > 0, `${label}: one hand-tick of the respawned stage's scheduler scheduled ${notesAfterRespawn} notes into the ctx (tones=${ctx.tones.length}) — musicStart() was called and the timer installed, yet nothing reaches the audio graph: still silent`);
+    if (bankPost) {
+      near(q.x, G.checkpointX, 1e-9, `${label}: the respawn is not on the banked post (x=${q.x}, checkpointX=${G.checkpointX})`);
+      eq(G.bannerT, 0, `${label}: the checkpoint respawn left the intro banner up (bannerT=${G.bannerT.toFixed(2)}) — that is the plain-restart route, so the armed route went untested`);
+    } else {
+      near(q.x, G.level.playerSpawn.x, 1, `${label}: the no-checkpoint respawn did not come back on the level spawn (x=${q.x}, spawn=${G.level.playerSpawn.x}) — that is the checkpoint route, so the early-return fallback at src/main.js:165 went untested`);
+      assert(G.bannerT > 0, `${label}: the plain restart did not re-raise the level banner (bannerT=${G.bannerT.toFixed(2)}) — it did not go through loadLevel's fallback path`);
+    }
+    assert(q.y + q.h < C.ROWS * C.TILE, `${label}: the respawned hero is standing in the death seam (feet at ${(q.y + q.h).toFixed(0)})`);
+    const diedAgain = until(120, () => (G.player.dead ? { y: G.player.y } : null));
+    if (diedAgain) throw new Fail(`${label}: the respawned hero died again ${diedAgain.at} frame(s) after the respawn (y=${diedAgain.y.toFixed(0)}) — that second death brings a second musicStop into the window and invalidates the single-restart evidence above`);
+    return `${label}: ${G.level.label} pit col ${pitCol}, ${livesBefore}->${G.lives} lives, stop@${stopAt} die@${dieAt} start@${audioCalls.lastIndexOf('musicStart')}, notes ${notesBeforeDeath} before the fall / 0 while dead (musicTick null) / ${notesAfterRespawn} after the respawn (ctx tones=${ctx.tones.length})`;
+  };
+  try {
+    globalThis.AudioContext = FakeAudioContext;
+    const fallback = route('no-checkpoint fallback', false);
+    const onPost = route('armed-post respawn', true);
+    return `music restarts on both respawn routes — ${fallback} | ${onPost}`;
+  } finally {
+    audio.musicStop();
+    delete globalThis.AudioContext;
+    clearInput();
+  }
+});
+
 // MARKER:CHECKS
 
 // ---------------------------------------------------------------------------
