@@ -1,4 +1,5 @@
 import {
+  ART_SCALE,
   CHECKPOINT_TRIGGER_BOTTOM,
   CHECKPOINT_TRIGGER_TOP,
   CHECKPOINT_TRIGGER_W,
@@ -21,6 +22,8 @@ import { BERRY_H, BERRY_W, makeBerry, makeFruit, makePop, makePopup, makeShards,
 import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
 import { CAMERA_FOLLOW_X, makeCamera, updateCamera } from './camera.js';
 import { render } from './render.js';
+import { bakeSprites } from './sprites.js';
+import { init as initFx, update as updateFx } from './fx.js';
 import {
   consumeJumpPressed,
   consumeMute,
@@ -62,6 +65,16 @@ fit();
 
 setupKeyboard();
 setupTouch();
+
+// Boot, not frame 1: `sprites.js:867 ensure()` bakes lazily today, so the atlas bake (27 ms
+// measured in-browser at ART_SCALE 2; the doc's 14–19 ms does not reproduce) lands inside the
+// first rendered frame, and R48 (S-13) would count a bake call there — it expects exactly one
+// bake per boot. `initFx()` allocates the particle pool once, per §6's "allocated once at
+// boot", instead of inside the first `fx.update`.
+// Terrain stays out of main.js: `render.js:58 worldFor()` owns the once-per-level plan bake
+// and the level→theme mapping, so duplicating either here would be a second convention.
+bakeSprites(ART_SCALE);
+initFx();
 
 // The single mutable game state. It is exported as a deliberate test seam: tools/verify.mjs
 // imports { G } and drives the game by reading and writing it, so do not un-export it.
@@ -590,6 +603,11 @@ function frame(now) {
     acc += dt;
     while (acc >= STEP) {
       update(STEP);
+      // Every fixed step, regardless of G.state: fx owns its own idle state and a paused pool
+      // must still decay its shake/squash — the precedent is the items rule at :550-553 (they
+      // animate outside PLAYING for the same reason). STEP, never the outer `dt`: the fixed
+      // step is the determinism boundary, so `fx` must not see a variable interval.
+      updateFx(STEP);
       acc -= STEP;
     }
     render(ctx, G);
