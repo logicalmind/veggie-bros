@@ -38,7 +38,7 @@ const TAB = Object.freeze([
     w: 3, h: 2, alpha: 0.85, grow: 0.35, stretch: 0, twinkle: false, spin: false,
     speed0: 24, speed1: 34, rise: 26 }),
   Object.freeze({ key: KIND.SPARK, gravity: 300, drag: 1.6, bounce: 0.35, life: 0.40,
-    w: 3, h: 3, alpha: 1.0, grow: 0.0, stretch: 620, twinkle: true, spin: true,
+    w: 5, h: 5, alpha: 1.0, grow: 0.0, stretch: 620, twinkle: true, spin: true,
     speed0: 70, speed1: 130, rise: 90 }),
   Object.freeze({ key: KIND.POOF, gravity: -60, drag: 3.2, bounce: 0.0, life: 0.55,
     w: 5, h: 5, alpha: 0.8, grow: 1.15, stretch: 0, twinkle: false, spin: false,
