@@ -24,7 +24,9 @@ grep -c "^export" src/sprites.js                                            # ex
 ```
 If `src/sprites.js` shows a low export count or fails `--check`, an agent died mid-write: the last good copy is `git show HEAD:src/sprites.js`, the last good art-data partial was `/tmp/vb-rescue/sprites-partial-685.js`. Do **not** guess the missing half — re-run slice S-01.
 
-## Tree state (head `c28be8b`, **16 commits** off `main`@`d16b002`) — **suite green 44/44**
+## Tree state — **suite green 44/44**
+
+Head and commit count are deliberately **not** pinned here — they move every time this file itself is committed, which is how the previous revision ended up one behind. Read them live: `git log --oneline -1` and `git rev-list --count main..HEAD`, and expect a clean `git status --short`. **The last change to any `src/` file is `c28be8b` (S-01c)**; everything on top of it is documentation.
 
 | Commit | What | Verified? |
 | --- | --- | --- |
