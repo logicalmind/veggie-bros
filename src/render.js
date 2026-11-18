@@ -1,6 +1,8 @@
 import { ART_SCALE, PALETTE, VIEW_H, VIEW_W } from './config.js';
-import { shakeOffset } from './fx.js';
+import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, setAmbient } from './composite.js';
+import { draw as drawFx, shakeOffset } from './fx.js';
 import { ambientFor, bakeLevel, parallaxFor, visibleStrips } from './terrain.js';
+import { colorToCss } from './pixels.js';
 import {
   TEXT_PITCH,
   drawBerry,
@@ -56,8 +58,15 @@ let bakedFor = null;
 function worldFor(g) {
   const theme = THEME_NAMES[g.levelIndex] || 'fields';
   if (bakedFor && bakedFor.level === g.level && bakedFor.theme === theme) return bakedFor.baked;
-  bakedFor = { level: g.level, theme, baked: bakeLevel(g.level, theme) };
-  return bakedFor.baked;
+  const baked = bakeLevel(g.level, theme);
+  // §7's `multiply` base is the LEVEL's aerial-fog tint (`_theme.fog`, an `{r,g,b,a}` object —
+  // terrain.js's `mix()` carries `a`), converted through `colorToCss`, the one stringifier that
+  // cannot emit `rgba(...,NaN)` from it. Once per level, next to the bake it keys on. A baked
+  // plan with no `_theme` leaves composite's own default in place rather than guessing a colour.
+  const fog = baked._theme && baked._theme.fog;
+  if (fog) setAmbient(colorToCss(fog));
+  bakedFor = { level: g.level, theme, baked };
+  return baked;
 }
 
 // The whole background in 1 + 3 + (4..6) blits: baked sky wash, the three parallax depths,
@@ -242,17 +251,39 @@ export function render(ctx, g) {
   // at (o, -o) by shifting the camera it is measured against. This file sets no canvas
   // transform anywhere (R45 diffs the draw stream), and never the HUD or the overlays (R52).
   const o = shakeOffset();
-  drawWorld(ctx, worldFor(g), camX, o, -o);
+  const baked = worldFor(g);
+  // Everything that can be LIT is drawn into the scene layer, which is a persistent buffer: it
+  // is emptied first so the frame cannot inherit last frame's bloom, and the single blit below
+  // is the only thing the live canvas ever takes from the world (§7, R52).
+  const L = layers();
+  const sc = L.scene.ctx;
+  sc.clearRect(0, 0, VIEW_W, VIEW_H);
+  drawWorld(sc, baked, camX, o, -o);
   // Checkpoints draw NOTHING. `level.checkpoints` stays live gameplay state — the arming band, the
   // hero's left clamp and the camera floor all read it (main.js) — but a banked post is invisible,
   // so there is deliberately no draw call here. `R45` renders a level with and without its
   // checkpoints and requires identical draw streams; the gate below stays world furniture drawn by
   // manual -camX arithmetic, and it sets no canvas transform.
-  if (level.gate) drawGate(ctx, level.gate.x - (camX - o), level.gate.y - o);
-  drawItems(ctx, g.items, camX - o, -o);
-  drawEnemies(ctx, g.enemies, camX - o, -o);
-  drawPlayer(ctx, g.player, camX - o, -o);
+  if (level.gate) drawGate(sc, level.gate.x - (camX - o), level.gate.y - o);
+  drawItems(sc, g.items, camX - o, -o);
+  drawEnemies(sc, g.enemies, camX - o, -o);
+  drawPlayer(sc, g.player, camX - o, -o);
+  // Particles sit UNDER the passes (a spark is a light source, not a highlight), and `fx.draw`
+  // floors its own destinations and writes no state, so the shake still enters only through
+  // the camera it is measured against.
+  drawFx(sc, camX - o);
+  // §7's fixed order: `drawLightmap` fills the ambient base AND gathers this frame's lights,
+  // `buildBloom` reuses that gather (it must run after it, on the same `g`), and each `apply*`
+  // is one upscaled blit back into the scene — `multiply` then `lighter`, no other op touches it.
+  drawLightmap(g, baked);
+  applyLightmap(sc);
+  buildBloom(g, baked);
+  applyBloom(sc);
+  // One blit, 1:1 logical px, on the live context's own nearest-neighbour flag.
+  ctx.drawImage(L.scene.c, 0, 0, VIEW_W, VIEW_H);
 
+  // HUD, banner and overlay stay on the LIVE context, after the composite, and take no shake:
+  // glyph ink never goes through the scene buffer, so no `multiply`/`lighter` upscale can blur it.
   if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'LEVEL_CLEAR') {
     drawHud(ctx, g);
   }
