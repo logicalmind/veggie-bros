@@ -1,54 +1,82 @@
-# GRAPHICS_STATE — graphics upgrade (branch `feature/graphics-upgrade`)
+# GRAPHICS_STATE — RESUME HERE (branch `feature/graphics-upgrade`)
 
-Plan of record: **`GRAPHICS_PLAN.md`** (self-contained; read that, not `WORKFLOW_STATE.md`).
-This file is a compact handoff log — the only graphics doc safe to read in full.
+**Read `GRAPHICS_PLAN.md` first** (the whole contract: decisions, architecture, frozen API, gates, slice rules). Then read this file. Then stop reading — nothing else is required, and `WORKFLOW_STATE.md` (131 KB), `RESUME.md`, `IMPLEMENTATION.md`, `docs/REVIEW-2026-11-15.md` are all **out of scope for this work**.
 
-## Workflow rules the user set
+This file is the only graphics doc safe to read in full, and the integrator owns it.
 
-- **At most TWO subagents running at once** (set 2026-11-17 after wave 2 spawned four). Queue the rest; spawn the next only when a slot frees.
-- Context discipline stands: agents never read `WORKFLOW_STATE.md` / `RESUME.md` / `IMPLEMENTATION.md` / `docs/REVIEW-2026-11-15.md`; `tools/verify.mjs` is grep-only by id.
+## Working rules the user set (they override convenience)
 
-## Baseline carried in from `main`
+- **One subagent at a time.** Integrator + one worker = 2 total. Never spawn a second while one is live.
+- **Small slices** (plan §9): one file, ≤ ~150 new lines, ≤ ~400 lines read. Agents report in ≤ 40 lines.
+- **Write incrementally** so an abort leaves a loadable tree; `node --input-type=module --check` after every append.
+- Green suite at every checkpoint: `node tools/verify.mjs` → `44/44 pass, 0 fail` (ids may be added only when they can pass).
+- The user ends the session and starts a fresh one whenever context gets heavy. **Keep this file current so that costs nothing.**
 
-- Harness: **44/44 PASS, ~2 s**. Ids `SMOKE`, `R01`–`R33`, `R36`–`R38`, `R40`–`R46`.
-- Browser (headless WebKit, 256×240 @2× CSS): 1114 `fillRect`/frame (min 1090 / max 1153), dt 17.0 med / 20.0 p95 ms.
-- **Old-renderer art density** (sets `R49` so it fails today): 21 unique on-screen colours; per-tile tone bands med **2** / min 1 / max 5; per-tile colours med **3** / max 10; 83 of 240 tiles non-sky.
-- **Draw-call decomposition** (sets `R47`): 240 visible tiles ≈ 700, `drawPixelText('SCORE 000000')` = **127**, `'WORLD 1-1  POPPY'` = 123, title logo = 102, lives ×3 fruits = **165**, hero 21, turnip 16.
-- Before-shots: `/tmp/vb-shots/before-{title,play}.png`, metrics `/tmp/vb-baseline-metrics.json`.
-- Frozen by design (§1 G5): `player/enemy/items/level/camera/input/audio/levels`.
+## Cold start — run these five, in order
 
-## Wave board
+```sh
+cd /Users/jasonjordan/repos/veggie_bros && git branch --show-current        # feature/graphics-upgrade
+node tools/verify.mjs | tail -2                                             # expect 44/44 pass, 0 fail
+for f in src/*.js; do node --input-type=module --check < "$f" || echo FAIL $f; done
+grep -c "^export" src/sprites.js                                            # expect 20 (18 draw fns + TEXT_PITCH + bakeSprites)
+./serve-local.sh 8010 &                                                     # NEVER port 8000 (splash inference engine)
+```
+If `src/sprites.js` shows a low export count or fails `--check`, an agent died mid-write: the last good copy is `git show HEAD:src/sprites.js`, the last good art-data partial was `/tmp/vb-rescue/sprites-partial-685.js`. Do **not** guess the missing half — re-run slice S-01.
 
-| Wave | Slice | Files | Status |
+## Tree state (head `6ffaa53`, 9 commits off `main`@`d16b002`)
+
+| Commit | What | Verified? |
+| --- | --- | --- |
+| `a049805` `d9d838b` `2a38bda` `f90bd56` | plan + gates + this log | — |
+| `9539ab3` | harness `drawStats()` per-frame accounting, `VB_DRAWSTATS=1` probe | yes: 44/44, byte-identical ×2 |
+| `8ba8033` | `src/pixels.js` (467) ramps + bake passes; `src/atlas.js` (237) pack + `blit`; scale constants | yes: real-canvas bake smoke, packer stress 160 rects / 39 ms / 0 bleed |
+| `45e3d9e` | `src/fx.js` (434) pool + squash + shake | yes: 100k ticks, heap growth −0.4 KB; determinism digest; DOM-free |
+| `9e6169c` | `src/terrain.js` (769) strips + AO + parallax — **draft** | **NO** — its acceptance tests were never run |
+| `6ffaa53` | harness ink bridge (`inkAt`, `inkRects` on offscreen canvases) — **partial** | suite yes (44/44, byte-identical to HEAD harness); blit-ink probe + check-impact list **outstanding** |
+
+**Nothing renders differently in the browser yet.** `src/render.js` is still the procedural renderer (7 `fillRect` sites, no atlas import); `atlas.bakeAll` is reachable only through `sprites.js`'s lazy `if (!ready()) bakeAll(ART_SCALE)` guard — no boot call exists yet.
+
+## Slice queue — run one at a time, in this order
+
+| ID | Slice | File | Gate (must be shown, not asserted) |
 | --- | --- | --- | --- |
-| W1 | A1 bake-core | `src/pixels.js`, `src/atlas.js` | **done**, committed `8ba8033` |
-| W1 | A2 harness stub | `tools/verify.mjs` | **done**, committed `9539ab3` |
-| W2 | B3 fx | `src/fx.js` (434) | **done, uncommitted** — verified by integrator: DOM-free, no banned APIs, 0 gameplay writes |
-| W2 | E ink bridge | `tools/verify.mjs` | **running** |
-| W2 | B2 terrain | `src/terrain.js` | **running** (as `FitBug`; first attempt died on a 503 with nothing written) |
-| W2 | B1 art | `src/sprites.js` | **FAILED at 1h42m on a 503, truncated** — queued for completion, needs a free slot |
+| S-01 | finish art: registrations + 18 wrappers + `bakeSprites` | `src/sprites.js` | **in flight.** Footprint oracle vs `git show main:src/sprites.js`; ≥6 colours / ≥5 tone bands per key; `metrics().missing === 0` |
+| S-02 | validate the terrain draft, fix if it fails | `src/terrain.js` | strip coverage of the 256px view, ≤4 strips, purity across `invalidate()`, `live ≤ 12` over a full 1-1 scroll, max 64px-seam luminance delta |
+| S-03 | finish ink bridge (probe: alpha 0.5 / `lighter` / mirrored blit; list of checks that will see different ink) | `tools/verify.mjs` | **PARKED by the user — run later.** 44/44 byte-identical must survive |
+| S-04 | composite layer buffers + DPR `k`-factor sizing (no drawing yet) | `src/composite.js` (new) | buffer table printed: scene/upscale/lightmap/bloom px at DPR 1/2/3 + 375×667 |
+| S-05 | lightmap: pre-baked glow-sprite blits + ambient `multiply` | `src/composite.js` | zero `createRadialGradient` in a frame; ≤ N blits |
+| S-06 | bloom: emissive-mask-driven source, down/up chain, `BLOOM_MAX_ALPHA` ceiling | `src/composite.js` | alpha ceiling honoured; no `ctx.filter`/`shadowBlur` |
+| S-07 | world layer: terrain strips + atlas sprite blits + shake `(o,-o)` | `src/render.js` | world ≤ 60 `fillRect`, ≤ 240 `drawImage` (plan `R47`) |
+| S-08 | HUD/overlays composited crisp and unshaken, after FX | `src/render.js` | total `fillRect` ≤ 450; text never blurred |
+| S-09 | boot: DPR backing store, resize, `bakeSprites()` + `bakeLevel()`/`invalidate()` at level load, `fx.update` | `src/main.js` | bake once per boot and per level; no bake inside a steady frame |
+| S-10 | FX emit call sites at existing score-popup events (`hit()` strings vs `burst()` KIND values!) | `src/main.js` | `fx.metrics()` shows emits per event; gameplay snapshot unchanged (R51 spirit) |
+| S-11 | FX tuning constants + `index.html` | `src/config.js`, `index.html` | two files only because both are ~5 lines |
+| S-12 | `R47` draw budget + `save`/`restore` balance clause | `tools/verify.mjs` | red before S-07, green after |
+| S-13 | `R48` bake-once (+ demote harness scratch buffers) and `R52` shake-stays-render-only | `tools/verify.mjs` | |
+| S-14 | `R49` art density (≥90 colours, tone bands ≥5 med / ≥3 min, ≥6 colours/tile, ±3 LSB) | `tools/verify.mjs` | must be red on `main` |
+| S-15 | `R50` FX determinism (draw-stream digest) + `R51` frozen-gameplay snapshot diff | `tools/verify.mjs` | |
+| S-16 | rewrite `R38` + `R45` onto `rec.drawImages`; re-derive anything in §8.1's list | `tools/verify.mjs` | claims preserved, never loosened |
+| S-17 | browser gate: 60 s of 1-1 + 1-3 boss at DPR 3 / 375×667 | integrator, no subagent | `dt_med ≤ 16.7`, `dt_p95 ≤ 20`, 0 console errors, screenshots vs `/tmp/vb-shots/before-*.png` |
+| S-18 | `architecture.md` module map + Deviations | `architecture.md` | |
+| S-19 | `requirements.md` "8-bit-inspired" + `VEGGIE_BROS_PLAN.md` locked decisions | two docs | |
+| S-20 | `README.md`, full suite, final commit | `README.md` | 44+ ids green |
 
-## The sprites.js incident (read before touching that file)
+## Gotchas that have already cost time
 
-`Sprites` authored 685 lines of art data (generators + matrices, good footprint/outline reasoning in the header) and then hit `503 frontend_overloaded` **before writing any exports or atlas registrations** — a module that parses but exports nothing, so `render.js`'s 18-name import would have failed and the suite would have gone red for a non-reason. I moved the partial to **`/tmp/vb-rescue/sprites-partial-685.js`** and restored `src/sprites.js` from `HEAD` (426 lines) so the running ink-bridge agent had a working tree.
+1. `sprites.js` truncated with zero exports parsed fine but killed the import chain — land exports early.
+2. The harness stub's `getImageData` returns transparent black: `getImageData`/`putImageData` are banned in `src/`, bake included.
+3. Atlas art inks nothing unless bake canvases carry ink — S-03's bridge must be green before `R49`-style checks are trusted.
+4. `fx.hit(entity, 'land'|'stomp'|'hurt'|'hop'|'jump')` takes **strings**; `fx.burst(x, y, n, KIND.SPARK)` takes a **KIND value**. Mixing them silently degrades to a default.
+5. `shakeOffset()` is one signed int; the renderer applies `(dx, dy) = (o, -o)`. Never touch `cam.x`.
+6. Terrain strips must shade from **level columns**, never from their own pixels, or every 64px boundary shows a seam.
+7. `R19`/`R24` print absolute draw indices; they will legitimately shift. Assertions are relative — do not "fix" the printed numbers.
+8. `R48` must demote harness scratch buffers first (`bakeCalls=1064` on a clean run) or it fails for a reason unrelated to the renderer.
+9. Never `./serve-local.sh 8000`; both scripts refuse it by design.
+10. Two agents have died on `503 frontend_overloaded`. Small slices, incremental writes, one at a time.
 
-Next slice for that file must **finish the partial**, not restart it: the authored art is the expensive part. It needs the registration calls, the `bakeSprites()` export, the 18 unchanged draw wrappers, and §5 density ≥6 colours / ≥5 tone bands per key.
+## Environment
 
-## Model capacity
-
-Two slices have died on `503 frontend request capacity is exhausted` after long runs (Terrain at 2m47s with nothing written, Sprites at 1h42m with a truncated file). Consequence: **slices must be small enough that a failure loses hours, not days** — prefer a finished small file over an ambitious big one, and have agents write incrementally so a partial is still useful.
-
-## Integrator notes for the next wave
-
-- `fx.js` facts wave 3/4 need are in plan §6 ("As landed"): `hit()` takes strings `'land'|'stomp'|'hurt'|'hop'|'jump'`, `burst()` takes `KIND.*`; `shakeOffset()` is one signed int → renderer applies `(dx,dy) = (o,-o)`; pool cap 96, newest refused.
-- `getImageData`/`putImageData` banned in `src/` outright (§7): the stub does not rasterise, so read-back bakes are flat under the suite.
-- Ink model goes blind for atlas art (`R16`–`R24`, `R45` canary) → bake canvases need `inkRects = true`; `R45` must read `rec.drawImages`; `R48` must demote harness scratch buffers (`bakeCalls=1064` clean run). Plan §8.1.
-- Server: `./serve-local.sh 8010` (never 8000). Probe tab name `vb`, `app: "own"`.
-
-## Commits on this branch
-
-`a049805` plan · `d9d838b` plan W1 ground truth · `9539ab3` harness accounting · `8ba8033` atlas+ramps+scale constants · `2a38bda` R49 thresholds + handoff · `f90bd56` R47 budget split.
-
-## Log
-
-- 2026-11-17: branch off `main`@`d16b002`; user decisions recorded (zero-dep bake-at-boot Canvas 2D, HD-2D, DPR backing store, physics frozen, suite green, perf gate, docs in-branch). W1 landed green. W2: fx done, terrain + ink bridge running, art truncated by a model 503 and restored. User set the 2-concurrent-subagent cap.
+- Server: `./serve-local.sh 8010` (localhost only). Browser via eval: `await browser.open({ name: '<unique>', url: 'http://127.0.0.1:8010/', app: 'own', viewport: { width: 900, height: 700 } })`; integrator's long-lived tab is `vb` (it gets idle-closed — reopen with the same `url`/`app`). Close your own tabs.
+- Perf/density probe (reusable): patch `ctx.fillRect` to count, sample 240 rAF intervals for dt percentiles, then `getImageData(0,0,256,240)` and count unique colours + per-tile luminance tone bands over a 16×16 grid. Baseline: 1114 `fillRect`/frame, dt 17.0/20.0 ms, 21 colours, tone bands med 2.
+- Artifacts: `/tmp/vb-shots/before-{title,play}.png` (visual baseline), `/tmp/vb-baseline-metrics.json`, `/tmp/vb-rescue/` (sprites partial + harness copies).
+- `window.G` is NOT a browser global (it is a module export); drive the game with real key events, or import `/src/main.js` in the page and use the returned namespace.

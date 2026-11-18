@@ -9,6 +9,10 @@ This file is the **whole contract**. It is self-contained on purpose.
 - `tools/verify.mjs` is 4528 lines — **grep for the id you need, read that range only.**
 - Never run the full suite unless your brief says to; run `node tools/verify.mjs <YOUR IDS>`.
 - Status/handoff lives in `GRAPHICS_STATE.md` (small). Only the integrator writes it; agents read at most its last 40 lines.
+- **One subagent at a time** (integrator + one worker = 2 total). A second live worker is a rule violation, not a speedup: two slices at 1h42m and 1h58m have already died on `503 frontend_overloaded` and had to be rescued from truncated disk state.
+- **Slices are cut small on purpose** (§9). A slice may touch **one file**, must be completable in ≤ ~150 new lines, and must need ≤ ~400 lines of reading. If your brief names more, say so and do the first file only.
+- **Write incrementally so an abort leaves a loadable tree.** Append in dependency order and re-run `node --input-type=module --check` after every append; a partially finished module must still export whatever other modules import. `src/sprites.js` at 708 lines with zero exports is the cautionary tale — it parsed but broke `render.js`'s import chain and the whole suite.
+- Report in ≤ 40 lines: what landed, the gate numbers, any signature drift. No narrative.
 
 ## 1. Locked decisions (user-confirmed 2026-11-17)
 
@@ -188,21 +192,35 @@ Whitelist for `R47`: per-frame `unknownCalls` is **empty** today and must stay e
 
 ## 9. Phases, file ownership, sequencing
 
-One owner per file per wave. Never two agents in a file.
+**One owner per file. One subagent at a time.** The old five-wave plan is replaced by 20 small slices (user directive 2026-11-17: smaller chunks so a worker's context window stays small and a `503` abort costs minutes, not hours). Each slice: **one file**, ≤ ~150 new lines, ≤ ~400 lines read, one gate that can be shown rather than claimed. Statuses live in `GRAPHICS_STATE.md`; this table is the authority for **what and in what order**.
 
-| Wave | Agent | Files | Depends on |
+| ID | Slice | File | Gate |
 | --- | --- | --- | --- |
-| W1 | **A1 bake-core** | `src/pixels.js` (new), `src/atlas.js` (new) | — |
-| W1 | **A2 harness** | `tools/verify.mjs` (stub + `drawStats()` instrumentation only, no new ids; stayed 44/44 green against the OLD renderer) | — |
-| W2 | **B1 art** | `src/sprites.js` | A1 |
-| W2 | **B2 terrain** | `src/terrain.js` (new) | A1 |
-| W2 | **B3 fx** | `src/fx.js` (new) | A1 |
-| W3 | **C1 renderer** | `src/render.js`, `src/composite.js` (new), `src/main.js` (DPR sizing only) | A1, B1, B2, B3 |
-| W4 | **D1 wiring** | `src/main.js` (FX emit sites), `src/config.js` (new constants), `index.html` | C1 |
-| W4 | **D2 checks** | `tools/verify.mjs` (`R38`/`R45` rewrite, `R48`–`R52`) | C1 |
-| W5 | **E1 docs** | `architecture.md`, `requirements.md`, `README.md`, `VEGGIE_BROS_PLAN.md`, `GRAPHICS_STATE.md` | D1, D2 |
+| S-01 | finish art: registrations + 18 wrappers + `bakeSprites` | `src/sprites.js` | footprint oracle vs `git show main:src/sprites.js`; ≥6 colours / ≥5 tone bands per key; `metrics().missing === 0` |
+| S-02 | validate the terrain draft, fix what fails | `src/terrain.js` | ≤4 strips covering the 256px view, purity across `invalidate()`, `live ≤ 12` over a full scroll, 64px-seam luminance delta |
+| S-03 | finish ink bridge: blit-ink probe (alpha 0.5 / `lighter` / mirrored) + list of checks whose ink will change | `tools/verify.mjs` | 44/44 and byte-identical survive |
+| S-04 | composite layer buffers + DPR `k`-factor sizing (no drawing) | `src/composite.js` | printed buffer table at DPR 1/2/3 and 375×667 |
+| S-05 | lightmap: pre-baked glow blits + ambient `multiply` | `src/composite.js` | zero `createRadialGradient` per frame |
+| S-06 | bloom: emissive-mask source, down/up chain, alpha ceiling | `src/composite.js` | `BLOOM_MAX_ALPHA` honoured; no `filter`/`shadowBlur` |
+| S-07 | world layer: strips + sprite blits + shake `(o,-o)` | `src/render.js` | world ≤ 60 `fillRect`, ≤ 240 `drawImage` |
+| S-08 | HUD/overlays composited crisp and unshaken, after FX | `src/render.js` | total `fillRect` ≤ 450; text never blurred |
+| S-09 | boot: DPR backing store, resize, `bakeSprites`/`bakeLevel`/`invalidate`, `fx.update` | `src/main.js` | bake once per boot, once per level, never mid-frame |
+| S-10 | FX emit sites at the existing score-popup events | `src/main.js` | `fx.metrics()` per event; gameplay state untouched |
+| S-11 | FX tuning constants + page meta | `src/config.js`, `index.html` | only two files because each is ~5 lines |
+| S-12 | `R47` draw budget + `save`/`restore` balance | `tools/verify.mjs` | red before S-07, green after |
+| S-13 | `R48` bake-once (demote harness scratch buffers first) + `R52` render-only shake | `tools/verify.mjs` | |
+| S-14 | `R49` art density (±3 LSB/channel) | `tools/verify.mjs` | must be red on `main` |
+| S-15 | `R50` FX determinism (draw-stream digest) + `R51` frozen-gameplay diff | `tools/verify.mjs` | |
+| S-16 | rewrite `R38`/`R45` onto `rec.drawImages` | `tools/verify.mjs` | original claims preserved |
+| S-17 | browser gate at DPR 3 / 375×667 | integrator | `dt_med ≤ 16.7`, `dt_p95 ≤ 20`, 0 errors, screenshots |
+| S-18 | `architecture.md` module map + Deviations | `architecture.md` | |
+| S-19 | `requirements.md` + `VEGGIE_BROS_PLAN.md` decision amendments | two docs | |
+| S-20 | `README.md`, full suite, final commit | `README.md` | all ids green |
 
-`src/pixels.js` + `src/atlas.js` are the API everyone else calls: **A1's exported signatures are frozen by §3 and must not be changed by later agents without updating this file.**
+Rules: S-04→S-06 and S-07→S-08 are strictly ordered (same file, later slice builds on the earlier one); S-12→S-16 are ordered only to keep one agent in `tools/verify.mjs` at a time. A slice that cannot finish must leave the file loadable (§0) and say so in its report; the integrator re-queues the remainder rather than letting a worker continue past its brief.
+
+`src/pixels.js` + `src/atlas.js` are the API everyone else calls: **their exported signatures are frozen by §3.1 and must not change without updating this file.**
+
 
 ## 10. Landing rules (every agent)
 
