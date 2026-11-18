@@ -48,13 +48,165 @@ let musicTick = null;
 globalThis.setInterval = (fn) => { musicTick = fn; return 1; };
 globalThis.clearInterval = () => { musicTick = null; };
 
-const mkCtx = (rec) => new Proxy({}, {
+// ---------------------------------------------------------------------------
+// draw-call accounting (plan §8, W1/A2): per-frame budgets, bake separation,
+// and the `unknownCalls` whitelist the later ids assert empty.
+//
+// Recorders have a SCOPE. 'game' = #game, the only surface a FRAME is measured
+// on; 'bake' = any canvas handed out by document.createElement('canvas')
+// (atlas/terrain/lightmap buffers); 'scratch' = a harness-local recorder a
+// check builds itself (R45's differential shots, R16/R17's sprite buffers).
+// Only game-scope calls can land in the last-frame bucket, so a boot bake or a
+// level-load bake never counts against a per-frame budget — and `bakeCalls`
+// still shows up on the frame that ran it, which is how "terrain bakes every
+// frame instead of once per level" becomes visible.
+//
+// Nothing here throws: the OLD renderer touches APIs this stub does not model,
+// and plan §8 requires the suite to stay green against it, so an unmodelled
+// member is recorded by name and answered exactly as it used to be.
+// ---------------------------------------------------------------------------
+
+// The counts `drawStats()` reports. `composite`/`alpha`/`smoothing` count SETS
+// of the matching property — that is the renderer's own per-layer state churn.
+// `filter`/`shadow` count only sets to a NON-default value, because
+// `ctx.filter = 'none'` or `shadowBlur = 0` is a reset, not the forbidden use
+// of a feature.
+const STAT_KEYS = [
+  'fillRect', 'clearRect', 'drawImage', 'gradient', 'pattern', 'filter', 'shadow',
+  'getImageData', 'putImageData', 'save', 'restore', 'translate', 'scale', 'transform',
+  'composite', 'alpha', 'smoothing', 'bakeCalls', 'offscreenCanvases',
+];
+function newCounts() {
+  const c = {};
+  for (const k of STAT_KEYS) c[k] = 0;
+  return c;
+}
+
+const totals = newCounts();      // every modelled call since process start
+const totalsUnknown = new Set(); // every unmodelled member name, any scope
+const bakeUnknown = new Set();   // the same, restricted to bake contexts
+const offscreenCanvases = [];    // every createElement('canvas'), in creation order
+let canvasSeq = 0;               // unique id for every stub canvas (game + offscreen)
+let inFrame = false;             // true only while step() has cb(t) on the stack
+let framesDone = 0;
+let frameCounts = null;
+let frameUnknown = null;
+let lastFrame = null;            // frozen { counts, unknown } of the last stepped frame
+
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+// One modelled call on a 2D context. `rec` may be null (an element with no
+// recorder): the call still counts in the totals, it just has no scope.
+function bump(rec, key) {
+  totals[key]++;
+  const scope = rec ? rec.scope : null;
+  if (scope === 'bake') totals.bakeCalls++;
+  if (!inFrame) return;
+  if (scope === 'game') frameCounts[key]++;
+  else if (scope === 'bake') frameCounts.bakeCalls++;
+}
+// A count that belongs to no context (a canvas coming into existence).
+function bumpEnv(key) {
+  totals[key]++;
+  if (inFrame) frameCounts[key]++;
+}
+
+// A game recorder is cleared every frame, so its detail arrays are bounded by
+// the frame. A BAKE recorder is never cleared (its calls outlive any one
+// frame), so its arrays are capped: a renderer that (wrongly, until `R48` says
+// otherwise) re-bakes every frame must still print a FAIL instead of growing
+// the harness until it dies. Counts stay exact either way.
+const BAKE_LOG_CAP = 4096;
+function log(rec, arr, entry) {
+  if (rec.scope === 'bake' && arr.length >= BAKE_LOG_CAP) return;
+  arr.push(entry);
+}
+function noteUnknown(rec, name) {
+  if (rec) rec.unknown.add(name);
+  totalsUnknown.add(name);
+  if (rec && rec.scope === 'bake') bakeUnknown.add(name);
+  if (inFrame && (!rec || rec.scope !== 'scratch')) frameUnknown.add(name);
+}
+function beginFrame() {
+  frameCounts = newCounts();
+  frameUnknown = new Set();
+  inFrame = true;
+}
+// Committed in step()'s `finally`: a frame that throws is still a frame the
+// renderer drew (R26 measures exactly that).
+function endFrame() {
+  inFrame = false;
+  framesDone++;
+  lastFrame = { counts: frameCounts, unknown: [...frameUnknown].sort() };
+  frameCounts = null;
+  frameUnknown = null;
+}
+
+// §8's accessor for the later ids: the most recent COMPLETED stepped frame on
+// the game canvas as flat counts, plus everything since process start under
+// `.totals`. Keys are stable, so `R47` can read them without probing.
+function drawStats() {
+  const f = lastFrame;
+  const out = {};
+  for (const k of STAT_KEYS) out[k] = f ? f.counts[k] : 0;
+  out.unknownCalls = f ? [...f.unknown] : [];
+  out.framesDone = framesDone;
+  out.totals = Object.assign({}, totals, {
+    unknownCalls: [...totalsUnknown].sort(),
+    bakeUnknownCalls: [...bakeUnknown].sort(),
+  });
+  return out;
+}
+
+// Modelled 2D-context state. Reads answer from here so a context behaves like
+// a fresh real one; the values are deliberately NOT copied onto the proxy
+// target, which keeps the `fillStyle`/`globalAlpha` columns of `rec.rects`
+// byte-identical for the checks that parse them (R19/R24/R45).
+const CTX_STATE = {
+  fillStyle: '#000000', strokeStyle: '#000000',
+  globalAlpha: 1, globalCompositeOperation: 'source-over', imageSmoothingEnabled: true,
+  filter: 'none', shadowBlur: 0, shadowColor: 'rgba(0,0,0,0)', shadowOffsetX: 0, shadowOffsetY: 0,
+  lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10, lineDashOffset: 0,
+  font: '10px sans-serif', textAlign: 'start', textBaseline: 'alphabetic',
+};
+// property -> the STAT_KEYS bucket its sets are counted in
+const CTX_TRACKED = {
+  globalCompositeOperation: 'composite', globalAlpha: 'alpha', imageSmoothingEnabled: 'smoothing',
+  filter: 'filter', shadowBlur: 'shadow', shadowColor: 'shadow', shadowOffsetX: 'shadow', shadowOffsetY: 'shadow',
+};
+const isDefaultState = (k, v) => (k === 'filter'
+  ? (v === 'none' || v === '' || v === undefined)
+  : k === 'shadowColor'
+    ? (v === 'rgba(0,0,0,0)' || v === 'transparent' || v === '')
+    : k.startsWith('shadow') ? (v === 0 || v === undefined) : false);
+// Engine/harness plumbing, not renderer API — never a stub gap worth reporting.
+const NOT_AN_API = new Set(['constructor', 'toString', 'valueOf', 'then', 'toJSON', 'inspect', '_rec']);
+
+const mkGradient = () => {
+  const stops = [];
+  return { _vbGradient: true, stops, addColorStop: (o, c) => stops.push([Number(o), String(c)]) };
+};
+const srcId = (img) => (img && typeof img._canvasId === 'number' ? img._canvasId : null);
+const srcName = (img) => (img && img._canvasName)
+  || (img ? (img.constructor ? img.constructor.name : typeof img) : String(img));
+// The stub does not rasterise, so readback returns correctly-sized transparent
+// black: bake passes that READ pixels back see zeros (never an exception).
+const mkImageData = (w, h) => {
+  const W = Math.max(0, Math.floor(Number(w)) || 0);
+  const H = Math.max(0, Math.floor(Number(h)) || 0);
+  return { width: W, height: H, colorSpace: 'srgb', data: new Uint8ClampedArray(W * H * 4) };
+};
+
+const mkCtx = (rec, owner) => new Proxy({}, {
   get(t, k) {
     if (k in t) return t[k];
+    if (k === 'canvas') return owner || null;
+    if (typeof k === 'string' && hasOwn(CTX_STATE, k)) return CTX_STATE[k];
     if (k === 'fillRect') return (x, y, w, h) => {
+      bump(rec, 'fillRect');
       if (!rec) return;
       const seq = rec.seq++;
-      rec.rects.push([x, y, w, h, String(t.fillStyle), Number(t.globalAlpha), seq]);
+      log(rec, rec.rects, [x, y, w, h, String(t.fillStyle), Number(t.globalAlpha), seq]);
       const color = String(t.fillStyle);
       if (rec.inkRects) {
         for (let px = Math.floor(x); px < Math.ceil(x + w); px++) {
@@ -65,7 +217,7 @@ const mkCtx = (rec) => new Proxy({}, {
     if (k === 'fillText') return (s, x, y) => {
       if (!rec) return;
       const seq = rec.seq++;
-      rec.text.push(String(s));
+      log(rec, rec.text, String(s));
       if (!rec.glyphInk) return;
       const size = parseFloat(String(t.font)) || 24;
       const ink = size * 0.602; // §6: Menlo's 24px advance is 14.45px = 0.602 em
@@ -76,12 +228,35 @@ const mkCtx = (rec) => new Proxy({}, {
         for (let py = Math.ceil(by + size * 0.1); py < Math.floor(by + size * 0.47); py++) rec.ink(px, py, color, seq);
       }
     };
-    if (k === 'drawImage') return (img, sx, sy, sw, sh, dx, dy, dw, dh) => {
+    // `blits` keeps its exact historical shape (R45 stringifies it); the fuller
+    // record the §8 budgets need lives in `drawImages`.
+    if (k === 'drawImage') return function (img, sx, sy, sw, sh, dx, dy, dw, dh) {
+      bump(rec, 'drawImage');
+      const argc = arguments.length;
       if (!rec) return;
       const seq = rec.seq++;
-      rec.blits.push({ sx, sy, sw, sh, dx, dy, dw, dh, seq });
+      log(rec, rec.blits, { sx, sy, sw, sh, dx, dy, dw, dh, seq });
+      // The short forms (drawImage(c,x,y) / (c,x,y,w,h)) take their source rect
+      // from the whole source canvas — that is the form §4's two-pass upscale
+      // and §7's layer blits use, so its rects have to be recorded too.
+      let SSX = sx, SSY = sy, SSW = sw, SSH = sh, SDX = dx, SDY = dy, SDW = dw, SDH = dh;
+      if (argc < 9) {
+        SDX = sx; SDY = sy;
+        SDW = argc >= 5 ? sw : (img && img.width);
+        SDH = argc >= 5 ? sh : (img && img.height);
+        SSX = 0; SSY = 0; SSW = img && img.width; SSH = img && img.height;
+      }
+      log(rec, rec.drawImages, {
+        seq, src: srcId(img), srcName: srcName(img), argc,
+        sx: SSX, sy: SSY, sw: SSW, sh: SSH, dx: SDX, dy: SDY, dw: SDW, dh: SDH,
+        op: hasOwn(t, 'globalCompositeOperation') ? String(t.globalCompositeOperation) : CTX_STATE.globalCompositeOperation,
+        alpha: hasOwn(t, 'globalAlpha') ? Number(t.globalAlpha) : CTX_STATE.globalAlpha,
+        smoothing: hasOwn(t, 'imageSmoothingEnabled') ? !!t.imageSmoothingEnabled : CTX_STATE.imageSmoothingEnabled,
+      });
       const src = img && img._rec;
-      if (!src || !src.pixels) return;
+      // An empty source cannot ink anything, and every baked layer starts empty:
+      // without this guard a 240-blit frame would scan source-pixel Maps by hand.
+      if (!src || !src.pixels || src.pixels.size === 0) return;
       for (let j = 0; j < sh; j++) {
         for (let i = 0; i < sw; i++) {
           const srcKey = Math.floor(sx + i) + ',' + Math.floor(sy + j);
@@ -93,27 +268,106 @@ const mkCtx = (rec) => new Proxy({}, {
         }
       }
     };
-    if (k === 'scale') return (sx, sy) => { if (rec) rec.scaleCalls.push([sx, sy]); };
-    if (k === 'translate') return (tx, ty) => { if (rec) rec.translateCalls.push([tx, ty]); };
+    if (k === 'clearRect') return (x, y, w, h) => {
+      bump(rec, 'clearRect');
+      if (rec) log(rec, rec.clears, [x, y, w, h, rec.seq++]);
+    };
+    if (k === 'save') return () => {
+      bump(rec, 'save');
+      if (!rec) return;
+      rec.depth++;
+      log(rec, rec.stateLog, ['save', rec.depth, rec.seq]);
+    };
+    // `depth` is the point: save/restore must balance inside a frame, and a
+    // leaked save is exactly the state bleed a per-frame budget cannot see.
+    if (k === 'restore') return () => {
+      bump(rec, 'restore');
+      if (!rec) return;
+      rec.depth--;
+      log(rec, rec.stateLog, ['restore', rec.depth, rec.seq]);
+    };
+    if (k === 'scale') return (sx, sy) => {
+      bump(rec, 'scale');
+      if (rec) log(rec, rec.scaleCalls, [sx, sy]);
+    };
+    if (k === 'translate') return (tx, ty) => {
+      bump(rec, 'translate');
+      if (rec) log(rec, rec.translateCalls, [tx, ty]);
+    };
+    if (k === 'rotate' || k === 'transform' || k === 'setTransform' || k === 'resetTransform') {
+      return (...a) => {
+        bump(rec, 'transform');
+        if (rec) log(rec, rec.transformCalls, [k, ...a]);
+      };
+    }
+    if (k === 'createLinearGradient' || k === 'createRadialGradient' || k === 'createConicGradient') {
+      return (...a) => {
+        bump(rec, 'gradient');
+        if (rec) log(rec, rec.gradients, [k, ...a, rec.seq++]);
+        return mkGradient();
+      };
+    }
+    if (k === 'createPattern') return (src, repetition) => {
+      bump(rec, 'pattern');
+      if (rec) log(rec, rec.patterns, [srcName(src), srcId(src), String(repetition), rec.seq++]);
+      return { _vbPattern: true, setTransform: () => {} };
+    };
+    if (k === 'getImageData' || k === 'createImageData') {
+      return (sx, sy, w, h) => {
+        bump(rec, k === 'getImageData' ? 'getImageData' : 'putImageData');
+        if (rec) log(rec, rec.imageOps, [k, sx, sy, w, h, rec.seq++]);
+        return mkImageData(k === 'getImageData' ? w : sx, k === 'getImageData' ? h : sy);
+      };
+    }
+    if (k === 'putImageData') return (data, dx, dy) => {
+      bump(rec, 'putImageData');
+      if (rec) log(rec, rec.imageOps, ['putImageData', dx, dy, data && data.width, data && data.height, rec.seq++]);
+    };
     if (k === 'measureText') return (s) => ({ width: String(s).length * 14.45 });
+    if (typeof k === 'string' && !NOT_AN_API.has(k)) noteUnknown(rec, k);
     return () => {};
   },
-  set(t, k, v) { t[k] = v; return true; },
+  set(t, k, v) {
+    const bucket = typeof k === 'string' && hasOwn(CTX_TRACKED, k) ? CTX_TRACKED[k] : null;
+    if (rec && bucket) {
+      // The value is always logged; only a use of the feature is counted.
+      const used = !(bucket === 'filter' || bucket === 'shadow' ? isDefaultState(k, v) : false);
+      if (used) bump(rec, bucket);
+      log(rec, rec.stateLog, [k, v, rec.seq, used ? 1 : 0]);
+    }
+    t[k] = v;
+    return true;
+  },
 });
 
-function mkRecorder() {
+// An unmodelled `window.x` / `document.x` read is a stub gap the §8 whitelist
+// has to show, so record it and answer it as an ordinary missing property.
+function recordingDom(target, label) {
+  return new Proxy(target, {
+    get(t, k) {
+      if (typeof k === 'string' && !(k in t) && !NOT_AN_API.has(k)) noteUnknown(null, `${label}.${k}`);
+      return t[k];
+    },
+  });
+}
+
+function mkRecorder(scope = 'scratch') {
   const r = {
-    rects: [], text: [], blits: [], pixels: new Map(), textInk: [], scaleCalls: [], translateCalls: [],
-    seq: 0, glyphInk: true, inkRects: false,
+    scope,
+    rects: [], text: [], blits: [], drawImages: [], clears: [], gradients: [], patterns: [], imageOps: [],
+    pixels: new Map(), textInk: [], scaleCalls: [], translateCalls: [], transformCalls: [], stateLog: [],
+    seq: 0, glyphInk: true, inkRects: false, depth: 0, unknown: new Set(),
     ink(x, y, color, seq) {
       const key = x + ',' + y;
       this.pixels.set(key, color);
-      this.textInk.push({ x, y, color, seq });
+      log(this, this.textInk, { x, y, color, seq });
     },
     reset() {
-      this.rects.length = 0; this.text.length = 0; this.blits.length = 0;
-      this.scaleCalls.length = 0; this.translateCalls.length = 0;
-      this.pixels.clear(); this.textInk.length = 0; this.seq = 0;
+      this.rects.length = 0; this.text.length = 0; this.blits.length = 0; this.drawImages.length = 0;
+      this.clears.length = 0; this.gradients.length = 0; this.patterns.length = 0; this.imageOps.length = 0;
+      this.scaleCalls.length = 0; this.translateCalls.length = 0; this.transformCalls.length = 0;
+      this.stateLog.length = 0;
+      this.pixels.clear(); this.textInk.length = 0; this.seq = 0; this.depth = 0; this.unknown.clear();
     },
     rowsOf(x0, x1, y0, y1) {
       const rows = new Set();
@@ -148,7 +402,7 @@ function mkRecorder() {
   return r;
 }
 
-const rec = mkRecorder();
+const rec = mkRecorder('game');
 const els = new Map();
 const docL = {};
 const winL = {};
@@ -158,9 +412,17 @@ function mkEl(id) {
   const l = {};
   const el = {
     id, style: {}, width: 0, height: 0, _l: l,
+    // Every stub canvas is addressable by a unique id, because a `drawImage`
+    // budget is only checkable if the source buffer can be named.
+    _canvasId: ++canvasSeq, _canvasName: `${id}#${canvasSeq}`,
     addEventListener: (t, f) => { (l[t] ||= []).push(f); },
     removeEventListener() {},
-    getContext: () => mkCtx(el._rec || null),
+    getContext: (kind) => {
+      if (kind !== undefined && kind !== null && String(kind) !== '2d') return null;
+      // One context per canvas, like the real thing: bake state set on a layer
+      // must still be there when the bake hands the canvas to the atlas.
+      return (el._ctx ||= mkCtx(el._rec || null, el));
+    },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 56, height: 56 }),
     blur() {}, focus() {},
   };
@@ -176,25 +438,35 @@ function mkEl(id) {
 }
 // #game's context is created ONCE here and handed to main.js at import time, so
 // every frame of the real loop records into the shared `rec` (§5 gotcha 6).
-const gameCtx = mkCtx(rec);
 const gameEl = mkEl('game');
+const gameCtx = mkCtx(rec, gameEl);
 gameEl.getContext = () => gameCtx;
 els.set('game', gameEl);
 
-function mkOffscreen() {
+// A bake canvas is a first-class surface: its own recorder (scope 'bake'), its
+// own canvas id, and a tally separate from #game, so "the atlas baked once at
+// boot" and "terrain baked every frame" are different numbers. A check that
+// wants a scratch buffer rather than a bake (R16's text buffers predate this
+// split) can demote one with `buf._rec.scope = 'scratch'`, which keeps
+// `bakeCalls` to what the renderer itself baked.
+function mkOffscreen(tag = 'canvas') {
   const el = mkEl('offscreen');
-  el._rec = mkRecorder();
+  el.tagName = String(tag).toUpperCase();
+  el._rec = mkRecorder('bake');
+  el._bakedAtFrame = framesDone;
+  offscreenCanvases.push(el);
+  bumpEnv('offscreenCanvases');
   return el;
 }
 
 let createElementCount = 0;
-globalThis.document = {
+globalThis.document = recordingDom({
   getElementById: (id) => { if (!els.has(id)) els.set(id, mkEl(id)); return els.get(id); },
-  createElement: () => { createElementCount++; return mkOffscreen(); },
+  createElement: (tag) => { createElementCount++; return mkOffscreen(tag); },
   addEventListener: (t, f) => { (docL[t] ||= []).push(f); },
   removeEventListener() {},
   hidden: false,
-};
+}, 'document');
 
 // matchMedia: query results are harness-controlled and `change`-able (R15).
 const mediaState = { pointer: 'fine', anyPointer: 'fine' };
@@ -240,11 +512,20 @@ const consoleLog = [];
 const realConsoleError = console.error;
 console.error = (...args) => { consoleLog.push(args.map(String).join(' ')); };
 
-globalThis.window = {
+// devicePixelRatio and the viewport size are §4's backing-store inputs, so the
+// harness pins them: a later DPR/composite check reads numbers it controls
+// instead of tripping an `unknownCalls` entry.
+const winTarget = {
   addEventListener: (t, f) => { (winL[t] ||= []).push(f); },
   removeEventListener() {},
   matchMedia: (q) => globalThis.matchMedia(q),
+  devicePixelRatio: 1,
+  // Viewport size is harness-global (R11 sets `globalThis.innerWidth`), so these
+  // read through: `window.innerWidth` and a bare `innerWidth` can never disagree.
+  get innerWidth() { return globalThis.innerWidth; },
+  get innerHeight() { return globalThis.innerHeight; },
 };
+globalThis.window = recordingDom(winTarget, 'window');
 globalThis.innerWidth = 1280;
 globalThis.innerHeight = 800;
 
@@ -293,10 +574,13 @@ function step() {
   t += stepMs;
   frameError = null;
   rec.reset();   // keep the recorder to the current frame: checks read it after step()
+  beginFrame();  // §8: this loop, and nothing else, defines what "a frame" is
   try {
     cb(t);
   } catch (err) {
     frameError = err;
+  } finally {
+    endFrame();  // a throwing frame is still a drawn frame (R26 measures those)
   }
   lastFrameRescheduled = rafSeq > seqBefore;
   return frameError;
@@ -4488,6 +4772,32 @@ check('R46', () => {
 });
 
 // MARKER:CHECKS
+
+// ---------------------------------------------------------------------------
+// `VB_DRAWSTATS=1 node tools/verify.mjs` — the §8 instrumentation probe.
+//
+// Not a check and it registers no id; it never touches the default output or
+// the exit code. It samples one scripted, settled 1-1 run (min/median/max, the
+// shape of plan §2's baseline table) and prints `drawStats().totals` after the
+// suite, which is where the full `unknownCalls` whitelist comes from — checks
+// dispatch real events and touch real elements, so they cover API paths a
+// single frame does not.
+//
+// Against the OLD renderer the frame counts are the §2 baseline (~1114 med)
+// with `drawImage` 0; after the rewrite the same line has to read ≤60/≤240
+// with every gated count at 0 and `unknownCalls` empty.
+if (process.env.VB_DRAWSTATS) {
+  newGame();
+  steps(120); // the level banner has to expire: its text runs are not a steady frame
+  const series = [];
+  for (let i = 0; i < 180; i++) { steps(1); series.push(drawStats().fillRect); }
+  series.sort((a, b) => a - b);
+  const s = drawStats();
+  process.stdout.write(`VB_DRAWSTATS 1-1 fillRect min=${series[0]} med=${series[89]} max=${series[179]} `
+    + `drawImage=${s.drawImage} save=${s.save} restore=${s.restore} bakeCalls=${s.bakeCalls} `
+    + `offscreenCanvases=${s.offscreenCanvases} frameUnknown=${JSON.stringify(s.unknownCalls)}\n`);
+  process.on('exit', () => process.stdout.write(`VB_DRAWSTATS totals ${JSON.stringify(drawStats().totals)}\n`));
+}
 
 // ---------------------------------------------------------------------------
 // runner
