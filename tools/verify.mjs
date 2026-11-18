@@ -4985,21 +4985,40 @@ check('R45', () => {
     y1: (cp.row + CHECKPOINT_BAND_ROW_OFFSETS[CHECKPOINT_BAND_ROW_OFFSETS.length - 1] + 1) * C.TILE,
   }));
   const fmtBox = (m) => [...m.entries()].sort((p, q) => (p[0] < q[0] ? -1 : 1)).map((e) => e.join('=')).join(';');
+  // WHY THE READS SIT ON THE `scene` RECORDER (S-09h2, §4/DPR): world art is drawn into
+  // `composite.layers().scene` (`src/render.js:258-274`), and `scene` is 256x240 LOGICAL and
+  // STAYS logical through §4's DPR pass — `backing = css x dpr`, `scene -> upscale` by integer
+  // k, `upscale -> canvas` — so these logical band windows read off the scene ink model are
+  // correct at ANY k. The live recorder cannot answer them once §4 lands: it holds DEVICE
+  // pixels (k x), where a logical window finds nothing — or, measured at k=3, the k-scaled
+  // composite blit pours in pixels that an OFF-SCREEN post's window then claims while the
+  // bare-world reference does not, which is exactly the red this re-point closes. `scene` is
+  // cleared whole every frame (`src/render.js:260`), so its modelled `.pixels` hold exactly
+  // the frame under test, and `inkedRender` is the demand scope that lets that volatile layer
+  // model ink at all — the same gate R23's scene read opens with `{ ink: true }`.
   const probeShot = (boxes, camX) => {
-    const r = mkRecorder();
-    r.glyphInk = false;
-    r.inkRects = false;
+    const sr = sceneRec();
+    // `sr` is a `bake` recorder: its op log is never reset and stops appending at BAKE_LOG_CAP,
+    // so the frame under test starts from an empty log, exactly as R23's scene read does. The
+    // band reads below consume only `.pixels`, which the per-frame clear already keeps fresh.
+    sr.rects.length = 0;
     const hits = boxes.map(() => new Map());
-    r.inkRects = true;
-    r.ink = (x, y, color) => {
-      for (let i = 0; i < boxes.length; i++) {
-        const b = boxes[i];
-        if (x >= b.x0 - camX && x < b.x1 - camX && y >= b.y0 && y < b.y1) hits[i].set(x + ',' + y, color);
+    const scan = () => {
+      const fresh = boxes.map(() => new Map());
+      for (const [key, color] of sr.pixels) {
+        const [x, y] = key.split(',').map(Number);
+        for (let i = 0; i < boxes.length; i++) {
+          const b = boxes[i];
+          if (x >= b.x0 - camX && x < b.x1 - camX && y >= b.y0 && y < b.y1) fresh[i].set(key, color);
+        }
       }
+      for (let i = 0; i < boxes.length; i++) hits[i] = fresh[i];
     };
-    const ctx = mkCtx(r);
-    inkedRender(() => renderScene(ctx, G)); // the probe destination models ink, so §7's layers do too
-    return { ctx, boxReport: (i) => fmtBox(hits[i]) };
+    // The live destination recorder stays ink-blind (default `inkRects = false`): the world's
+    // ink lives on `scene` now, and only the frame snapshot below feeds the box reports.
+    inkedRender(() => renderScene(mkCtx(mkRecorder()), G));
+    scan(); // snapshot NOW: the next render (or the canary's pixel) overwrites the shared buffer
+    return { ctx: compositeLayers().scene.ctx, boxReport: (i) => fmtBox(hits[i]), rescan: scan };
   };
   const inkDiff = (a, b) => {
     const A = a.split(';');
@@ -5072,14 +5091,17 @@ check('R45', () => {
     }
   }
   assert(diffs.length === 0, diffs[0]);
-  // The CANARY, last: one 1×1 fillRect painted by the harness itself, through the same mock context,
-  // inside the first post's box. If the probe cannot see that, its PASS lines mean nothing — which is
-  // the same reason the determinism repeat above is a real render and not a comment.
+  // The CANARY, last: one 1×1 fillRect painted by the harness itself, through the same mock
+  // context the probe now reads — the `scene` layer's — inside the first post's box, followed
+  // by the same window read again (`rescan`). If the probe cannot see that, its PASS lines mean
+  // nothing — which is the same reason the determinism repeat above is a real render and not a
+  // comment.
   {
     const box = bandBoxes(firstLevel)[0];
     const before = canaryProbe.got.boxReport(0);
     canaryProbe.got.ctx.fillStyle = C.PALETTE.pumpkin;
-    canaryProbe.got.ctx.fillRect(box.x0 - canaryProbe.camX + 4, box.y0 + 4, 1, 1);
+    inkedRender(() => canaryProbe.got.ctx.fillRect(box.x0 - canaryProbe.camX + 4, box.y0 + 4, 1, 1)); // the ink gate, open like every probe render's
+    canaryProbe.got.rescan(); // re-read the box window off the surface just painted
     const after = canaryProbe.got.boxReport(0);
     assert(after !== before, `R45's own ink probe did not notice a 1×1 fillRect painted into the col-${box.tx} post's trigger band — the probe sees nothing, so every probe PASS above is worth nothing`);
     assert(after.includes(C.PALETTE.pumpkin), `the canary pixel changed the probe's box but is not in its report (${after.slice(0, 140)}…) — the probe is reporting the wrong region`);
