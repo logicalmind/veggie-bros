@@ -53,6 +53,14 @@ export const CHECKPOINT_TRIGGER_BOTTOM = TILE;
 
 export const SOLID = "XSBPQU=|";
 
+// Graphics-upgrade scales (GRAPHICS_PLAN.md §4). The logical world stays 256x240/TILE 16 —
+// these only say how much DETAIL is baked per logical pixel and at what rate the FX buffers
+// run. Nothing in player/enemy/items/level/camera reads them.
+export const ART_SCALE = 2; // sprites and terrain bake at 2 logical px per art px (512x480 art)
+export const FX_SCALE = 0.5; // lightmap/fog/bloom run at 128x120: lighting is low-frequency,
+// so a quarter of the scene costs 1/16 the fill and still reads smooth when composited up.
+export const ART_MAX_PX = 2048; // atlas width ceiling; wider atlases fall off a GPU texture page
+
 export const PALETTE = {
   sky: "#9be3f5",
   skyDark: "#7fd4ec",
