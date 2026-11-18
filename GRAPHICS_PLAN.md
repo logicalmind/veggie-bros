@@ -198,7 +198,7 @@ Whitelist for `R47`: per-frame `unknownCalls` is **empty** today and must stay e
 | --- | --- | --- | --- |
 | S-01 | finish art: registrations + 18 wrappers + `bakeSprites` | `src/sprites.js` | footprint oracle vs `git show main:src/sprites.js`; ≥6 colours / ≥5 tone bands per key; `metrics().missing === 0` |
 | S-01c | two-tone rim to recover character tones (deep on the away edge, `shade` on the key-lit edge; `opts.rim` already exists) | `src/sprites.js` | character colours back up, live per-tile tone min ≥ 3, boxes unmoved, 44/44 |
-| S-02 | validate the terrain draft, fix what fails | `src/terrain.js` | ≤4 strips covering the 256px view, purity across `invalidate()`, `live ≤ 12` over a full scroll, 64px-seam luminance delta |
+| S-02 | validate the terrain draft, fix what fails | `src/terrain.js` | **≤ 5 strips** covering the 256px view (user-approved 2026-11-18, replacing "≤4": a 256px window over world-aligned 64px strips touches 5 unless the view start is 64-aligned and `cam.x` never is, so the bound is `ceil(VIEW_W/STRIP_W)+1 = 5`), purity across `invalidate()`, `live ≤ 12` over a full scroll, 64px-seam luminance delta |
 | S-03 | finish ink bridge: blit-ink probe (alpha 0.5 / `lighter` / mirrored) + list of checks whose ink will change | `tools/verify.mjs` | 44/44 and byte-identical survive |
 | S-04 | composite layer buffers + DPR `k`-factor sizing (no drawing) | `src/composite.js` | printed buffer table at DPR 1/2/3 and 375×667 |
 | S-05 | lightmap: pre-baked glow blits + ambient `multiply` | `src/composite.js` | zero `createRadialGradient` per frame |
