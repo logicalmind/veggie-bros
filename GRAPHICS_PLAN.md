@@ -137,6 +137,12 @@ A1 appends its final signatures to `GRAPHICS_STATE.md` if it deviates for a real
 - Particles are pure visual: never affect physics, never change how long anything is on screen, never change `render`'s determinism for a given `(state, frame)`.
 - **Camera shake is render-only**: `shakeOffset()` returns an integer px offset applied to the world composite; camera state and `cam.x` are untouched, so `R36/R38/R40/R41/R42/R43/R44/R45` camera assertions stay valid. Shake is zero while a checkpoint floor is being asserted (peak ≤ 3 px, ≤ 0.25 s decay).
 - **Hard rule: `shakeOffset() === 0` whenever the game is state-driven from the harness unless the check asks for it** — a shaken frame must not make two logically identical states draw different streams, or R45-style comparisons become meaningless. Concretely: shake is driven by a pool timer, and `fx.reset()` (called by `newGame()`/`loadLevel()` paths the harness uses) zeroes it.
+- **As landed (`src/fx.js`, 434 lines, DOM-free — no `document`/`window`/`performance`/`Date.now`, verified).** Contract wave 3/4 must honour:
+  - `hit(entity, kindName)` takes the **strings** `'land' | 'stomp' | 'hurt' | 'hop' | 'jump'` (unknown/omitted → `land`); `burst(x, y, n, kind)` takes a `KIND.*` value (unknown → `SPARK`). Easy to mix up — they are different argument types.
+  - `shakeOffset()` returns **one signed integer (±3 px)**, no y channel. Wave 3 decision, so nobody re-derives it: the renderer offsets the world composite by `(dx, dy) = (offset, -offset)` — diagonal shake, no extra state, `R52` unaffected since neither axis touches `cam.x` or the HUD.
+  - Overflow policy is **newest refused** (96 hard cap, oldest never recycled), `MAX_PARTICLES` is exported, and `reset()` zeroes the nine pool arrays + squash slots + shake while `peak/emitted/dropped/shakeFrames` deliberately survive it.
+  - Emitter points are puff **centres** (half the nominal sprite is pre-subtracted); `fx.draw` re-reads `atlas.frameCount` per frame and clamps, so extra baked frames need no fx change. `fx.spark`'s emissive mask is composite's business — fx never calls `atlas.emissive`.
+  - Determinism is asserted by **draw-stream digest**, not array dumps: fx ships no debug hook, and `kill()`/`reset()` zero vacated slots specifically so whole-array dumps stay reproducible if `R50` wants them.
 
 ## 7. Lighting / bloom / fog spec (no shaders, G2)
 
