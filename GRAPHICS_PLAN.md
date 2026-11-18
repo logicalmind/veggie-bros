@@ -145,6 +145,7 @@ A1 appends its final signatures to `GRAPHICS_STATE.md` if it deviates for a real
 - Composite order: lightmap → scene with `'multiply'`; bloom → scene with `'lighter'` at `≤ BLOOM_MAX_ALPHA = 0.35` (mirrors the existing `CLEAR_FLASH_MAX_ALPHA` ceiling convention, `render.js:31-32`).
 - **Bloom is an approximation, and the plan says so**: scene → 64×60 (smoothed) → self-composite `'lighter'` twice → two down/up `drawImage` scale blurs → additive at low alpha. No threshold, so bright-but-large areas (sky) must be excluded by drawing the bloom source from the *emissive* lightmap plus a baked emissive mask, not from the whole scene. If the cheap chain looks muddy, stop and report — do not escalate to `ctx.filter`/`shadowBlur`.
 - Emissive mask: a second channel baked per sprite in `atlas.js` (key `<name>:emissive`) so bloom can be driven without reading pixels back. **No `getImageData` anywhere in the runtime path.**
+- **No readback anywhere, bake included.** The harness stub's `getImageData` returns transparent black (it does not rasterise), so any bake pass that reads pixels back bakes from zeros under the suite and reads as silently flat. Every `pixels.js` shading/outline/AO pass therefore works on the **letter matrix in JS**, never on a raster read-back. Same rule as runtime: `getImageData`/`putImageData` appear nowhere in `src/`.
 
 ## 8. Verification gates (additive harness ids; existing 44 stay)
 
@@ -165,6 +166,20 @@ Also rewritten, never deleted: **`R45`** keeps its two claims (nothing drawn at 
 
 Real-browser gate (manual, run by the integrator with the probe script pattern from §2): 60 s of level 1-1 and 1-3 boss play at DPR 3 / 375×667 emulation, `dt_med ≤ 16.7 ms`, `dt_p95 ≤ 20 ms`, no console errors, and a screenshot of title/1-1/boss saved for the user's eye.
 
+### 8.1 Harness ground truth after W1 (measured — wave 2 and wave 4 code against this)
+
+`tools/verify.mjs` is now 4838 lines with a frame-accounting core (`drawStats()` at `148-163`, `mkCtx` at `200-341`, `step()` wraps `beginFrame`/`endFrame` at `570-587`, and a `VB_DRAWSTATS=1` probe at `4789-4801` that costs nothing by default). Verified: `44/44`, byte-identical across runs, output identical to the pre-change capture, and a reference 1-1 frame reports `fillRect min 1090 / med 1114 / max 1153, drawImage 0` — plan §2 reproduced by the harness itself.
+
+Five things W1 measured that change later slices. These are the integration owner's checklist for W4:
+
+1. **The ink model goes blind the moment art comes from the atlas.** `R16`,`R17`,`R18`,`R19`,`R21`,`R22`,`R23`,`R24` (and `R45`'s canary pixel) read `rec.pixels`, which is fed by `fillRect` ink (`inkRects`) and by `drawImage` ink that needs the **source** canvas's own `_rec.pixels`. Bake canvases are created with `inkRects = false`, so atlas-sourced art inks nothing and those checks go red while the render is correct. **Lever:** enable ink tracking on bake canvases before they are baked (`offscreenCanvases[i]._rec.inkRects = true`), so the atlas carries real pixels and `drawImage` ink works transitively. This is a wider set than §8/G6 originally named — expect to touch these checks' *setup*, never their assertions.
+2. **`R45`'s `firstDiff` parses `rec.blits` raw args**, which are `undefined` for the 3/5-arg `drawImage` forms: it would still compare equal but could no longer say *which* atlas cell was drawn. Its rewrite must read **`rec.drawImages`** (source canvas id, normalised source/dest rects, `op`, `alpha`, `smoothing` are already recorded).
+3. **Bake totals are contaminated by the harness's own scratch buffers**: a clean run reports `bakeCalls=1064, offscreenCanvases=7` because `R16`/`R20` call `document.createElement`. `R48`'s per-level-load bound must demote harness scratch buffers (`_rec.scope = 'scratch'`) or subtract them; per-frame buckets are unaffected.
+4. **`save`/`restore` are counted, not stacked**, so a forgotten `restore` leaks `globalAlpha`/composite inside the harness while a browser would rewind it — an invisible desync between the two. `rec.depth` (per frame) and `rec.stateLog` expose it: **`R47` gains a clause** that a frame ends with `depth === 0` and composite/alpha back at defaults.
+5. **`R19`/`R24` print absolute draw indices** (`rects[6]`); `clearRect`/`create*Gradient`/`createPattern`/`*ImageData` now also consume `rec.seq`, so printed `#1153`-style numbers shift under the new renderer. Their assertions are relative, so they still pass — do not "fix" the printed numbers.
+
+Whitelist for `R47`: per-frame `unknownCalls` is **empty** today and must stay empty. The only names that ever appear are bake-scope `arc`/`beginPath`/`fill` (from `pixels.js` glow/gradient bakes), which land in `bakeUnknownCalls` and are allowed.
+
 ## 9. Phases, file ownership, sequencing
 
 One owner per file per wave. Never two agents in a file.
@@ -172,7 +187,7 @@ One owner per file per wave. Never two agents in a file.
 | Wave | Agent | Files | Depends on |
 | --- | --- | --- | --- |
 | W1 | **A1 bake-core** | `src/pixels.js` (new), `src/atlas.js` (new) | — |
-| W1 | **A2 harness** | `tools/verify.mjs` (stub extension + `R47` skeleton, must stay 44/44 green with the OLD renderer) | — |
+| W1 | **A2 harness** | `tools/verify.mjs` (stub + `drawStats()` instrumentation only, no new ids; stayed 44/44 green against the OLD renderer) | — |
 | W2 | **B1 art** | `src/sprites.js` | A1 |
 | W2 | **B2 terrain** | `src/terrain.js` (new) | A1 |
 | W2 | **B3 fx** | `src/fx.js` (new) | A1 |
