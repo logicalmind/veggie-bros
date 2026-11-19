@@ -5443,6 +5443,146 @@ check('R47', () => {
     + `depth[${row('depth')}], last state set in-frame: ${sets || 'none on any surface'}; set neither inside the frame (compliant): ${m.filter((x) => x.comp === null && x.alpha === null).map((x) => x.name).join('/') || 'none'}`;
 });
 
+// The two §8 gates S-13 registers. `terrain.stats().stripsBaked` is cumulative and survives
+// invalidate() on purpose (src/terrain.js:104, :762, :770), which is what makes "did THIS frame
+// bake anything" observable; `atlas.metrics()` (src/atlas.js:157) reports the shape of the one bake.
+const { shake: fxShake, shakeOffset: fxShakeOffset, reset: fxReset } = await import('../src/fx.js');
+const { stats: terrainStats, invalidate: terrainInvalidate } = await import('../src/terrain.js');
+const { metrics: atlasMetrics, ready: atlasReady } = await import('../src/atlas.js');
+// 32-bit FNV-1a, so a pass line can print WHAT it compared (byte-identically) without printing it.
+const streamDigest = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
+const firstStreamDiff = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) return `#${i}: '${a[i]}' vs '${b[i]}'`; return 'none'; };
+
+check('R48', () => {
+  const STRIPS_1_1 = 45, BUNDLE_CANVASES = 4, SKY_TEMP = 1; // §S-02; DEPTHS(3)+ambient; terrain.js:480 bakeVertical ramp
+  const pop = () => drawStats().totals.offscreenCanvases;
+
+  // (1) A settled frame creates no canvas and bakes no strip. NEVER gated on bakeCalls: bump()
+  // (:100-107) files every op on every `createElement` canvas — all six §7 layers — under `bake`.
+  newGame();
+  steps(120); // the banner must expire: its text runs are not a steady frame (R47's idiom)
+  let idleAt = 0;
+  while (!fxIsIdle() && idleAt < 600) { steps(1); idleAt++; }
+  assert(fxIsIdle(), `the particle pool never went idle within 600 steps (${JSON.stringify(fxMetrics())}) — the frame under test is not a settled one`);
+  const t0 = terrainStats(), pop0 = pop();
+  renderFrames(1);
+  const fs = drawStats(), t1 = terrainStats();
+  assert(t1.stripsBaked === t0.stripsBaked, `clause 1: the settled frame baked ${t1.stripsBaked - t0.stripsBaked} strip(s): cumulative stripsBaked ${t0.stripsBaked} -> ${t1.stripsBaked} — the strip cache does not survive a steady frame`);
+  assert(fs.offscreenCanvases === 0, `clause 1: the settled frame created ${fs.offscreenCanvases} canvas(es) (drawStats().offscreenCanvases) — a per-frame bake allocation`);
+
+  // (2) The atlas is baked exactly once per process: boot baked it (main.js:105), so a repeat of
+  // that exact call must be the atlas.js:46 no-op — same record, same metrics, zero canvases.
+  assert(atlasReady(), 'clause 2: atlas.metrics() reports no bake before the first check ran — main.js:105 bakeSprites(ART_SCALE) never ran at boot');
+  const mA = atlasMetrics(), popA = pop();
+  const bake1 = spritesModule.bakeSprites(), bake2 = spritesModule.bakeSprites();
+  const mB = atlasMetrics(), popB = pop();
+  assert(bake1 === bake2 && mB.frames === mA.frames && mB.w === mA.w && mB.h === mA.h,
+    `clause 2: a repeat bakeSprites() changed the bake record (${bake1 === bake2 ? 'same' : 'DIFFERENT'} object, ${mA.frames} frames ${mA.w}x${mA.h} -> ${mB.frames} frames ${mB.w}x${mB.h}) — the atlas re-baked`);
+  assert(popB === popA, `clause 2: a repeat bakeSprites() allocated ${popB - popA} canvas(es) — the atlas re-baked instead of returning the cached one (atlas.js:46)`);
+
+  // (3) Bake per level load, made cold on purpose (invalidate() keeps the counter) so standalone
+  // and in-suite runs measure the same thing.
+  const levelStrips = Math.ceil(G.level.tiles[0].length * C.TILE / 64); // terrain.js:31 STRIP_W
+  assert(levelStrips === STRIPS_1_1, `clause 3: 1-1 is ${levelStrips} strips, not the ${STRIPS_1_1} plan §S-02 publishes — re-measure this check's bound`);
+  terrainInvalidate();
+  const c0 = terrainStats(), popC0 = pop();
+  newGame();
+  steps(120);
+  const c1 = terrainStats(), stripsCold = c1.stripsBaked - c0.stripsBaked, canvasesCold = pop() - popC0;
+  assert(stripsCold > 0, `clause 3: a cold 1-1 load baked ${stripsCold} strips — nothing baked, so the bound below proves nothing`);
+  assert(stripsCold <= STRIPS_1_1, `clause 3: one cold 1-1 load baked ${stripsCold} strips > ${STRIPS_1_1} (the whole level)`);
+  assert(canvasesCold <= stripsCold + BUNDLE_CANVASES + SKY_TEMP, `clause 3: the cold load allocated ${canvasesCold} canvases for ${stripsCold} strips + ${BUNDLE_CANVASES} bundle surfaces + ${SKY_TEMP} sky-ramp temp (terrain.js:480) — something outside terrain's caches allocated on level load`);
+
+  // (4) A whole level re-entry through the shipped pit kill site -> onDeathResolved() ->
+  // respawnAtCheckpoint() -> loadLevel() (R46's route; G.level is a fresh parse afterwards).
+  assert(G.state === 'PLAYING' && G.lives > 1, `clause 4: state=${G.state}, ${G.lives} lives — no respawn route left to measure`);
+  let pitCol = -1;
+  for (let col = 20; col < G.level.tiles[0].length - 8; col++) {
+    let open = true;
+    for (let row = 2; row < C.ROWS - 1; row++) if (isSolid(G.level.tiles[row][col])) open = false;
+    if (open) { pitCol = col; break; }
+  }
+  assert(pitCol >= 0, `clause 4: ${G.level.label} has no column open from row 2 down — no pit to die in, so no level re-entry`);
+  const lvlBefore = G.level, p = G.player;
+  clearInput();
+  p.x = pitCol * C.TILE + 4; p.y = 2 * C.TILE; p.vx = 0; p.vy = 0;
+  const r0 = terrainStats(), popR0 = pop(), mR0 = atlasMetrics();
+  let camPeak = G.cam ? G.cam.x : 0;
+  const watchCam = () => { if (G.cam && G.cam.x > camPeak) camPeak = G.cam.x; };
+  const fell = until(600, () => { watchCam(); return p.dead ? { y: p.y } : null; });
+  assert(fell, `clause 4: letting the hero go over open column ${pitCol} from y=${2 * C.TILE} never killed him (last y=${p.y.toFixed(0)})`);
+  assert(p.deadPit === true, `clause 4: the death was not the pit kill site (deadPit=${p.deadPit}) — this is the shipped level re-entry route`);
+  const resolved = until(240, () => { watchCam(); return G.player !== p ? { x: G.player.x } : null; });
+  assert(resolved, `clause 4: the death arc never resolved into a respawn (lives=${G.lives}, dyingT=${G.dyingT.toFixed(2)})`);
+  assert(G.level !== lvlBefore, 'clause 4: the respawn kept the SAME level object — loadLevel() never ran, so this was not a level re-entry');
+  const r1 = terrainStats(), popR1 = pop();
+  const stripsReentry = r1.stripsBaked - r0.stripsBaked, canvasesReentry = popR1 - popR0;
+  steps(120); // settle on the respawned level, camera back at the spawn window
+  const settledStats = terrainStats();
+  const stripsSettle = settledStats.stripsBaked - r1.stripsBaked, canvasesSettle = pop() - popR1, liveSettle = settledStats.live;
+  const camSettle = G.cam ? G.cam.x : -1;
+  const mR1 = atlasMetrics();
+  assert(mR1.frames === mR0.frames && mR1.w === mR0.w && mR1.h === mR0.h,
+    `clause 4: the level re-entry changed the atlas (${mR0.frames} frames ${mR0.w}x${mR0.h} -> ${mR1.frames} frames ${mR1.w}x${mR1.h}) — a respawn re-baked it`);
+  assert(stripsReentry <= STRIPS_1_1 && stripsSettle <= STRIPS_1_1,
+    `clause 4: the re-entry baked ${stripsReentry} strips and the settled respawn ${stripsSettle}; the bound is ${STRIPS_1_1} (one whole level) per load`);
+  assert(canvasesReentry <= STRIPS_1_1 + BUNDLE_CANVASES + SKY_TEMP, `clause 4: the pit-death -> respawn re-entry allocated ${canvasesReentry} canvases > ${STRIPS_1_1}+${BUNDLE_CANVASES}+${SKY_TEMP} (one whole level's worth) — the re-entry costs more than re-baking the level once`);
+  return `atlas baked ONCE per process: boot baked it (ready() before any check), a repeat bakeSprites() returned the SAME record with frames ${mA.frames}, ${mA.w}x${mA.h}, missing ${mA.missing} and allocated ${popB - popA} canvas(es); the pit-death -> loadLevel() re-entry left the atlas at frames ${mR1.frames}, ${mR1.w}x${mR1.h} (identical); settled frame (fx idle at +${idleAt}) offscreenCanvases ${fs.offscreenCanvases} and stripsBaked ${t0.stripsBaked} -> ${t1.stripsBaked} (that frame reports bakeCalls ${fs.bakeCalls}: composite-layer ops filed under bake by bump(), NOT a bake); bake per level load with 1-1 = ${levelStrips} strips after terrain.invalidate(): cold load +${stripsCold} strips / +${canvasesCold} canvases (bound ${stripsCold} strips + ${BUNDLE_CANVASES} bundle + ${SKY_TEMP} sky ramp), then pit col ${pitCol} death -> respawn +${stripsReentry} strips / +${canvasesReentry} canvases — that window includes the camera running out to x=${camPeak.toFixed(0)} and the spawn-window strips the ${liveSettle}-strip LRU had dropped, i.e. terrain strips, never the atlas — settled respawn window +${stripsSettle} strips / +${canvasesSettle} canvases at cam.x=${camSettle.toFixed(0)}, live=${liveSettle}/12: once the respawned frame is drawn nothing bakes again`;
+});
+
+check('R52', () => {
+  const RUN = 180;
+  // One frame's world-pass op log, read seq-bounded by zeroing first (bake-scope logs saturate
+  // at BAKE_LOG_CAP 4096, :119-123). This is the ONLY thing a leaked shake can move.
+  const drive = (forced) => {
+    newGame();
+    fxReset();
+    steps(30);
+    const cam = [], pl = [], scene = [];
+    let nonzero = 0, maxOff = 0;
+    input.right = true; input.run = true; // the same held-input pattern in both runs
+    for (let i = 0; i < RUN; i++) {
+      if (forced) fxShake(3);             // the worst amplitude §6 allows
+      const sr = sceneRec();
+      sr.drawImages.length = 0; sr.rects.length = 0; sr.clears.length = 0;
+      renderFrames(1);
+      const off = fxShakeOffset();
+      if (off !== 0) { nonzero++; if (Math.abs(off) > maxOff) maxOff = Math.abs(off); }
+      scene.push(streamDigest(sr.drawImages.map((e) => `${e.src}:${e.sx},${e.sy}->${e.dx},${e.dy} a${e.alpha}`).join('|')));
+      cam.push(G.cam.x.toFixed(3));
+      pl.push(G.player.x.toFixed(3));
+    }
+    clearInput();
+    return { cam, pl, scene, nonzero, maxOff };
+  };
+  const A = drive(false);
+  const B = drive(true);
+  const dig = (a) => streamDigest(a.join(','));
+  // (1) render-only: shake must not reach the gameplay streams
+  assert(A.cam.join(',') === B.cam.join(','), `clause 1: fx.shake(3) every step changed the CAMERA stream — ${firstStreamDiff(A.cam, B.cam)} of ${A.cam.length} samples (fx is render-only, src/render.js:264 must stay the only reader of shakeOffset)`);
+  assert(A.pl.join(',') === B.pl.join(','), `clause 1: fx.shake(3) every step changed the PLAYER-X stream — ${firstStreamDiff(A.pl, B.pl)} of ${A.pl.length} samples`);
+  // (2) non-vacuity: the SAME two runs must differ where shake is allowed to differ
+  assert(B.nonzero > 0, `clause 2: the forced run read shakeOffset() 0 on all ${RUN} frames — the forcing did nothing, so clause 1 proves nothing`);
+  const sceneDiff = A.scene.reduce((n, d, i) => n + (d !== B.scene[i] ? 1 : 0), 0);
+  assert(sceneDiff > 0, `clause 2: the forced run drew ${B.nonzero} shaken frames (peak |shakeOffset| ${B.maxOff}) but its scene op log is identical to the unshaken run on all ${RUN} frames — the shake never reaches the world draw (scene digest ${streamDigest(A.scene.join(''))})`);
+  // (3) the idle harness path: settled 1-1 at spawn, clearInput(), no jump/stomp/hurt driven
+  newGame();
+  steps(120);
+  let idleAt = 0;
+  while (!fxIsIdle() && idleAt < 600) { steps(1); idleAt++; }
+  assert(fxIsIdle(), `clause 3: the pool never went idle at spawn (${JSON.stringify(fxMetrics())}) — the idle path is not measurable`);
+  fxReset();
+  clearInput();
+  let firstBad = -1, badAt = null;
+  for (let i = 0; i < RUN; i++) {
+    renderFrames(1);
+    const off = fxShakeOffset();
+    if (off !== 0 || !fxIsIdle()) { firstBad = i; badAt = `shakeOffset ${off}, fx.metrics ${JSON.stringify(fxMetrics())}`; break; }
+  }
+  assert(firstBad < 0, `clause 3: frame ${firstBad} of the idle run (settled 1-1 at spawn, clearInput(), nothing driven) read ${badAt} — §6: shake is 0 unless a check asks for it`);
+  return `shake is render-only: ${RUN}-sample cam.x stream digest ${dig(A.cam)} and player.x digest ${dig(A.pl)} are byte-identical with fx.shake(3) forced every step (forced run B digests ${dig(B.cam)} / ${dig(B.pl)}); the same pair of runs' scene op logs differ on ${sceneDiff}/${RUN} frames (${B.nonzero} of them shaken, peak |shakeOffset| ${B.maxOff}) so clause 1 is not vacuous; idle path: settled 1-1 at spawn (idle at +${idleAt}), clearInput(), nothing driven -> shakeOffset() 0 and isIdle() true on all ${RUN} frames`;
+});
+
 // MARKER:CHECKS
 
 // ---------------------------------------------------------------------------
