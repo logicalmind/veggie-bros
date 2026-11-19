@@ -5,6 +5,7 @@ import {
   CHECKPOINT_TRIGGER_W,
   GROW_H,
   INVULN_TIME,
+  MAX_FALL,
   PLAYER_BIG_H,
   ROWS,
   SCORE,
@@ -12,6 +13,7 @@ import {
   STEP,
   STOMP_BOUNCE,
   TILE,
+  WALK_MAX,
   VIEW_H,
   VIEW_W,
 } from './config.js';
@@ -23,7 +25,18 @@ import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
 import { CAMERA_FOLLOW_X, makeCamera, updateCamera } from './camera.js';
 import { render } from './render.js';
 import { bakeSprites } from './sprites.js';
-import { init as initFx, update as updateFx } from './fx.js';
+import {
+  burst,
+  dust,
+  hit as fxHit,
+  init as initFx,
+  KIND,
+  landing,
+  poof,
+  reset as resetFx,
+  sparkle,
+  update as updateFx,
+} from './fx.js';
 import {
   consumeJumpPressed,
   consumeMute,
@@ -118,6 +131,14 @@ export const G = {
   muted: false,
 };
 
+// FX bookkeeping is module-local because R51 forbids the visual layer from writing gameplay
+// state; both counters reset in loadLevel() so a respawn cannot fabricate a landing puff on
+// frame 1 or inherit a run-dust parity from the previous life.
+const LAND_MIN_POWER = 0.15; // |vy|/MAX_FALL under this is a tile seam, not a drop
+let wasGround = false;
+let fxTick = 0; // fixed-step tick, so run dust alternates frames without any wall clock
+let fxFresh = true; // the level-load frame has no prior ground state to edge against
+
 function loadLevel(i) {
   G.levelIndex = i;
   G.level = parseLevel(LEVELS[i]);
@@ -135,6 +156,14 @@ function loadLevel(i) {
   // would be handed a stale clock and the fresh level's FIRST frame would resolve the death,
   // skipping the death arc.
   G.dyingT = 0;
+
+  // §6's hard rule: camera shake must read 0 whenever the harness drives the game state-first,
+  // and this is the level-load path that drive enters through (newGame() at verify.mjs:1115 →
+  // startGame() → loadLevel(0)). reset() leaves peak/emitted/dropped/shakeFrames for metrics.
+  resetFx();
+  wasGround = false;
+  fxTick = 0;
+  fxFresh = true;
 }
 
 function startGame() {
@@ -223,6 +252,10 @@ function onGate() {
   G.score += SCORE.gate;
   audio.musicStop();
   audio.sfx('clear');
+  // §6's gate flash, paired with the 'clear' sfx; the arch is drawn from its base up, so the
+  // burst centre sits above it rather than inside the masonry.
+  const gate = G.level.gate;
+  burst(gate.x + GATE_W / 2, gate.y - 24, 10, KIND.SPARK);
   G.player.vx = 0;
   G.player.vy = 0;
 }
@@ -323,11 +356,33 @@ function updateState(dt) {
       return;
     }
 
+    // Impact speed must be read before updatePlayer(): it zeroes vy the step the feet touch,
+    // so after the call every landing looks like a 0-power tap.
+    const vyBefore = p.vy;
     updatePlayer(p, dt, input, G.level, bounds.playerX);
     consumeJumpPressed();
     if (p.jumped) {
       audio.sfx('jump');
       p.jumped = false;
+      fxHit(p, 'jump');
+    }
+
+    // Rising edge of onGround, so a puff is one event per landing and not one per grounded
+    // frame. Deaths are suppressed: p.dead covers the hurt path, and the ROWS*TILE floor covers
+    // the pit path, where tileAt()'s below-map solidity lands the corpse on the step it dies.
+    const power = Math.abs(vyBefore) / MAX_FALL;
+    if (p.onGround && p.y + p.h < ROWS * TILE && !wasGround && !fxFresh && !p.dead && power >= LAND_MIN_POWER) {
+      landing(p.x + p.w / 2, p.y + p.h, power);
+      fxHit(p, 'land');
+    }
+    wasGround = p.onGround;
+    fxFresh = false;
+
+    // fx.js:69 documents RUN_DUST as "dust() is called on alternate run frames"; the parity
+    // lives in a main.js counter so no field is added to G or the player (R51).
+    fxTick += 1;
+    if (p.onGround && Math.abs(p.vx) > WALK_MAX && (fxTick & 1) === 0) {
+      dust(p.x + p.w / 2, p.y + p.h, p.vx < 0 ? -1 : 1);
     }
 
     updateCamera(G.cam, dt, p, G.level.widthPx, bounds.camX);
@@ -380,6 +435,7 @@ function updateState(dt) {
         G.fruitCount++;
         addScore(SCORE.fruit, it.x, it.y);
         audio.sfx('coin');
+        burst(it.x + 4, it.y + 4, 6, KIND.SPARK);
         G.items.splice(i, 1);
       }
     }
@@ -392,6 +448,7 @@ function updateState(dt) {
         if (!p.big && !hasGrowHeadroom(p, G.level)) continue;
         addScore(SCORE.berry, it.x, it.y);
         audio.sfx('power');
+        sparkle(it.x + BERRY_W / 2, it.y + BERRY_H / 2);
         if (!p.big) {
           p.big = true;
           p.h = PLAYER_BIG_H;
@@ -411,18 +468,23 @@ function updateState(dt) {
         G.fruitCount++;
         addScore(SCORE.fruit, tx * 16 + 4, ty * 16);
         audio.sfx('coin');
+        burst(tx * 16 + 12, ty * 16 + 8, 6, KIND.SPARK);
       } else if (ch === 'Q') {
         G.level.tiles[ty][tx] = 'U';
         G.items.push(makePop(tx * 16 + 4, ty * 16 - 16, 'berry'));
         G.items.push(makeBerry(tx * 16 + 1, ty * 16 - 16));
         addScore(SCORE.berry, tx * 16 + 4, ty * 16);
         audio.sfx('power');
+        sparkle(tx * 16 + 12, ty * 16 + 8);
       } else if (ch === 'B') {
         if (p.big) {
           G.level.tiles[ty][tx] = '.';
           G.items.push(...makeShards(tx * 16 + 4, ty * 16 + 6));
           addScore(SCORE.block, tx * 16 + 4, ty * 16);
           audio.sfx('break');
+          // Chips augment makeShards() rather than replacing it: the shards live in G.items as
+          // debris, the burst is the flash of the break.
+          burst(tx * 16 + 8, ty * 16 + 8, 10, KIND.CHIP);
         } else {
           G.level.bumps.push({ x: tx, y: ty, t: 0 });
           audio.sfx('bump');
@@ -440,6 +502,8 @@ function updateState(dt) {
         e.squashT = 0;
         addScore(SCORE.stomp, e.x, e.y);
         audio.sfx('stomp');
+        fxHit(e, 'stomp');
+        burst(e.x + e.w / 2, e.y, 8, KIND.SPARK);
         // separate before bouncing: one bounce step lifts less than the deepest
         // first-frame overlap, so the boxes would still touch next frame with p.vy < 0
         p.y = e.y - p.h;
@@ -447,10 +511,12 @@ function updateState(dt) {
         p.onGround = false;
       } else if (hurtPlayer(p)) {
         audio.sfx('hurt');
+        fxHit(p, 'hurt');
         if (p.dead) {
           G.dyingT = 0;
           audio.musicStop();
           audio.sfx('die');
+          poof(p.x + p.w / 2, p.y + p.h / 2);
         }
       }
     }
@@ -461,6 +527,8 @@ function updateState(dt) {
         boss.hurtT = 1.0;
         addScore(SCORE.bossHit, boss.x, boss.y);
         audio.sfx('bossHit');
+        burst(boss.x + boss.w / 2, boss.y, 8, KIND.SPARK);
+        fxHit(boss, 'hurt');
         // place the player on top of the boss before bouncing, same as the stomps above, and
         // clear onGround to match them: the landing that set it this frame is over, and
         // leaving it set would refresh coyoteT next frame and hand out a free jump off a box
@@ -472,13 +540,16 @@ function updateState(dt) {
           boss.defeated = true;
           boss.defeatT = 0;
           boss.vx = 0;
+          poof(boss.x + boss.w / 2, boss.y + boss.h / 2);
         }
       } else if (hurtPlayer(p)) {
         audio.sfx('hurt');
+        fxHit(p, 'hurt');
         if (p.dead) {
           G.dyingT = 0;
           audio.musicStop();
           audio.sfx('die');
+          poof(p.x + p.w / 2, p.y + p.h / 2);
         }
       }
     }
@@ -540,6 +611,9 @@ function updateState(dt) {
       G.dyingT = 0;
       audio.musicStop();
       audio.sfx('die');
+      // Expected, not worked around: on the pit path the hero is already below the map, so
+      // fx's own cull drops most of this puff.
+      poof(p.x + p.w / 2, p.y + p.h / 2);
     }
 
     G.bannerT = Math.max(0, G.bannerT - dt);
