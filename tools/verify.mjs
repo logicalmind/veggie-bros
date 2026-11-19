@@ -4263,7 +4263,78 @@ check('R38', () => {
   // fails at the `eq` first. Measured: CHECKPOINT_TRIGGER_BOTTOM = 0 → `expected 1, got 0` at the
   // `eq(rowsBottom, …)` line, never here. Non-degeneracy is therefore credited to those pins, which is
   // where it is actually caught, rather than kept as decoration behind them.]
-  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); ${CHECKPOINT_BAND_ROW_OFFSETS.length}-row x post±${CLEARANCE_BAND_COLS}-col clearance band held to CHECKPOINT_TRIGGER_* (${C.CHECKPOINT_TRIGGER_W}x${CHECKPOINT_BAND_ROW_OFFSETS.length * C.TILE}px), swept set audited (${sweptAirRows.size}x${sweptAirCols.size} air, ${sweptGroundCols.size} ground), nothing drawn at a post to compare`;
+  // ---- "NOTHING DRAWN AT A POST" IS A MEASURED CENSUS (S-16a, 2026-11-19) ----
+  // That clause used to be an asserted absence with no witness: this check never rendered, and the
+  // suite's only draw-stream comparison (`R45`) parsed `rec.blits`, whose entries are the RAW
+  // drawImage args — `undefined` for the 3/5-arg forms, so it could no longer say which cell was
+  // drawn where (GRAPHICS_PLAN.md:186). This census reads the recorder's NORMALISED op log,
+  // `sceneRec().drawImages`, where every entry carries the expanded destination rect (`dx,dy,dw,dh`)
+  // that "at a post" is actually about. World draws go to the `scene` layer's recorder, never to the
+  // live `rec` (sceneRec()'s note), and they are in screen space: render.js:277-284 subtracts the
+  // camera by hand and sets no canvas transform, so the band main.js arms on
+  // (`{x: cp.x, y: cp.y - TOP, w: W, h: TOP + BOTTOM}`, main.js:572-577) is compared at `cp.x - camX`.
+  // WHAT COUNTS AS ART: §7's own passes are not posts. `drawWorld`'s ambient/parallax/strips and
+  // `applyLightmap`/`applyBloom` blit VIEW_H-tall surfaces across the whole view, so each of them
+  // intersects EVERY band on every frame — measured 10-11 of the 20-24 ops a census frame records,
+  // every one of them 240px tall. The other 10-13 are the atlas cells (gate, hero, turnips, berries,
+  // fx shards), and that is the class a post sprite would arrive in, so the census counts the blits
+  // whose destination is smaller than the view and asks whether any of them intersects the band.
+  // THE WITNESS IS THE POINT (gotchas 18/20): a 0 sampled from nothing is a blind pass, so there is
+  // a floor per camera AND a floor over the whole check, all four well under the measured 20-24 ops /
+  // 10-13 art per frame and 273 ops / 144 art over the 12-camera run. A recorder truncated after the
+  // render goes red on the FLOOR — it is asserted before any count — and never green on the zero.
+  // THE SENTINELS: the band this check clears is clear AIR, so in normal play nothing ever sits 1px
+  // off a band edge — a shifted blit would land nowhere near the box and the census would be
+  // unfalsifiable from the art side. So every camera parks the hero flush against the band's left
+  // edge (its box ends exactly at cp.x, which is where R40's clamp pins a retreating hero anyway) and
+  // one berry flush against its right edge (it starts exactly at cp.x + W), both within the band's
+  // rows. Touching is not inside, so both still count zero, and their flushness is re-derived from
+  // the census itself: if art padding ever drifts off the edge the sentinel assert goes red instead of
+  // quietly disarming the control. Measured on this tree: `src/atlas.js`'s dest `dx` +1 puts the hero
+  // in the band, -1 puts the berry in it, and both print the map, the camera and the post.
+  const CENSUS_CAMERAS = [C.VIEW_W / 2, C.VIEW_W / 2 - 2 * C.TILE]; // post centred in view; post 32px right of centre
+  const CENSUS_OPS_FLOOR = 12;         // measured 20-24 per frame
+  const CENSUS_ART_FLOOR = 8;          // measured 10-13 art-class blits per frame
+  const CENSUS_TOTAL_FLOOR = 200;      // measured 273 ops over the 12 post cameras
+  const CENSUS_ART_TOTAL_FLOOR = 100;  // measured 144 of them
+  const inBand = (e, b) => e.dx < b.x + b.w && e.dx + e.dw > b.x && e.dy < b.y + b.h && e.dy + e.dh > b.y;
+  const census = { cameras: 0, ops: 0, art: 0, perCamera: [] };
+  const savedWorld = { level: G.level, items: G.items, player: G.player, enemies: G.enemies, camX: G.cam && G.cam.x, state: G.state };
+  for (const def of LEVELS) {
+    const level = parseLevel(def);
+    for (const cp of level.checkpoints) {
+      for (const camOff of CENSUS_CAMERAS) {
+        installLevel(level, { camX: cp.x - camOff });
+        fxReset();
+        const p = G.player;
+        p.x = cp.x - p.w; p.y = cp.y + C.TILE - p.h;
+        G.items.push(makeBerry(cp.x + C.CHECKPOINT_TRIGGER_W, cp.y + C.TILE - 9));
+        G.state = 'PAUSED'; // render.js renders every state but TITLE; update() freezes, so camera and sentinels stay exactly where they were put
+        const sr = sceneRec();
+        sr.drawImages.length = 0;
+        renderFrames(1);
+        const camX = Math.floor(G.cam.x);
+        const band = { x: cp.x - camX, y: cp.y - C.CHECKPOINT_TRIGGER_TOP, w: C.CHECKPOINT_TRIGGER_W, h: C.CHECKPOINT_TRIGGER_TOP + C.CHECKPOINT_TRIGGER_BOTTOM };
+        const ops = sr.drawImages;
+        const art = ops.filter((e) => e.dw < C.VIEW_W && e.dh < C.VIEW_H);
+        const where = `${def.label}, camera x=${camX}, flag at col ${cp.x / C.TILE} (band ${band.x},${band.y} ${band.w}x${band.h}px)`;
+        census.cameras++; census.ops += ops.length; census.art += art.length;
+        census.perCamera.push(`${def.label}@${cp.x / C.TILE}:${camOff}=${ops.length}/${art.length}`);
+        assert(ops.length >= CENSUS_OPS_FLOOR, `R38's post census sampled only ${ops.length} scene draw op(s) for ${where} after a whole render — the recorder is blind (floor ${CENSUS_OPS_FLOOR}), and a zero counted from nothing is not a pass`);
+        assert(art.length >= CENSUS_ART_FLOOR, `R38's post census saw only ${art.length} art-class blit(s) of ${ops.length} for ${where} — nothing of post size was drawn at all, so the band was never compared against anything (floor ${CENSUS_ART_FLOOR})`);
+        const hits = art.filter((e) => inBand(e, band));
+        assert(hits.length === 0, `${hits.length} art blit(s) drew inside a checkpoint trigger band — ${where}: ${hits.map((e) => `${e.srcName} ${e.dw}x${e.dh} at ${e.dx},${e.dy}`).join('; ')} — a flagpost draws NOTHING (render.js:272) and the box main.js arms on must stay art-free`);
+        const rows = art.filter((e) => e.dy < band.y + band.h && e.dy + e.dh > band.y);
+        const left = rows.filter((e) => e.dx + e.dw <= band.x).sort((a, b) => (b.dx + b.dw) - (a.dx + a.dw))[0];
+        const right = rows.filter((e) => e.dx >= band.x + band.w).sort((a, b) => a.dx - b.dx)[0];
+        assert(left && right && band.x - (left.dx + left.dw) === 0 && right.dx - (band.x + band.w) === 0, `the sentinels are no longer flush to the band at ${where}: nearest art ends ${left ? band.x - (left.dx + left.dw) : 'no-art'}px left of it and nearest art starts ${right ? right.dx - (band.x + band.w) : 'no-art'}px right of it, expected 0 and 0 — the hero and berry parked against this band are what prove the census can SEE it, so if the art's own padding moved, re-derive the park above rather than widening this assert`);
+      }
+    }
+  }
+  assert(census.ops >= CENSUS_TOTAL_FLOOR && census.art >= CENSUS_ART_TOTAL_FLOOR, `R38's post census sampled ${census.ops} scene blits (${census.art} art) over ${census.cameras} post cameras, below the ${CENSUS_TOTAL_FLOOR}/${CENSUS_ART_TOTAL_FLOOR} floor — the census has no witness (${census.perCamera.join(', ')})`);
+  Object.assign(G, { level: savedWorld.level, items: savedWorld.items, player: savedWorld.player, enemies: savedWorld.enemies, cam: { x: savedWorld.camX }, state: savedWorld.state });
+
+  return `3 maps x 2 grounded flags (${LEVELS.map((d) => parseLevel(d).checkpoints.map((c) => c.x / C.TILE).join('/')).join(', ')}); ${CHECKPOINT_BAND_ROW_OFFSETS.length}-row x post±${CLEARANCE_BAND_COLS}-col clearance band held to CHECKPOINT_TRIGGER_* (${C.CHECKPOINT_TRIGGER_W}x${CHECKPOINT_BAND_ROW_OFFSETS.length * C.TILE}px), swept set audited (${sweptAirRows.size}x${sweptAirCols.size} air, ${sweptGroundCols.size} ground), drawImages census over ${census.cameras} post cameras sampled ${census.ops} scene blits (${census.art} art) and drew 0 of them in a post trigger band, sentinels flush on both edges`;
 });
 
 // ---------------------------------------------------------------------------
