@@ -1939,6 +1939,12 @@ check('R12', () => {
     ['-webkit-tap-highlight-color: transparent', /-webkit-tap-highlight-color\s*:\s*transparent/],
     ['viewport-fit=cover', /viewport-fit\s*=\s*cover/],
     ['padding-bottom: env(safe-area-inset-bottom)', /padding[^;]*env\(\s*safe-area-inset-bottom/],
+    // S-11 shipped these four metas; a mobile shell without them re-tints the
+    // notch and loses the status-bar style, so they are gated like the CSS.
+    ['theme-color meta', /<meta[^>]+name\s*=\s*["']theme-color["']/i],
+    ['color-scheme meta', /<meta[^>]+name\s*=\s*["']color-scheme["']/i],
+    ['apple-mobile-web-app-capable meta', /<meta[^>]+name\s*=\s*["']apple-mobile-web-app-capable["']/i],
+    ['apple-mobile-web-app-status-bar-style meta', /<meta[^>]+name\s*=\s*["']apple-mobile-web-app-status-bar-style["']/i],
   ];
   const missing = rules.filter(([, re]) => !re.test(html)).map(([name]) => `css '${name}'`);
   if (listenerCount('document', 'contextmenu') === 0) missing.push('a document contextmenu listener');
@@ -5343,6 +5349,98 @@ check('R46', () => {
     delete globalThis.AudioContext;
     clearInput();
   }
+});
+
+// ---------------------------------------------------------------------------
+// R47 — §8 draw budget: ONE settled, fx-idle 1-1 frame, counted PER SURFACE.
+//
+// Since S-09b2 the live `#game` recorder draws exactly ONE op per frame (the
+// `upscale -> canvas` blit), so a budget that reads `rec` alone passes forever:
+// every world and HUD pixel is issued into a §7 layer first. This check zeroes
+// the op log of all seven surfaces before the frame (the `R18` pattern at
+// :2180 — a `bake`-scope log is never reset and stops appending at
+// BAKE_LOG_CAP 4096, so a length-delta over one freezes at 0 within a few
+// frames), renders exactly one frame, and counts the logs it just emptied,
+// then PRINTS every count so a frozen 0 cannot hide in a PASS line.
+// The frame is a settled one: banner expired, no input, `fx.isIdle()`. A live
+// particle pool adds ONE `scene` drawImage per live particle (S-10 measured
+// 22 -> 32 for 10 sparks), so the idle state is what makes 240 a real ceiling.
+//
+// And the "state back at defaults" half reads the LAST SET per surface out of
+// `stateLog` (`log()` pushes [key, value, seq, used], :693), never
+// `compositeLayers().hud.ctx.globalAlpha`, which answers 3.26e-16 on a healthy
+// renderer once the banner has faded while the glyph ink it records carries 1.
+// ---------------------------------------------------------------------------
+const { isIdle: fxIsIdle, metrics: fxMetrics } = await import('../src/fx.js');
+
+// The last value SET for `key` in the frame window (the log was emptied first),
+// or null when the surface set no such property in the frame — no set is
+// compliant, and inventing a default read here is exactly the Trap 2 mistake.
+function lastStateSet(r, key) {
+  for (let i = r.stateLog.length - 1; i >= 0; i--) {
+    const e = r.stateLog[i];
+    if (e.length === 4 && e[0] === key) return e[1];
+  }
+  return null;
+}
+
+check('R47', () => {
+  const WORLD_FILL = 60, WORLD_BLIT = 240, TOTAL_FILL = 450;
+  newGame();
+  steps(120); // the level banner has to expire: its text runs are not a steady frame
+  let idleAt = 0;
+  while (!fxIsIdle() && idleAt < 600) { steps(1); idleAt++; }
+  assert(fxIsIdle(), `the particle pool never went idle within 600 steps (${JSON.stringify(fxMetrics())}) — the frame under test is not a settled one`);
+  const L = compositeLayers();
+  const surfaces = [['live', rec], ...['scene', 'hud', 'upscale', 'lightmap', 'bloom', 'bloomHalf'].map((n) => [n, L[n] && L[n].c && L[n].c._rec])];
+  for (const [name, r] of surfaces) {
+    if (!r) throw new Fail(`layer '${name}' has no op recorder — the §8 per-surface budget cannot be measured`);
+    r.rects.length = 0; r.drawImages.length = 0; r.clears.length = 0;
+    r.gradients.length = 0; r.patterns.length = 0; r.imageOps.length = 0; r.stateLog.length = 0;
+  }
+  const frameFill0 = drawStats().totals.fillRect;
+  renderFrames(1);
+  const s = drawStats();
+  // The cross-check printed on every line: `frameFill` is every fillRect the frame issued on ANY
+  // canvas, so the per-surface sum can never quietly read 0 while ink lands on an eighth surface.
+  const frameFill = s.totals.fillRect - frameFill0;
+  const m = surfaces.map(([name, r]) => ({
+    name,
+    fill: r.rects.length, blit: r.drawImages.length, clear: r.clears.length, depth: r.depth,
+    expensive: r.gradients.length + r.patterns.length + r.imageOps.length,
+    effectSets: r.stateLog.filter((e) => e.length === 4 && e[3] === 1 && (e[0] === 'filter' || e[0].startsWith('shadow'))).length,
+    comp: lastStateSet(r, 'globalCompositeOperation'),
+    alpha: lastStateSet(r, 'globalAlpha'),
+  }));
+  const at = (n) => m.find((x) => x.name === n);
+  const sc = at('scene'), hud = at('hud'), up = at('upscale'), live = at('live');
+  const totalFill = m.reduce((t, x) => t + x.fill, 0);
+  const bad = [];
+  if (sc.fill > WORLD_FILL) bad.push(`world pass: scene fillRect ${sc.fill} > ${WORLD_FILL}`);
+  if (sc.blit > WORLD_BLIT) bad.push(`world pass: scene drawImage ${sc.blit} > ${WORLD_BLIT} (pool ${JSON.stringify(fxMetrics())}; a live pool adds one per live particle)`);
+  if (totalFill > TOTAL_FILL) bad.push(`total fillRect ${totalFill} > ${TOTAL_FILL} summed over ${m.map((x) => `${x.name} ${x.fill}`).join(', ')} (the frame issued ${frameFill} fillRect anywhere)`);
+  if (up.blit !== 2) bad.push(`composite: upscale drawImage ${up.blit} !== 2 (scene -> upscale, hud -> upscale)`);
+  if (live.blit !== 1) bad.push(`composite: live drawImage ${live.blit} !== 1 (upscale -> canvas)`);
+  if (sc.clear !== 1) bad.push(`composite: scene clearRect ${sc.clear} !== 1`);
+  if (hud.clear !== 1) bad.push(`composite: hud clearRect ${hud.clear} !== 1`);
+  for (const k of ['gradient', 'pattern', 'filter', 'shadow', 'getImageData', 'putImageData']) if (s[k] !== 0) bad.push(`per-frame ${k} ${s[k]} !== 0 (drawStats bucket)`);
+  for (const x of m) {
+    if (x.expensive) bad.push(`${x.name}: ${x.expensive} gradient/pattern/getImageData/putImageData op(s) inside the frame`);
+    if (x.effectSets) bad.push(`${x.name}: ${x.effectSets} filter/shadow set(s) inside the frame`);
+    if (x.depth !== 0) bad.push(`${x.name}: save/restore imbalance, depth ${x.depth} at end of frame`);
+    if (x.comp !== null && x.comp !== 'source-over') bad.push(`${x.name}: last globalCompositeOperation set inside the frame is '${x.comp}', not 'source-over'`);
+    if (x.alpha !== null && x.alpha !== 1) bad.push(`${x.name}: last globalAlpha set inside the frame is ${x.alpha}, not 1`);
+  }
+  if (s.unknownCalls.length) bad.push(`per-frame unknownCalls ${JSON.stringify(s.unknownCalls)} (bake-scope whitelist stays separate: ${JSON.stringify(s.totals.bakeUnknownCalls)})`);
+  assert(bad.length === 0, bad[0]);
+  const row = (k) => m.map((x) => `${x.name} ${x[k]}`).join(' ');
+  const sets = m.filter((x) => x.comp !== null || x.alpha !== null)
+    .map((x) => `${x.name} ${x.comp === null ? 'no composite set' : `'${x.comp}'`}/${x.alpha === null ? 'no alpha set' : `alpha ${x.alpha}`}`).join(', ');
+  return `settled fx-idle 1-1 frame (idle at +${idleAt} steps, pool ${JSON.stringify(fxMetrics())}): fillRect[${row('fill')}] total ${totalFill} <= ${TOTAL_FILL} (frame totals +${frameFill}), `
+    + `scene ${sc.fill} <= ${WORLD_FILL} / ${sc.blit} <= ${WORLD_BLIT} blit (a live pool adds ONE scene drawImage per live particle, 22 -> 32 for 10 sparks in S-10), `
+    + `drawImage[${row('blit')}] clearRect[${row('clear')}], `
+    + `per-frame gradient ${s.gradient} pattern ${s.pattern} filter ${s.filter} shadow ${s.shadow} getImageData ${s.getImageData} putImageData ${s.putImageData} unknown ${JSON.stringify(s.unknownCalls)} (bake-scope ${JSON.stringify(s.totals.bakeUnknownCalls)}), `
+    + `depth[${row('depth')}], last state set in-frame: ${sets || 'none on any surface'}; set neither inside the frame (compliant): ${m.filter((x) => x.comp === null && x.alpha === null).map((x) => x.name).join('/') || 'none'}`;
 });
 
 // MARKER:CHECKS
