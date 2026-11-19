@@ -182,10 +182,65 @@ const isDefaultState = (k, v) => (k === 'filter'
 // Engine/harness plumbing, not renderer API — never a stub gap worth reporting.
 const NOT_AN_API = new Set(['constructor', 'toString', 'valueOf', 'then', 'toJSON', 'inspect', '_rec']);
 
-const mkGradient = () => {
+// A modelled `create*Gradient`: `kind` and `axis` are the create call's name and numbers, kept
+// so a gradient `fillStyle` resolves per pixel (`gradientInk`) instead of reaching
+// `String(t.fillStyle)` as the literal `[object Object]` — the ambient ramp's every px (D2).
+const mkGradient = (kind, axis) => {
   const stops = [];
-  return { _vbGradient: true, stops, addColorStop: (o, c) => stops.push([Number(o), String(c)]) };
+  return {
+    _vbGradient: true,
+    kind: String(kind || ''),
+    axis: (axis || []).map(Number),
+    stops,
+    _vbCache: new Map(),
+    addColorStop: (o, c) => stops.push([Number(o), String(c)]),
+  };
 };
+// The colour a gradient paints into pixel (px,py), or null when the model declines it. `t` is
+// the create-call axis parameter AT THE PIXEL CENTRE (the point `inkBlit`'s scan samples), then
+// linear interpolation in RGB+A between the bracketing stops — `t` clamped to [0,1] and outside
+// the first/last stop — canonicalised through `inkCss` so a ramp cell is byte-comparable with the
+// flat fills composited over it. Stops are scanned in `addColorStop` order, so the pick is
+// deterministic. `createConicGradient` is NOT modelled: `src/` never creates one (`grep
+// createConicGradient src/` -> no hits), so it keeps the token it inks today rather than a
+// made-up angle. Cached per gradient by the exact `t`, so a vertical ramp costs H evaluations per
+// 512x480 bake, not W*H.
+const GRAD_T_CAP = 1 << 12;
+function gradientInk(g, px, py) {
+  const st = g.stops;
+  if (!(st.length > 0)) return null;
+  const a = g.axis;
+  const x = px + 0.5;
+  const y = py + 0.5;
+  let t;
+  if (g.kind === 'createLinearGradient') {
+    const dx = a[2] - a[0];
+    const dy = a[3] - a[1];
+    const l2 = dx * dx + dy * dy;
+    t = l2 > 0 ? ((x - a[0]) * dx + (y - a[1]) * dy) / l2 : 0; // zero-length axis paints its first stop
+  } else if (g.kind === 'createRadialGradient') {
+    const dr = a[5] - a[2]; // `src/` bakes no radial gradient (`src/pixels.js:432` forbids one in a frame), so this branch is the shape's definition, not a shipped path
+    t = dr !== 0 ? (Math.hypot(x - a[3], y - a[4]) - a[2]) / dr : 0;
+  } else return null; // conic, or a gradient built outside the stub: not modelled
+  if (!Number.isFinite(t)) t = t < 0 ? 0 : 1; // +/-Infinity clamp like NaN-free overflow
+  t = Math.max(0, Math.min(1, t));
+  const hit = g._vbCache.get(t);
+  if (hit !== undefined) return hit;
+  let lo = st[0];
+  let hi = st[st.length - 1];
+  for (let i = 0; i < st.length; i++) {
+    if (st[i][0] >= t) { hi = st[i]; lo = i ? st[i - 1] : st[0]; break; }
+    lo = st[i];
+  }
+  const A = parseInk(lo[1]);
+  const B = parseInk(hi[1]);
+  if (A === null || B === null) return null; // an unparseable stop is not a colour we may invent
+  const span = hi[0] - lo[0];
+  const f = span > 0 ? (t - lo[0]) / span : 0;
+  const css = inkCss({ r: A.r + (B.r - A.r) * f, g: A.g + (B.g - A.g) * f, b: A.b + (B.b - A.b) * f, a: A.a + (B.a - A.a) * f });
+  if (g._vbCache.size < GRAD_T_CAP) g._vbCache.set(t, css); // a diagonal axis: stop growing, keep answering
+  return css;
+}
 const srcId = (img) => (img && typeof img._canvasId === 'number' ? img._canvasId : null);
 const srcName = (img) => (img && img._canvasName)
   || (img ? (img.constructor ? img.constructor.name : typeof img) : String(img));
@@ -484,6 +539,49 @@ function inkBlit(rec, src, sx, sy, sw, sh, dx, dy, dw, dh, seq, alpha, op) {
     for (const p of block || []) rec.ink(p[0], p[1], p[2], seq, alpha, op);
     return;
   }
+  // EXACT INTEGER DOWNSCALE (D1) — the source walk's mirror for a `1/n` mapping, which the
+  // destination scan cannot serve: its sample `Math.floor(sx + (u + 0.5) * (sw / W))` is
+  // `sx + 2u + 1` for `ART_SCALE = 2`, an ODD source coordinate, while a strip bake keys ink at
+  // each block's EVEN corner (`src/terrain.js:336`: `makeLayer(STRIP_W*2, h*2)` + `scale(2,2)`) —
+  // measured 2048/2048 even lookups against 0/2048 odd in the ground band (DIAG5), so the
+  // `128x480 -> 64x240` strip blits inked NOTHING into `scene`, wash and parallax included.
+  // Reading the whole n x n block cannot invent or move a colour the browser would show:
+  // `ART_SCALE` art is uniform inside a block — which is exactly why the bake keys one cell per
+  // block. Deterministic pick: the keyed cell nearest the block centre, ties in reading order
+  // (n = 2 -> top-left, the keyed corner), skipping cells the source never inked. Guards are the
+  // source walk's plus integral destination offsets, so the written cells are precisely the
+  // scan's `floor(dx + u)` set; non-integer scales keep that scan untouched and `same` defers
+  // here exactly as it does in both other walks.
+  const nx = sw / W;
+  const ny = sh / H;
+  if (!m.b && !m.c && m.a === 1 && m.d === 1 && !m.e && !m.f
+    && Number.isInteger(sx) && Number.isInteger(sy) && Number.isInteger(sw) && Number.isInteger(sh)
+    && Number.isInteger(dx) && Number.isInteger(dy)
+    && sw % W === 0 && sh % H === 0 && nx >= 2 && ny >= 2) {
+    const cx = (nx - 1) / 2;
+    const cy = (ny - 1) / 2;
+    const pick = [];
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) pick.push([i, j, (i - cx) * (i - cx) + (j - cy) * (j - cy)]);
+    }
+    pick.sort((p, q) => (p[2] - q[2]) || (p[1] - q[1]) || (p[0] - q[0]));
+    const block = same ? [] : null;
+    for (let v = 0; v < H; v++) {
+      const by = sy + v * ny;
+      for (let u = 0; u < W; u++) {
+        const bx = sx + u * nx;
+        for (const [i, j] of pick) {
+          const color = src.pixels.get((bx + i) + ',' + (by + j));
+          if (color === undefined) continue;
+          if (same) block.push([dx + u, dy + v, color]);
+          else rec.ink(dx + u, dy + v, color, seq, alpha, op);
+          break;
+        }
+      }
+    }
+    for (const p of block || []) rec.ink(p[0], p[1], p[2], seq, alpha, op);
+    return;
+  }
   const pending = same ? [] : null;
   for (let v = 0; v < H; v++) {
     const syv = Math.floor(sy + (v + 0.5) * (sh / H));
@@ -519,8 +617,14 @@ const mkCtx = (rec, owner) => new Proxy({}, {
       log(rec, rec.rects, [x, y, w, h, String(t.fillStyle), Number(t.globalAlpha), seq]);
       const color = String(t.fillStyle);
       if (inkModels(rec)) {
+        // D2: a gradient `fillStyle` resolves per pixel from its recorded stops (`gradientInk`);
+        // anything else inks the token it inked before. `rec.rects` above still logs
+        // `String(t.fillStyle)` — R45 diffs that array character for character; only INK moves.
+        const grad = t.fillStyle && t.fillStyle._vbGradient ? t.fillStyle : null;
         for (let px = Math.floor(x); px < Math.ceil(x + w); px++) {
-          for (let py = Math.floor(y); py < Math.ceil(y + h); py++) rec.ink(px, py, color, seq);
+          for (let py = Math.floor(y); py < Math.ceil(y + h); py++) {
+            rec.ink(px, py, grad ? gradientInk(grad, px, py) || color : color, seq);
+          }
         }
       }
     };
@@ -661,7 +765,7 @@ const mkCtx = (rec, owner) => new Proxy({}, {
       return (...a) => {
         bump(rec, 'gradient');
         if (rec) log(rec, rec.gradients, [k, ...a, rec.seq++]);
-        return mkGradient();
+        return mkGradient(k, a); // the axis travels with the object so the ink loop can resolve it
       };
     }
     if (k === 'createPattern') return (src, repetition) => {
@@ -5643,27 +5747,22 @@ check('R52', () => {
 // screenshot cross-check. `lumsIn`'s shipped semantics (opaque px only, rounded Rec.709
 // luminance) are what a tone band is, so dither and soft AO cannot fake a band.
 //
-// MEASURED RED ON THIS TREE (S-14, HEAD 35770bb) — a FINDING, not a threshold problem: all
-// three density clauses are red on the MODELLED ink of this branch, and the reason is the ink
-// model's coverage, not the art. Over the scroll below (9 inked frames at 9 distinct cam.x
-// positions, sampled cam.x 0.0->328.7 of a scroll that reached 361.6, 309 LEVEL-solid on-screen
-// tile samples): unique colours/frame min 75, med 134, max 155; tone bands med 0 / min 0 /
-// max 15 (n 309); colours/tile med 1 / min 1 — i.e. clause 1 misses 90 and clauses 2 and 3
-// measure a frame with essentially no opaque art ink. Why: the ambient wash
-// (`src/render.js:79` blitting `ambientFor()`, whose ramp is baked through
-// `ctx.createLinearGradient` — `src/pixels.js:459`) writes the harness's one unparseable colour
-// token `[object Object]` (`parseInk` answers null, header :265-266) over 46-49k of the ~52k
-// inked px of EVERY frame (the wash covers the whole 256x240 logical frame), and a traced ground
-// pixel — (64,208), row 13 'X' — receives EXACTLY ONE
-// ink write in a whole frame: that wash. The terrain-strip and atlas blits do reach `inkBlit`
-// with parseable ink (3,275 to 66,208 px per source, `unmodelledOps` empty), yet none of it
-// lands on the sampled tiles, so the frame holds ~2,146 opaque px and 134 parseable colours
-// where the browser readback counts 800-801. Both read paths agree: `renderFrames(1,
-// { ink: true })` and R45's own `inkedRender(() => renderScene(G))` answer the same census, and
-// `hud` (18 colours, all opaque, 510 px) shows the model itself is not broken — it is blind
-// where baked art arrives as sparse blit ink. Every existing scene-ink check compares two
-// EQUALLY blind renders, so only a count can see this; R49 is the first count. The numbers are
-// printed on every line below so the red cannot be mistaken for a frozen probe.
+// RESOLVED IN S-14b (HEAD be836d9) — that red was the HARNESS, not the art, and NO THRESHOLD
+// MOVED. D1: the destination scan sampled the source at `(u + 0.5) * (sw / W)`, ODD for the
+// strips' exact 1/2 downscale (`0,0,128,480 -> 64,240`; same shape for wash and parallax) while
+// an `ART_SCALE = 2` bake keys one cell per EVEN corner, so not one strip px ever inked `scene`.
+// D2: a gradient `fillStyle` inked the literal `[object Object]`, so the ambient ramp
+// (`src/pixels.js:459` via `src/terrain.js:480`, blitted `0,0,512,480 -> 0,0,256,240`) was the
+// harness's ONE unparseable token on 46,782 of every frame's 61,440 world px — it only stayed
+// because D1 left nothing else to land there. Same 9 frames / 309 LEVEL-decided samples, pre-fix
+// -> shipped: unique colours/frame min 75 -> 330 (med 134 -> 576; the branch's browser readback
+// says 800-801), tone bands med 0 / min 0 -> med 16 / min 9, colours/tile med 1 -> 16 (min 1 ->
+// 9), opaque px 1724-2503 -> 52835-54260, unparseable px 46446-49415 -> 0-0. The controls in
+// /tmp/vb-s14b-result.json GATE the clauses: 2 and 3 are D1's — blank the four 128x480 strip
+// blits with D2 in and the per-tile census collapses to bands med 10 / min 2 (gate 3) and
+// colours/tile med 5 (gate 6), so the ramp alone CANNOT carry art density; clause 1's margin is
+// D2's — D1 alone clears 90 only at min 93, over a frame still holding 37,418-39,190 token px.
+// Both fixes ship; neither carries art density on its own.
 // ---------------------------------------------------------------------------
 check('R49', () => {
   const MIN_UNIQUE = 90, BAND_MED = 5, BAND_MIN = 3, COLOUR_MED = 6; // plan §8, unchanged
