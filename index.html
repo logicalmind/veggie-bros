@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Veggie Bros.</title>
   <style>
-    html,body{margin:0;height:100%;background:#14141f;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    html,body{margin:0;height:100%;background:#14141f;color-scheme:dark;display:flex;align-items:center;justify-content:center;overflow:hidden}
     canvas{image-rendering:pixelated;image-rendering:crisp-edges}
     /* Never let the browser claim the drag (a pointercancel mid-jump), zoom on a
        double-tap, select a button glyph or offer the long-press menu/callout. */
@@ -17,6 +17,16 @@
     #touch button{width:56px;height:56px;border-radius:50%;border:2px solid #555;background:rgba(255,255,255,.15);color:#fff;font-size:20px}
     #touch .wide{width:auto;padding:0 16px;border-radius:28px;font-size:13px}
   </style>
+  <!-- The browser chrome and the first paint become the letterbox colour (the html rule above),
+       so there is no white boot flash and no light-mode band above the canvas. -->
+  <meta name="theme-color" content="#14141f">
+  <!-- Dark UA appearance: stops Safari/Chrome inverting the touch-bar buttons and painting the
+       canvas backdrop white. The meta covers the boot paint, the html rule covers the document. -->
+  <meta name="color-scheme" content="dark">
+  <!-- Added to the home screen — the standalone layout S-17 measures — the page must run
+       full-screen, not as a Safari-chrome tab; black-translucent draws under the status bar. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
   <canvas id="game" width="256" height="240"></canvas>

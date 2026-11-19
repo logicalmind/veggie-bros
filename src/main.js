@@ -5,6 +5,7 @@ import {
   CHECKPOINT_TRIGGER_W,
   GROW_H,
   INVULN_TIME,
+  LAND_MIN_POWER,
   MAX_FALL,
   PLAYER_BIG_H,
   ROWS,
@@ -134,7 +135,6 @@ export const G = {
 // FX bookkeeping is module-local because R51 forbids the visual layer from writing gameplay
 // state; both counters reset in loadLevel() so a respawn cannot fabricate a landing puff on
 // frame 1 or inherit a run-dust parity from the previous life.
-const LAND_MIN_POWER = 0.15; // |vy|/MAX_FALL under this is a tile seam, not a drop
 let wasGround = false;
 let fxTick = 0; // fixed-step tick, so run dust alternates frames without any wall clock
 let fxFresh = true; // the level-load frame has no prior ground state to edge against

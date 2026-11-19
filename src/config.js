@@ -60,6 +60,9 @@ export const ART_SCALE = 2; // sprites and terrain bake at 2 logical px per art 
 export const FX_SCALE = 0.5; // lightmap/fog/bloom run at 128x120: lighting is low-frequency,
 // so a quarter of the scene costs 1/16 the fill and still reads smooth when composited up.
 export const ART_MAX_PX = 2048; // atlas width ceiling; wider atlases fall off a GPU texture page
+// The one FX threshold main.js needs but no gameplay module owns: below this landing power the
+// touchdown is a tile seam, not a drop, so a flat walking pass must not spawn a dust puff.
+export const LAND_MIN_POWER = 0.15; // main.js compares |vy|/MAX_FALL against it
 
 export const PALETTE = {
   sky: "#9be3f5",
