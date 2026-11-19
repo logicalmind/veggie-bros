@@ -16,7 +16,7 @@ Game and character names (all original): game **"Veggie Bros."**; hero **Poppy**
 
 ## Architecture
 
-See `architecture.md` at the repo root — extracted verbatim from this plan.
+See `architecture.md` at the repo root — extracted from this plan at build time, maintained since. It describes the renderer that ships (module map, two-pass composite pipeline) and its **Deviations** section is the authority wherever this plan and the code disagree.
 
 ---
 
@@ -26,7 +26,7 @@ Bottom-up so every step is standalone-valid. After **each** src file write, run:
 
 ### Step 1 — `architecture.md`
 
-Done — `architecture.md` is at the repo root (verbatim copy; source of truth for the architecture).
+Done — `architecture.md` is at the repo root (maintained since the build — see its **Deviations** section).
 
 ### Step 2 — `index.html` + `src/config.js`
 
@@ -83,13 +83,15 @@ Done — README.md merged (run instructions, controls table cross-checked agains
 - `src/audio.js` — lazy `init()` on first Enter (autoplay policy); every call must no-op safely when not initialized.
 
 ## Verification
-**Status (2026-11-15, paused by user decision):** item 1 PASS; item 2 PASS; item 3 PARTIAL — 9 of 12 checkpoints PASS (CP 1–5, 7, 8-observed, 10, 12 + GAME OVER), CP6 + CP9 deferred with handoff in `RESUME.md` "Restart prompt"; item 4 done (servers killed, lsof-verified). 1-3 map: sealed boss arena fixed by user-approved 2-tile door, commit `8adc78e0`.
+The two standing gates today are the harness suite and the per-check isolation sweep, both listed in `GRAPHICS_STATE.md` → "Tree state".
+
+**Status (2026-11-19):** item 1 PASS — the loop now also checks `tools/verify.mjs`. Item 2 PASS — the shipped maps still satisfy every invariant, re-measured at this HEAD: 15 rows per level, widths 180 / 200 / 160, `playerSpawn` set, one `gate` in 1-1 and 1-2 and one `boss` in 1-3, rightmost column all `S`, two `K` flagposts per level. Item 3: the manual 12-checkpoint browser pass was overtaken by two things — the deterministic harness `node tools/verify.mjs` is **`50/50 pass, 0 fail`** (`SMOKE` + `R01`–`R33` + `R36`–`R38` + `R40`–`R52`; `R34`/`R35`/`R39` are reserved ids that were never registered), and the S-17 browser gate re-drove 1-1 by legitimate play and drove 1-3 to boss defeat at dpr 3 (`GRAPHICS_STATE.md` → "S-17 RESULT"). **CP6 stays the one checkpoint never driven end-to-end** — not by hand, not by the bot, and no check covers it (`grep -in pebble tools/verify.mjs` → no hits). CP9 (the 1-3 boss fight) has since been driven to defeat, but only under S-17's scripted driver, so that half of the pass is labelled fallback B rather than legitimate play. The original deferred-checkpoint handoff is still in `RESUME.md` → "Restart prompt". Item 4 n/a: the static server is `./serve-local.sh 8010`, stopped with Ctrl-C. 1-3 map: sealed boss arena fixed by user-approved 2-tile door, commit `8adc78e0`.
 
 All from repo root `/Users/jasonjordan/repos/veggie_bros`.
 
-1. **Syntax** (after each step, and once at the end): `for f in src/*.js; do node --input-type=module --check < "$f" || echo "FAIL $f"; done` → no FAIL lines.
-2. **Level smoke test** (throwaway script in `/tmp`, NOT the repo): a Node ESM script importing `src/levels.js` + `src/level.js` (both DOM-free) that parses all 3 levels and asserts: `tiles.length === 15`; all rows same length (180/200/160); `playerSpawn` set; exactly one of `gate`/`boss`; rightmost column all non-`'.'`; ground reachability — for the lowest standing surface per column, consecutive rises ≤ 4 tiles and no ground gap wider than 4 columns. Expected: all assertions pass, silent. (The maps as written satisfy these — they were validated during planning; if one fails, fix the map in `levels.js` to satisfy the invariant, do not loosen the checker.)
-3. **Browser end-to-end**: `python3 -m http.server 8010` (background; **NEVER port 8000 — that is the splash inference engine's port**) → open `http://localhost:8010` in a browser tab.
+1. **Syntax** (after each step, and once at the end): `for f in src/*.js tools/verify.mjs; do node --input-type=module --check < "$f" || echo "FAIL $f"; done` → no FAIL lines.
+2. **Level smoke test** (this checker now ships in the repo as the suite's `SMOKE` id in `tools/verify.mjs` — "shipped map data hygiene + standing-surface gap/rise metric" — having begun as a throwaway `/tmp` script): a Node ESM script importing `src/levels.js` + `src/level.js` (both DOM-free) that parses all 3 levels and asserts: `tiles.length === 15`; all rows same length (180/200/160); `playerSpawn` set; exactly one of `gate`/`boss`; rightmost column all non-`'.'`; ground reachability — for the lowest standing surface per column, consecutive rises ≤ 4 tiles and no ground gap wider than 4 columns. Expected: all assertions pass, silent. (The maps as written satisfy these — they were validated during planning; if one fails, fix the map in `levels.js` to satisfy the invariant, do not loosen the checker.) Run it with `node tools/verify.mjs SMOKE` — green at this HEAD (`1/1 pass, 0 fail`).
+3. **Browser end-to-end**: `./serve-local.sh 8010` (background; binds `127.0.0.1`, refuses port 8000 by name, and refuses to start if the port is already taken — **NEVER port 8000 — that is the splash inference engine's port**) → open `http://localhost:8010` in a browser tab.
    - Title screen: "VEGGIE BROS." logo, controls listed, no console errors.
    - Enter → level 1-1 "Strawberry Fields" banner, player visible, music playing.
    - Walk/jump/run responsive; jump onto the first Melon Pipe (480 px from level start).
@@ -101,7 +103,7 @@ All from repo root `/Users/jasonjordan/repos/veggie_bros`.
    - Clear 1-2 → level 1-3 "Pineapple Palace"; in the arena, stomp Bromely 3 times (he flashes white per hit) → WIN screen with total score; Enter → title.
    - P → PAUSED overlay (R restarts level, M shows `MUTED` in HUD); 0 lives → GAME OVER screen → Enter → title.
    - DevTools device mode (or narrow window) → touch buttons appear and drive movement/jump.
-4. Kill the http server when done.
+4. Stop the server with Ctrl-C in its own terminal and confirm with `lsof -nP -iTCP:8010 -sTCP:LISTEN` (no output = stopped) — never by killing a port holder blindly: port 8000 is the splash inference engine and `RESUME.md` records an incident where it was killed once.
 
 ## Assumptions & contingencies
 
