@@ -14,9 +14,18 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8010/   # ./serve-loca
 
 If `/tmp/vb-verify-each.sh` is gone (reboot clears `/tmp`): it runs every registered id in its own `node tools/verify.mjs <ID>` process and prints `STANDALONE FAILS: n of <ids>`; that gate is the only one that catches cross-check contamination, so rebuild it before continuing.
 
+**The machine was restarted between sessions, so treat `/tmp` as empty until you prove otherwise.** Everything the queue leans on lives there; rebuild, never guess:
+
+| artifact | what it is | rebuild recipe |
+| --- | --- | --- |
+| `/tmp/vb-verify-each.sh` | isolation gate (cold-start #2) | one `node tools/verify.mjs <ID>` per registered id, print `STANDALONE FAILS: n of <N>` |
+| `/tmp/vb-s08` | pristine `036ad19` tree, required by **S-16**'s two-identical-maps clause and by any "did we change old behaviour?" question | `git worktree add --detach /tmp/vb-s08 036ad19` — a worktree, never `git stash` / `git checkout --` in the shared tree |
+| `/tmp/vb-shots/before-title.png`, `before-play.png` | S-17's visual baseline, 256×240 off `main` at `d16b002` | worktree at `d16b002` + `./serve-local.sh 8010`, then `/tmp/vb-s17-readback.js`'s `shot()` (downscales `layers().upscale` by 1/k to true 256×240). If the readback is gone too, re-derive it from the tooling note below before taking any comparison screenshot |
+| `/tmp/vb-s15-brief.md`, `/tmp/vb-s17-tooling.md`, `/tmp/vb-s17-bot.js`, `/tmp/vb-s17-readback.js`, `/tmp/vb-s10-snap-head.json` | the pre-written S-15 brief, the validated S-17 harness, S-10's snapshot anchor file | S-15's whole brief is rebuilt inline in its queue row below; `R51`'s anchors are the recorded shas (`4919 B → b8a8c73f…`, `60 → 38d977fe…`, `120 → cca225d3…`, `600 → 069132e3…`), so the check is writable from the numbers, not the file; S-17's tooling must be re-derived (rAF tap + `layers().upscale` downscale) and re-validated against a known page before it is trusted |
+
 ## Where the branch stands
 
-`HEAD 8e1e9fa0dc` on `feature/graphics-upgrade`, suite **48/48**, isolation **0 of 48**, harness additive-only. Every slice is integrator-committed, each with every gate re-run personally (never on a worker's word) and at least one falsification control run by the integrator's own hands. **Two paths are the user's own, deliberately left uncommitted:** `jsconfig.json` (untracked, added 2026-11-19) and `src/main.js` (`+1`, a `/** @type {HTMLCanvasElement} */` line) — never sweep them into a slice commit.
+`HEAD b7b01da9fc` on `feature/graphics-upgrade`, working tree **clean**, suite **48/48**, isolation **0 of 48**, harness additive-only. Every slice is integrator-committed, each with every gate re-run personally (never on a worker's word) and at least one falsification control run by the integrator's own hands. **S-15 was never started:** its worker was cancelled by the user after two requests and had made **zero** edits, so nothing of it is in the tree — start it from scratch off its queue row. The user's own two paths (`jsconfig.json`, the `src/main.js` `@type` line) are committed as `b7b01da9fc` at their request.
 
 | Commit | Slice | Integrator control that mattered |
 | --- | --- | --- |
@@ -72,47 +81,54 @@ One subagent at a time; brief with exact paths **and** line ranges, ≤ ~400 lin
 
 ```
 Continue the veggie_bros graphics upgrade as INTEGRATOR. cwd /Users/jasonjordan/repos/veggie_bros,
-branch feature/graphics-upgrade, HEAD 8e1e9fa0dc. Two paths are the user's own and must stay
-uncommitted unless they say otherwise: jsconfig.json (untracked) and src/main.js (+1 JSDoc line).
+branch feature/graphics-upgrade, HEAD b7b01da9fc, clean tree. The user's own jsconfig.json and the
+src/main.js @type line are already committed (b7b01da9fc): do not re-add them, re-lint them, or wire
+tsc into the gates.
 
-RUN THE FIVE COLD-START GATES IN GRAPHICS_HANDOFF.md BEFORE EDITING ANYTHING, in this order:
-node tools/verify.mjs (expect 48/48 pass, 0 fail, ~15-16 s), bash /tmp/vb-verify-each.sh (expect
-STANDALONE FAILS: 0 of 48, ~24 s), the node --check loop over src/*.js tools/verify.mjs, curl
-http://127.0.0.1:8010/ (./serve-local.sh 8010, NEVER 8000), git status --short. A red you did not
-cause is a finding: quote it verbatim, never skip or re-word a check.
+THE PREVIOUS SESSION ENDED WITH A MACHINE RESTART, so assume /tmp is empty: rebuild
+/tmp/vb-verify-each.sh (recipe in GRAPHICS_HANDOFF.md's artifact table) and re-run ./serve-local.sh
+8010 before trusting any gate or screenshot. Then RUN THE FIVE COLD-START GATES IN GRAPHICS_HANDOFF.md
+BEFORE EDITING ANYTHING, in order: node tools/verify.mjs (expect 48/48 pass, 0 fail, ~15-16 s), the
+isolation sweep (expect STANDALONE FAILS: 0 of 48, ~24 s), the node --check loop over src/*.js
+tools/verify.mjs, curl http://127.0.0.1:8010/ (NEVER port 8000), git status --short. A red you did
+not cause is a finding: quote it verbatim, never skip or re-word a check.
 
-READ FIRST, IN THIS ORDER, NOTHING ELSE: GRAPHICS_HANDOFF.md (cold start, the structural facts no
-slice may re-derive, the standing warnings, the 7 open findings), then GRAPHICS_STATE.md (slice
-queue + every measured RESULT block, then the gotcha list — gotcha 18 is the S-14b lesson), then
-GRAPHICS_PLAN.md §9.
+READ FIRST, IN THIS ORDER, NOTHING ELSE: GRAPHICS_HANDOFF.md (cold start, the /tmp artifact rebuild
+table, the structural facts no slice may re-derive, the standing warnings, the 7 open findings), then
+GRAPHICS_STATE.md (slice queue + every measured RESULT block, then the gotcha list — gotcha 18 is the
+S-14b lesson), then GRAPHICS_PLAN.md §9.
 
 STATE: S-01..S-14b complete, integrator-committed, every gate re-run personally. Suite 48/48 in
 ~15-16 s, isolation 0 of 48. R49 (art density) is GREEN at plan §8's unchanged thresholds because
 S-14b fixed the harness ink model (exact-integer-downscale blits + per-pixel gradient ink); its
-thresholds and its executable lines are frozen, so leave R49 alone unless asked.
+thresholds and executable lines are frozen, so leave R49 alone unless asked. S-15 was never started:
+its worker was cancelled after two requests having made zero edits, so nothing of it is in the tree.
 
-YOUR JOB: run the remaining queue, ONE subagent at a time, starting at S-15 (R50 draw-stream
-determinism + R51 frozen-gameplay snapshot diff in tools/verify.mjs; brief already written to
-/tmp/vb-s15-brief.md — if /tmp was cleared, its content is rebuilt in the handoff's queue row: R50
-must assert G.state === 'PLAYING' on every sampled frame because render.js:200 blinks the title on
-Date.now()/500, and R51's dump anchors are 4919 B / b8a8c73f… with per-frame 38d977fe / cca225d3 /
-069132e3). Then S-16 (rewrite R38/R45 onto rec.drawImages — a DECLARED rewrite, so numstat will not
-be "N 0": review every removed line yourself and keep all three R45 claims plus a real measured
-claim for R38; /tmp/vb-s08 is the pristine 036ad19 copy and must survive until then). Then S-17
-(60 s of 1-1 plus the 1-3 boss at dpr 3 / 375x667, dt med <= 16.7, p95 <= 20, 0 console errors,
-screenshots vs /tmp/vb-shots/before-*.png — INTEGRATOR ONLY, never delegated, and with ZERO workers
-live or the numbers are meaningless; tooling and readback in /tmp/vb-s17-tooling.md; dpr 3 needs
-app 'chromium' + tab.emulate iPhone 13). Then S-18..S-20 (docs: architecture.md, requirements.md +
-VEGGIE_BROS_PLAN.md — plan §2's "21 unique colours" and §8's "med 2 / min 1 / max 5" are stale,
-measured med 3 / min 2 / max 6 — then README.md and the final full suite).
+YOUR JOB: run the remaining queue, ONE subagent at a time — the user paused the last session with "no
+new subagents", so confirm before spawning the first worker. Start at S-15 (R50 draw-stream
+determinism + R51 frozen-gameplay snapshot diff in tools/verify.mjs; the whole brief is rebuilt in the
+handoff's S-15 queue row: R50 must assert G.state === 'PLAYING' on every sampled frame because
+render.js:200 blinks the title on Date.now()/500; R51's anchors are 4919 B / b8a8c73f… with per-frame
+38d977fe / cca225d3 / 069132e3; neither id may enable the ink option, since ink costs ~4 s per check
+since S-14b). Then S-16 (rewrite R38/R45 onto rec.drawImages — a DECLARED rewrite, so numstat will not
+be "N 0": review every removed line yourself and keep all three R45 claims plus a real measured claim
+for R38; rebuild /tmp/vb-s08 as a detached git worktree at 036ad19 first). Then S-17 (60 s of 1-1 plus
+the 1-3 boss at dpr 3 / 375x667, dt med <= 16.7, p95 <= 20, 0 console errors, screenshots vs
+/tmp/vb-shots/before-*.png — INTEGRATOR ONLY, never delegated, and with ZERO workers live or the
+numbers are meaningless; rebuild and re-validate the readback/bot tooling first; dpr 3 needs app
+'chromium' + tab.emulate iPhone 13, where rAF freezes between automation calls; the boss-entry
+decision in open finding 7 belongs to the user). Then S-18..S-20 (docs: architecture.md, then
+requirements.md + VEGGIE_BROS_PLAN.md — plan §2's "21 unique colours" and §8's "med 2 / min 1 / max 5"
+are stale, measured med 3 / min 2 / max 6 — then README.md and the final full suite).
 
-RULES: one worker live at a time; brief with exact paths AND line ranges, <=400 lines to read,
-<=150 changed lines, <=40-line report; the worker writes its own RESULT block, queue row and
+RULES: one worker live at a time; brief with exact paths AND line ranges, <=400 lines to read, <=150
+changed lines, <=40-line report; the worker writes its own RESULT block, queue row and
 /tmp/vb-<slice>-result.json EARLY. Re-run every gate yourself and demand a positive control for any
 harness read that is new or moved — never accept a worker's "48/48" without the pasted line. Harness
-slices diff as "N 0" unless the slice is a declared rewrite. Worker scratch lives in
+slices diff as "N 0" unless the slice is a declared rewrite (S-16 is). Worker scratch lives in
 /tmp/vb-<slice>w/ copies (rsync -a --exclude .git ./ ...); never git stash / git checkout --, and
-commit only via the eval commit namespace, never while a worker is live. Ask the user before any
-slice widens into src/fx.js for a particle-light pool iterator. Keep your own context small:
-measurements go in the brief file, not the transcript; dead workers are respawned with tighter scope.
+commit only via the eval commit namespace, never while a worker is live. Ask the user before any slice
+widens into src/fx.js for a particle-light pool iterator, and before touching jsconfig/tsc settings.
+Keep your own context small: measurements go in the brief file, not the transcript; dead workers are
+respawned with tighter scope.
 ```
