@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-18, after **S-13 (R48 bake-once + R52 render-only shake) landed and integrator-verified**
+# Session handoff — 2026-11-19, after **S-14 (`R49` art density) + S-14b (the harness ink-model fix it exposed) landed and integrator-verified**
 
 Read this file, then `GRAPHICS_STATE.md` (slice queue + every `RESULT` block), then `GRAPHICS_PLAN.md` §9 (the queue). Nothing else is required to resume. `WORKFLOW_STATE.md`, `RESUME.md`, `IMPLEMENTATION.md`, `docs/REVIEW-*` are out of scope.
 
@@ -6,8 +6,8 @@ Read this file, then `GRAPHICS_STATE.md` (slice queue + every `RESULT` block), t
 
 ```sh
 cd ~/repos/veggie_bros && git status --short && git log --oneline -5
-node tools/verify.mjs 2>&1 | tail -2          # expect: 47/47 pass, 0 fail  (~9-13 s)
-bash /tmp/vb-verify-each.sh 2>&1 | tail -1    # expect: STANDALONE FAILS: 0 of 47  (~16-27 s)
+node tools/verify.mjs 2>&1 | tail -2          # expect: 48/48 pass, 0 fail  (~15-16 s since S-14b's ink cost)
+bash /tmp/vb-verify-each.sh 2>&1 | tail -1    # expect: STANDALONE FAILS: 0 of 48  (~24 s)
 for f in src/*.js tools/verify.mjs; do node --input-type=module --check < "$f"; done
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8010/   # ./serve-local.sh 8010, NEVER 8000
 ```
@@ -16,7 +16,7 @@ If `/tmp/vb-verify-each.sh` is gone (reboot clears `/tmp`): it runs every regist
 
 ## Where the branch stands
 
-`HEAD ef61f63510` on `feature/graphics-upgrade`, tree clean, suite **47/47**, isolation **0 of 47**. All four of this session's slices are integrator-committed, each with every gate re-run personally (never on a worker's word) and at least one falsification control run by the integrator's own hands:
+`HEAD 8e1e9fa0dc` on `feature/graphics-upgrade`, suite **48/48**, isolation **0 of 48**, harness additive-only. Every slice is integrator-committed, each with every gate re-run personally (never on a worker's word) and at least one falsification control run by the integrator's own hands. **Two paths are the user's own, deliberately left uncommitted:** `jsconfig.json` (untracked, added 2026-11-19) and `src/main.js` (`+1`, a `/** @type {HTMLCanvasElement} */` line) — never sweep them into a slice commit.
 
 | Commit | Slice | Integrator control that mattered |
 | --- | --- | --- |
@@ -24,8 +24,10 @@ If `/tmp/vb-verify-each.sh` is gone (reboot clears `/tmp`): it runs every regist
 | `8b1a184736` | S-11 page metas + `LAND_MIN_POWER` → `config.js` | browser: all four metas parse, `color-scheme` resolves dark, DPR pass intact (backing 512×480 == css at dpr 1); worker's positive control `touch-action` → `FAIL R12` |
 | `a8a47a0409` | S-12 `R47` draw budget (+7 surface clause, `R12` metas), harness +98/−0 | my own two reds: `TOTAL_FILL 450→252` → `FAIL R47 total fillRect 253 > 252 …`, `WORLD_BLIT 240→21` → `FAIL R47 world pass: scene drawImage 22 > 21` |
 | `ef61f63510` | S-13 `R48` bake-once + `R52` render-only shake, harness +140/−0 | my own `render.js:264 → const o = 3` now gives **`46/47 pass, 1 fail`**, red = `R52 clause 2 … the shake never reaches the world draw` — the S-10 gap, closed |
+| `be836d9187` | S-14 `R49` art density, harness +196/−0 | registered **RED** on purpose (`FAIL R49 clause 1: a sampled frame held only 75 distinct colours, < 90`), plan §8 thresholds untouched; my own probes (`VB_R49DIAG`, `DIAG2`…`DIAG5` in `/tmp/vb-s14d`) root-caused it to the ink model, not the art |
+| `8e1e9fa0dc` | S-14b ink-model fix, harness +124/−25 (a declared model fix, every removed line reviewed) | my own two controls: raising the new downscale guard to `nx >= 3` → `FAIL R49 clause 2 … bands med 9 / min 2`; a per-pixel ink trace of ground px `(64,208)` → now the ramp `#ddf2cb` **then** the strip's `#dfbf9d`, against exactly one `[object Object]` write before |
 
-**Harness slices are additive-only**: `git diff --numstat HEAD -- tools/verify.mjs` must read `N 0`. A nonzero deleted-line count means a worker edited an existing check — reject the diff.
+**Harness slices are additive-only**: `git diff --numstat HEAD -- tools/verify.mjs` must read `N 0`. A nonzero deleted-line count means a worker edited an existing check — reject the diff. Two exceptions, both declared in advance and reviewed line by line by the integrator: S-14b (the ink MODEL, plus `R49`'s comment lines — no `check(...)` body) and **S-16**, which is specced as a rewrite of `R38`/`R45`.
 
 ## Structural facts the remaining slices must NOT re-derive
 
@@ -36,14 +38,16 @@ If `/tmp/vb-verify-each.sh` is gone (reboot clears `/tmp`): it runs every regist
 - **`main` (`d16b002`) cannot host any new check**: no `drawStats()`/`STAT_KEYS`, no `composite.js`/`fx.js`/`pixels.js`/`atlas.js`/`terrain.js`. "Red before" evidence therefore has to be a *measured substitute*, stated honestly — the pattern S-12/S-13 established (a counter grafted onto main's own recorder gave `VB_DRAWSTATS 1-1 fillRect min=1090 med=1114 max=1153 drawImage=0`), plus an **in-harness falsification** (flat-palette synthetic frame → same code path goes red).
 - **`fx` determinism**: `fx.hit(entity, 'land'|'stomp'|'hurt'|'hop'|'jump')` takes **strings**, `fx.burst(x, y, n, KIND.SPARK)` takes a **KIND value**; mixing degrades silently. A settled frame requires `fx.isIdle()` before any stream comparison. `fx.reset()` is called from `loadLevel()` (`main.js:163`), which is what the harness's `newGame()` route reaches.
 - **No wall clock in a pass line**: `atlas.metrics().ms` is `performance.now()`-derived (R48 prints only `frames/w/h/missing`). **`src/render.js:200` blinks the TITLE on `Date.now()/500`** — the only wall-clock read on the draw path, and `R50` (S-15) will hit it head-on: TITLE is the one screen that cannot be stream-digest-compared across two runs unless the blink phase is pinned or the comparison excludes TITLE.
+- **The ink model is now correct, and `R49` proves it — do not re-derive or "simplify".** `gradientInk` resolves a gradient `fillStyle` per pixel (linear projection on the create-call axis, radial `(dist−r0)/(r1−r0)`, stops in `addColorStop` order, `t` clamped, canonicalised through `inkCss`, cache cap 4096; conic declines to ink — `grep createConicGradient src/` → no hits); `inkBlit` reads the whole n×n source block for an **exact integer downscale** (≥2 both ratios, identity CTM, integral src+dst) because the destination scan's `(u+0.5)*(sw/W)` sample lands on the ODD source column while an `ART_SCALE = 2` bake keys the EVEN corner. `rec.rects` still logs `String(t.fillStyle)` (`R45` diffs that array), and `parseInk` still treats `[object Object]` as unparseable. **Gotcha 18** in `GRAPHICS_STATE.md` is the lesson: any new ink census needs a blank-the-source control.
+- **`R49`'s shipped census** (settled 1-1, 9 inked frames at 9 `cam.x`, 309 LEVEL-decided tile samples): unique colours/frame min **330** / med 576 / max 600 (the branch's browser readback is 800-801), tone bands med **16** / min **9** / p10 15 / max 47, colours/tile med **16** / min **9**, frame ink **52,835-54,260** opaque px + **0** unparseable of 54,260, `hud` 18 colours. Thresholds are plan §8's unchanged `90 / 5 / 3 / 6`; clauses 2-3 are carried by the strip art, clause 1's headroom by the gradient fix — the comment at `tools/verify.mjs:5750` keeps the D1-only `min 93` number so neither fix can be "tidied" away.
+- **Suite cost moved 10.2 → 15.3 s** (R49 standalone 2.3 → 3.2 s) because ink now covers ~320k px per inked check; the agreed ceiling is 25 s. `R19`'s printed `draw #` index legitimately shifts between runs (gotcha 7) — two runs of the same tree can differ on that one PASS line; its assert is relative.
 - **User decision, do not reopen**: plan §7's single `multiply` of the lightmap onto `scene` stays exactly as S-08/S-09 landed it — no ambient lift toward white, no `source-over` fallback, the 3-line `render.js` tweak is cancelled. Measured cost: mean world luma **−14.79 fields / −27.37 canyon / −23.31 palace**, past the user's stated 15-luma comfort level and **knowingly accepted**; S-17's screenshots carry it and nobody may soften the multiply to flatter a screenshot.
 
 ## Remaining queue — one worker at a time, in this order
 
 | ID | Slice | File | What the next worker must be told |
 | --- | --- | --- | --- |
-| **S-14** | `R49` art density | `tools/verify.mjs` | **Brief is pre-written: `/tmp/vb-s14-facts.md`** (thresholds unchanged, the ±3 LSB canonicalisation, the LEVEL-decided non-sky tile definition, `cam.x` fractional trap, `sceneRec().pixels` as the source, the honest red-on-`main` substitute, ≥200 tile samples over a camera scroll). Measured figures: `main` tone bands min 2 / med 3 / max 6 and colours min 2 / med 3 / max 7 and 35–56 unique colours on a frame; this branch (S-07a) bands exact 18/38/30/46, q8 11/17/15/20, colours 20/44/35/53, unique 800–801, per-char q8 minima X 14 / P 15 / B 14 / `\|` 11. Print `main`'s figures in the check's comment or the next reader "fixes" them. |
-| S-15 | `R50` FX determinism + `R51` frozen gameplay | `tools/verify.mjs` | `R50` = draw-stream digest twice, `fx.reset()` ⇒ shake 0; mind the TITLE blink fact above. `R51` can reuse S-10's method: deep `G`/player/enemy/item snapshot dump at scripted frames 60/120/600, sha256'd (recipe and the shipped-code hashes in `/tmp/vb-s10-result.json`, `/tmp/vb-s10-probe-{patched,head}.txt`; the dump was 4919 B, `b8a8c73f…`, identical with 9110 particles emitted). |
+| **S-15** | `R50` FX determinism + `R51` frozen gameplay | `tools/verify.mjs` | **Brief is pre-written: `/tmp/vb-s15-brief.md`** (if `/tmp` was cleared: `R50` = the draw-stream digest of two identical scripted runs, `fx.reset()` ⇒ shake 0, `rec` op logs zeroed first, and **`R50` must assert `G.state === 'PLAYING'` on every sampled frame** because `src/render.js:200` blinks the TITLE prompt on `Date.now()/500`; `render.js` is not to be touched). `R51` = deep `G`/player/enemy/item snapshot dump serialised `JSON.stringify(dump, null, 1)` and sha256'd (`node:crypto` is available to the harness) at scripted frames 60/120/600: **a 3-snapshot dump is 4919 B, sha256 `b8a8c73f…`** (reference file `/tmp/vb-s10-snap-head.json`), per-frame anchors `60 → 38d977fe…`, `120 → cca225d3…`, `600 → 069132e3…`; `KIND`/`fx.burst`/`fx.hit` are NOT yet imported in `tools/verify.mjs` (add as a new line), `streamDigest` (FNV-1a 32-bit) sits near the old `:5453`, `fx` accessors near old `:5374`. Diff must be `N 0`. |
 | S-16 | rewrite `R38` + `R45` onto `rec.drawImages` | `tools/verify.mjs` | Claims preserved, never loosened; `/tmp/vb-s08` is the pristine `036ad19` copy (`cmp`-clean, keep until S-16 done). Note `036ad19`'s message claims `44/44` for S-08: true in-suite, false standalone (`R18`) — read it as "green with contamination". |
 | **S-17** | browser gate — **integrator only, never delegated** | — | **Tooling is built and validated: `/tmp/vb-s17-tooling.md`.** Readback = `layers().upscale` downsampled by integer `1/k` → exactly 256×240, comparable to `/tmp/vb-shots/before-{title,play.png}` (verified 256×240, `main` `d16b002`); NEVER `#game.toDataURL()` (device px now). Timing tap wraps the global `requestAnimationFrame` → `med/p95/over20/console-error-count` from the game's own loop. Thresholds `med ≤ 16.7`, `p95 ≤ 20`, 0 errors; **run with zero workers live** (a sample taken beside a running worker read med 17.0 / p95 20.0 / 1238 frames > 20 ms — invalid). `dpr > 1` only via Chromium `tab.emulate({ device: 'iPhone 13' })`; that tab freezes rAF between automation calls. The reactive bot reaches 1-1 `cam 839.96` and dies — decide between a better bot and the documented `G` seam for the 1-3 boss, and label a seam-produced arena run honestly. |
 | S-18 | `architecture.md` module map + Deviations | `architecture.md` | Docs must describe shipped code, not intent. |
@@ -57,6 +61,8 @@ If `/tmp/vb-verify-each.sh` is gone (reboot clears `/tmp`): it runs every regist
 3. **Particle/explosion *lights* still need an `fx.js` pool iterator** — a second file. **Ask the user before letting any worker widen into `src/fx.js`.**
 4. `render.js:200`'s `Date.now()` title blink is the last wall-clock read in the draw path (see the `R50` note).
 5. My own facts file `/tmp/vb-s12-facts.md` said `hud 253` fillRect; S-12's worker proved `252` (217 glyph cells on rows 9-15 + 35 on rows 21-27, +1 `lightmap` = the measured +253). The file is corrected; the gated total was always right.
+6. **`jsconfig.json` (the user's, 2026-11-19) is editor-only, not a gate.** `tsc --noEmit -p jsconfig.json` (`checkJs: true`, `include: ["**/*.js"]` → 17 files; `.mjs` is not matched, so `tools/verify.mjs` is outside it) reports **779 errors on this branch vs 774 on pristine `main`** — i.e. our +5 are the same implicit-any family as the pre-existing 774 (`TS7006` 525, `TS7005` 108, `TS2339` 74, `TS7053` 29, `TS7034` 24, `TS7018` 14, `TS7019` 2, `TS2551` 2, `TS2353` 1), concentrated in `sprites.js` 208 / `terrain.js` 101 / `fx.js` 90 / `composite.js` 72. Adding `"noImplicitAny": false` leaves **6** (`3 TS2339`, `2 TS2551`, `1 TS2353`). Do not wire `tsc` into the gates or "clean up" 779 implicit-anys without the user asking; do not let a JSDoc sweep near `src/` without a slice brief.
+7. **S-17's boss half has an open decision** (recorded, not decided): the reactive bot in `/tmp/vb-s17-bot.js` reaches `cam 839.96` in 1-1 and never 1-2, so 1-3 needs either a lookahead bot over `level.tiles` or the documented `G` test seam to park the hero in the arena — and a seam-produced run may be presented **only** as labelled timing evidence, never as a played run. Evidence and the validated readback/tap recipe: `/tmp/vb-s17-tooling.md`.
 
 ## Unchanged rules (they are the reason the suite is still trustworthy)
 
@@ -65,36 +71,48 @@ One subagent at a time; brief with exact paths **and** line ranges, ≤ ~400 lin
 ## RESUME PROMPT — paste this into a fresh session
 
 ```
-Continue the veggie_bros graphics upgrade. cwd /Users/jasonjordan/repos/veggie_bros, branch
-feature/graphics-upgrade, HEAD ef61f63510, tree clean.
+Continue the veggie_bros graphics upgrade as INTEGRATOR. cwd /Users/jasonjordan/repos/veggie_bros,
+branch feature/graphics-upgrade, HEAD 8e1e9fa0dc. Two paths are the user's own and must stay
+uncommitted unless they say otherwise: jsconfig.json (untracked) and src/main.js (+1 JSDoc line).
 
-READ FIRST, IN THIS ORDER, NOTHING ELSE: GRAPHICS_HANDOFF.md (cold start, the structural
-facts no slice may re-derive, the standing warnings, the open findings), then GRAPHICS_STATE.md
-(slice queue + measured RESULT blocks), then GRAPHICS_PLAN.md §9.
+RUN THE FIVE COLD-START GATES IN GRAPHICS_HANDOFF.md BEFORE EDITING ANYTHING, in this order:
+node tools/verify.mjs (expect 48/48 pass, 0 fail, ~15-16 s), bash /tmp/vb-verify-each.sh (expect
+STANDALONE FAILS: 0 of 48, ~24 s), the node --check loop over src/*.js tools/verify.mjs, curl
+http://127.0.0.1:8010/ (./serve-local.sh 8010, NEVER 8000), git status --short. A red you did not
+cause is a finding: quote it verbatim, never skip or re-word a check.
 
-STATE: S-01..S-13 complete. Suite 47/47 in ~9-13 s, isolation gate 0 of 47, harness diffs
-additive-only. All DPR/device, per-surface frame, bake and shake facts are measured — the
-handoff's "Structural facts" section is the whole list; do not re-derive any of it.
+READ FIRST, IN THIS ORDER, NOTHING ELSE: GRAPHICS_HANDOFF.md (cold start, the structural facts no
+slice may re-derive, the standing warnings, the 7 open findings), then GRAPHICS_STATE.md (slice
+queue + every measured RESULT block, then the gotcha list — gotcha 18 is the S-14b lesson), then
+GRAPHICS_PLAN.md §9.
 
-YOUR JOB: run the queue with one subagent at a time, starting at S-14 (R49 art density in
-tools/verify.mjs — the brief is already written to /tmp/vb-s14-facts.md: thresholds unchanged,
-±3 LSB colour canonicalisation, LEVEL-decided non-sky tiles, sceneRec().pixels as the source,
-honest red-on-main substitute; if /tmp was cleared the same numbers are in GRAPHICS_STATE.md's
-R49 section). Then S-15 (R50 draw-stream determinism — mind the Date.now() title blink in
-render.js:200 — plus R51 frozen-gameplay snapshot diff), S-16 (R38/R45 onto rec.drawImages;
-/tmp/vb-s08 pristine 036ad19 copy must survive until then), then S-17 (60 s of 1-1 + 1-3 boss at
-dpr 3 / 375×667, dt med <=16.7 p95 <=20, 0 console errors, screenshots vs
-/tmp/vb-shots/before-*.png — INTEGRATOR ONLY, never delegated; tooling and the readback recipe
-are in /tmp/vb-s17-tooling.md: downscale layers().upscale by 1/k for a true 256x240, and run the
-timing with zero workers live or the numbers are meaningless), then S-18..S-20 (docs).
+STATE: S-01..S-14b complete, integrator-committed, every gate re-run personally. Suite 48/48 in
+~15-16 s, isolation 0 of 48. R49 (art density) is GREEN at plan §8's unchanged thresholds because
+S-14b fixed the harness ink model (exact-integer-downscale blits + per-pixel gradient ink); its
+thresholds and its executable lines are frozen, so leave R49 alone unless asked.
 
-Only one worker live at a time; brief with exact paths AND line ranges, <=400 lines to read,
+YOUR JOB: run the remaining queue, ONE subagent at a time, starting at S-15 (R50 draw-stream
+determinism + R51 frozen-gameplay snapshot diff in tools/verify.mjs; brief already written to
+/tmp/vb-s15-brief.md — if /tmp was cleared, its content is rebuilt in the handoff's queue row: R50
+must assert G.state === 'PLAYING' on every sampled frame because render.js:200 blinks the title on
+Date.now()/500, and R51's dump anchors are 4919 B / b8a8c73f… with per-frame 38d977fe / cca225d3 /
+069132e3). Then S-16 (rewrite R38/R45 onto rec.drawImages — a DECLARED rewrite, so numstat will not
+be "N 0": review every removed line yourself and keep all three R45 claims plus a real measured
+claim for R38; /tmp/vb-s08 is the pristine 036ad19 copy and must survive until then). Then S-17
+(60 s of 1-1 plus the 1-3 boss at dpr 3 / 375x667, dt med <= 16.7, p95 <= 20, 0 console errors,
+screenshots vs /tmp/vb-shots/before-*.png — INTEGRATOR ONLY, never delegated, and with ZERO workers
+live or the numbers are meaningless; tooling and readback in /tmp/vb-s17-tooling.md; dpr 3 needs
+app 'chromium' + tab.emulate iPhone 13). Then S-18..S-20 (docs: architecture.md, requirements.md +
+VEGGIE_BROS_PLAN.md — plan §2's "21 unique colours" and §8's "med 2 / min 1 / max 5" are stale,
+measured med 3 / min 2 / max 6 — then README.md and the final full suite).
+
+RULES: one worker live at a time; brief with exact paths AND line ranges, <=400 lines to read,
 <=150 changed lines, <=40-line report; the worker writes its own RESULT block, queue row and
-/tmp/vb-<slice>-result.json early. Re-run every gate yourself (node tools/verify.mjs,
-bash /tmp/vb-verify-each.sh, the --check loop, a targeted subset) and demand a positive control
-for any harness read that is new or moved — never accept a worker's "47/47". Harness slices must
-diff as "N 0" (pure addition). Never run the commit namespace while a worker is live. Ask the
-user before any slice widens into src/fx.js for a particle-light pool iterator. Prefer delegating
-work to subagents and keeping your own context small: put measurements in the brief, not in your
-transcript.
+/tmp/vb-<slice>-result.json EARLY. Re-run every gate yourself and demand a positive control for any
+harness read that is new or moved — never accept a worker's "48/48" without the pasted line. Harness
+slices diff as "N 0" unless the slice is a declared rewrite. Worker scratch lives in
+/tmp/vb-<slice>w/ copies (rsync -a --exclude .git ./ ...); never git stash / git checkout --, and
+commit only via the eval commit namespace, never while a worker is live. Ask the user before any
+slice widens into src/fx.js for a particle-light pool iterator. Keep your own context small:
+measurements go in the brief file, not the transcript; dead workers are respawned with tighter scope.
 ```
