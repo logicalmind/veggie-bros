@@ -5072,9 +5072,17 @@ check('R45', () => {
   // Both recorders are `bake`-scope: their op logs are never reset and stop appending at BAKE_LOG_CAP,
   // so every shot clears them with `reset()` and compares exactly one render's ops — a stale or capped
   // log would make the comparison lie in both directions. `reset()` (not just truncating the five logs)
-  // is load-bearing: `blits` entries carry the recorder's `seq`, and a monotonically growing `seq` makes
-  // the determinism pair below compare 743 against 1042 and call a deterministic renderer non-deterministic.
-  const STREAM_LOGS = ['rects', 'text', 'blits', 'scaleCalls', 'translateCalls'];
+  // is load-bearing: `drawImages` entries carry the recorder's `seq`, and a monotonically growing `seq`
+  // makes the determinism pair below compare 743 against 1042 and call a deterministic renderer
+  // non-deterministic.
+  // S-16b (plan §8:186): the compared draw stream is `rec.drawImages`, NOT `rec.blits`. A `blits` entry
+  // holds the RAW `drawImage` arguments, so it is `{sx:undefined,sw:undefined,...}` for the 3- and
+  // 5-argument forms — the forms §4's two-pass upscale and §7's layer blits actually use — and a
+  // comparison over those entries could neither tell two same-size atlas cells apart nor say which cell
+  // was drawn. `drawImages`, written by the same recorder branch (`:665`), expands the short forms from
+  // the whole source canvas and carries `src`/`srcName`, so one entry can be NAMED as a cell: source
+  // canvas, source rect, destination rect.
+  const STREAM_LOGS = ['rects', 'text', 'drawImages', 'scaleCalls', 'translateCalls'];
   const stream = (rs) => JSON.stringify(STREAM_LOGS.map((k) => rs.reduce((all, r) => all.concat(r[k]), [])));
   const shot = () => {
     const rs = [sceneRec(), hudRec()];
@@ -5090,6 +5098,9 @@ check('R45', () => {
     renderScene(G);
     return stream(rs);
   };
+  // A red names the CELL, which is the capability §8:186 says the check lost: `cellName` prints the
+  // source canvas (`srcName [canvas id]`), the cell's rect inside it and where it landed.
+  const cellName = (e) => `${e.srcName} [canvas ${e.src}] ${e.sw}x${e.sh} cell @${e.sx},${e.sy} -> ${e.dw}x${e.dh} @${e.dx},${e.dy} (op ${e.op}, alpha ${e.alpha})`;
   const firstDiff = (a, b, la = 'with checkpoints', lb = 'without them') => {
     const A = JSON.parse(a);
     const B = JSON.parse(b);
@@ -5098,7 +5109,9 @@ check('R45', () => {
       for (let i = 0; i < Math.max(A[k].length, B[k].length); i++) {
         const x = JSON.stringify(A[k][i]);
         const y = JSON.stringify(B[k][i]);
-        if (x !== y) return `${kinds[k]} #${i}: ${la} ${x === undefined ? '(no such call)' : x}, ${lb} ${y === undefined ? '(no such call)' : y}`;
+        if (x === y) continue;
+        const fmt = (v) => (v === undefined ? '(no such call)' : k === 2 ? cellName(v) : JSON.stringify(v));
+        return `${kinds[k]} #${i}: ${la} ${fmt(A[k][i])}, ${lb} ${fmt(B[k][i])}`;
       }
     }
     return 'the two frames differ outside the draw-call kinds this check models';
@@ -5369,6 +5382,51 @@ check('R45', () => {
     assert(after.includes(C.PALETTE.pumpkin), `the canary pixel changed the probe's box but is not in its report (${after.slice(0, 140)}…) — the probe is reporting the wrong region`);
   }
 
+  // ---- (d) THE CELL REGISTRY — which atlas cells the reference frame draws, named, against a pin.
+  //
+  // Why a non-comparative clause belongs in a differential check: every comparison above asks whether
+  // TWO renders agree, so each is blind to a defect that moves BOTH sides the same way — and that is
+  // precisely §8:186's defect. Two atlas cells of the same size on one source row swapping places left
+  // `rec.blits` byte-identical (raw args, `undefined` for the short forms) and left this check with
+  // nothing to name. Over the normalised log the frame's drawn-cell multiset can be pinned outright,
+  // and the red can name both cells: the one drawn (canvas + source rect + dest rect) and the one that
+  // is now missing.
+  //
+  // The shot is CANONICAL — `fxReset()` (shake would move the parallax dests), `bareState` (which clears
+  // the enemies and items a previous check left in `G` and stands the hero on the post) and
+  // `setArmState(…, unarmed)` — so the pin holds standalone and in-suite. Keys are SOURCE RECT -> DEST
+  // RECT only: a harness canvas is named `id#<run counter>` (`:961`), so a pin carrying canvas names
+  // would depend on suite order. The DEST half is not decoration — two same-size cells can trade places
+  // and leave the source multiset intact, and the only thing that says which of them belongs where is
+  // where it landed.
+  // Measured 2026-11-19 over the atlas as it ships. Re-measure ONLY when art is intentionally added,
+  // removed or moved, and say so in `GRAPHICS_STATE.md`; a silent re-pin here re-opens the hole §8:186
+  // says this check has had since the renderer went to the atlas.
+  // Format: `count x sx,sy,sw,sh->dx,dy`, sorted. Nine of the fifteen are the whole-canvas
+  // parallax/ambient/lightmap blits: they come from 5-argument `drawImage` calls, and the RAW
+  // `rec.blits` entry files the dest rect under `sx..sh` and leaves `dx..dh` `undefined` (the 3-arg
+  // form leaves six of nine keys `undefined`) — the dest in that entry is therefore not even in the
+  // field its name suggests. `1,1,24,28` / `151,1,24,28` are the two same-size 24x28 cells on atlas
+  // row 1 that the world and the HUD each draw.
+  const CELL_REGISTRY = '1x0,0,128,120->0,0|1x0,0,128,480->-56,0|1x0,0,128,480->136,0|1x0,0,128,480->200,0|1x0,0,128,480->72,0|1x0,0,128,480->8,0|1x0,0,512,480->0,0|1x0,0,608,480->-9,0|1x0,0,64,60->0,0|1x0,0,704,480->-92,0|1x0,0,768,480->-62,0|1x1,1,24,28->223,4|1x1303,1,64,238->1880,89|1x1433,1,18,18->8,18|1x151,1,24,28->120,194';
+  const regKey = (e) => `${e.sx},${e.sy},${e.sw},${e.sh}->${e.dx},${e.dy}`;
+  const regOf = (ops) => { const m = new Map(); for (const e of ops) { const k = regKey(e); m.set(k, (m.get(k) || 0) + 1); } return m; };
+  const regText = (m) => [...m.entries()].sort((p, q) => (p[0] < q[0] ? -1 : 1)).map((e) => `${e[1]}x${e[0]}`).join('|');
+  installLevel(firstLevel);
+  fxReset();
+  bareState(canaryProbe.camX, firstLevel.checkpoints[0].x);
+  setArmState(firstLevel, STATES[0]);
+  const refDraws = JSON.parse(shot())[2];
+  const drawnCells = regOf(refDraws);
+  // The floor is what makes C2 (a truncated `drawImages`) red rather than quietly green: an empty
+  // stream would compare equal to another empty stream, which is this check passing because it is blind.
+  assert(refDraws.length >= 12, `the canonical 1-1 reference frame recorded ${refDraws.length} drawImage ops, under the 12 this check requires (15 drawn on 2026-11-19) — the draw stream is reading nothing, so every "identical" above is a shared zero, not a match`);
+  {
+    const pinned = new Map(CELL_REGISTRY.split('|').map((s) => { const i = s.indexOf('x'); return [s.slice(i + 1), Number(s.slice(0, i))]; }));
+    const off = [...new Set([...drawnCells.keys(), ...pinned.keys()].filter((r) => (drawnCells.get(r) || 0) !== (pinned.get(r) || 0)))];
+    assert(off.length === 0, `the atlas cells the canonical 1-1 reference frame draws are not the pinned registry. drawn: ${regText(drawnCells)}. pinned: ${CELL_REGISTRY}. Off-pin: ${off.map((r) => { const e = refDraws.find((d) => regKey(d) === r); return `${r} drawn ${drawnCells.get(r) || 0}x, pinned ${pinned.get(r) || 0}x${e ? ` — drawn as ${cellName(e)}` : ' — NOT drawn by this frame at all'}`; }).join('; ')} — a same-size swap of two cells on one atlas row lands here and nowhere else, because every other clause in this check is a differential and a swap moves both of its sides together.`);
+  }
+
   // ---- (2) a real arrival is silent AND still arms
   const fl = flagLevel({ cols: 120, flag: [C.ROWS - 3, 40] });
   installLevel(fl);
@@ -5426,7 +5484,7 @@ check('R45', () => {
   input.run = false;
   eq(p.x, post.x, `holding left after a silent bank left the hero at x=${p.x.toFixed(2)} instead of pinned on the post at ${post.x} — the invisible checkpoint stopped clamping the hero`);
   eq(G.cam.x, post.x - CAMERA_FOLLOW_X, `the silent bank did not give the camera its floor (cam.x=${G.cam.x} against ${post.x - CAMERA_FOLLOW_X})`);
-  return `nothing drawn at a post: ${comparisons} render comparisons (${LEVELS.length} maps x ${CAM_SPOTS.length} cameras x ${STATES.length} checkpoint states, draw streams identical with the posts present and emptied + armed identical to unarmed; each post's trigger band ink-matched against the same map stripped bare; canary pixel seen) — the 1-1 reference frame is ${nRects} fillRects | RUN_MAX arrival at x=${post.x} over ${frames} frames: ${heard.length} sfx, 0 items, banner ${banner0} → ${G.bannerT.toFixed(2)} (peak ${bannerMax.toFixed(4)}), still armed, hero pinned on ${post.x}, camera floored on ${post.x - CAMERA_FOLLOW_X}`;
+  return `nothing drawn at a post: ${comparisons} render comparisons (${LEVELS.length} maps x ${CAM_SPOTS.length} cameras x ${STATES.length} checkpoint states, draw streams identical with the posts present and emptied + armed identical to unarmed over rec.drawImages (${refDraws.length} blits / ${drawnCells.size} pinned cell->dest entries on the canonical 1-1 frame); each post's trigger band ink-matched against the same map stripped bare; canary pixel seen) — the 1-1 reference frame is ${nRects} fillRects | RUN_MAX arrival at x=${post.x} over ${frames} frames: ${heard.length} sfx, 0 items, banner ${banner0} → ${G.bannerT.toFixed(2)} (peak ${bannerMax.toFixed(4)}), still armed, hero pinned on ${post.x}, camera floored on ${post.x - CAMERA_FOLLOW_X}`;
 });
 
 // R46 — music stayed dead after a respawn: death called audio.musicStop() at all three kill
