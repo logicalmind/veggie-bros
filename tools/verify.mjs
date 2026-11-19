@@ -5878,6 +5878,260 @@ check('R49', () => {
   return `art density: ${measured}`;
 });
 
+// ---------------------------------------------------------------------------
+// S-15 adds the two checks below. They are the only ids in this file that
+// hash a stream instead of counting it, so the hash primitive lives here
+// rather than inside either body. It is sha256 and not `streamDigest`
+// (R47's 8-hex FNV) because both checks ASSERT byte equality over ~24 kB of
+// op log per frame, where a 32-bit collision would be a silent pass;
+// `streamDigest` is still what the PASS lines print, so R47/R52's published
+// figures and these stay comparable. The fx destructure is a second one on
+// purpose: module imports are cached, so it costs nothing and it keeps the
+// 1120-line fx line untouched.
+import { createHash } from 'node:crypto';
+const { burst: fxBurst, hit: fxHit, KIND } = await import('../src/fx.js');
+const sha256Hex = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+
+// R50 — FX/render DRAW-STREAM DETERMINISM: one route, driven twice, must
+// produce the same per-frame draw stream byte for byte, and a forced FX
+// deluge must leave the stream dirty until fxReset() and clean after it.
+//
+// What one frame digest covers, on all three recorded surfaces at once (scene
+// bake layer, hud layer, live game canvas):
+//   * every fillRect: x, y, w, h, the fillStyle token and globalAlpha. The
+//     rect entry carries no composite op — the drawImage entry does — so the
+//     token is what names the fill,
+//   * every drawImage: source canvas id, all nine source/destination rect
+//     numbers, composite op, alpha, smoothing, seq,
+//   * every clearRect: x, y, w, h, seq,
+//   * the frame's whole stateLog: every tracked state write with its used
+//     flag, plus every save/restore with its depth.
+// Measured on this route, one settled frame: scene 22 drawImages + 1 clear +
+// 30 state writes, hud 484 fillRects + 2 drawImages + 1 clear + 3 state
+// writes, live 1 drawImage. R47/R48 count those surfaces and R52 counts
+// frames that differ; neither can tell "22 blits, 3 px apart" from "23 blits",
+// and the claim here is equality, so every field of every op is hashed.
+//
+// Ops are bounded per frame by zeroing the four arrays AND `seq` on the two
+// bake-scope recorders before each frame — R52's zeroing trick (:5682) plus
+// the seq counter, so the numbers inside a digest are per-frame and a bake
+// left running by an earlier check cannot leak its arithmetic in. The live
+// recorder needs nothing: step() calls rec.reset() itself (:1187).
+//
+// Clause 2 asserts G.state === 'PLAYING' on every sampled frame because
+// src/render.js:199-200 blinks the title on Date.now() / 500: a TITLE frame
+// inside the sample window makes the op log a function of the wall clock.
+// A "flaky" report on this id is therefore a route bug, never noise. Neither
+// run asks for { ink: true } — R49's lesson is that pixel ink costs about 4 s
+// a check, and this check reads no pixels at all. The no-clock rule is by
+// construction: no Date.now(), no performance, no timing figure in a message.
+check('R50', () => {
+  const RUN = 180;    // frames per clause-1 run — R52's run length
+  const SHAKEN = 30;  // clause 3: frames of forced shake ...
+  const SAMPLE = 10;  // ... and frames digested after the reset
+  const dig12 = (s) => sha256Hex(s).slice(0, 12);
+  const zeroOps = (r) => {
+    r.rects.length = 0; r.drawImages.length = 0; r.clears.length = 0; r.stateLog.length = 0;
+    r.seq = 0;
+  };
+  const opStream = (r, nseq) => {
+    // `nseq` strips the seq number off every row: clause 4 diffs two frames as
+    // multisets, and six extra blits renumber every later op of the frame.
+    const Q = (n) => (nseq ? 'q' : 'q' + n);
+    const f = [];
+    for (const e of r.rects) f.push(`F${e[0]},${e[1]},${e[2]},${e[3]}|${e[4]}|a${e[5]}|${Q(e[6])}`);
+    for (const e of r.drawImages) f.push(`I${e.src}|${e.sx},${e.sy},${e.sw},${e.sh}>${e.dx},${e.dy},${e.dw},${e.dh}|o${e.op}|a${e.alpha}|m${e.smoothing ? 1 : 0}|${Q(e.seq)}`);
+    for (const e of r.clears) f.push(`X${e[0]},${e[1]},${e[2]},${e[3]}|${Q(e[4])}`);
+    for (const e of r.stateLog) f.push(`S${e[0]}=${e[1]}${e.length === 4 ? (e[3] ? '!' : '?') : ''}|${Q(e[2])}`);
+    return f.join(';');
+  };
+  const opCount = (r) => r.rects.length + r.drawImages.length + r.clears.length + r.stateLog.length;
+  const same = (a, b) => { let n = 0; for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) n++; return n; };
+  const run = (label, o) => {
+    newGame();
+    fxReset();
+    steps(30);                        // settled: grounded, camera parked at 0
+    input.right = true; input.run = true;
+    const out = { scene: [], hud: [], live: [], all: [], states: [], ops: { scene: [], hud: [], live: [] }, pool: null };
+    for (let i = 0; i < o.frames; i++) {
+      if (o.shake && i < SHAKEN) {    // render-only load, as in R52 clause 2
+        fxShake(3);
+        if (i % 10 === 0) fxBurst(G.player.x, G.player.y, 6, KIND.SPARK);
+        fxHit(G.player, 'land');
+      }
+      if (o.burstAt === i) fxBurst(G.player.x, G.player.y, 6, KIND.SPARK);
+      if (o.resetAt === i) {
+        // Both clause-3 routes reset at the same index, and that is not
+        // padding: fx.js runs its own `frame`/`emitSalt` counters
+        // (src/fx.js:92-93) as the only seed for particle jitter, and
+        // reset() is what zeroes them (:138-143). A never-reset control
+        // would differ from the shaken run by clock rather than by shake,
+        // and the 10 frames would compare nothing.
+        fxReset();
+        out.pool = { off: fxShakeOffset(), idle: fxIsIdle(), live: fxMetrics().live };
+      }
+      const sr = sceneRec(), hr = hudRec();
+      zeroOps(sr); zeroOps(hr); zeroOps(rec);
+      renderFrames(1);
+      assert(G.state === 'PLAYING', `clause 2: the ${label} route sampled frame ${i} in state '${G.state}' — a TITLE frame blinks on Date.now()/500 (src/render.js:199-200), so a wall clock would be inside this digest`);
+      const s = opStream(sr), h = opStream(hr), l = opStream(rec);
+      out.scene.push(dig12(s)); out.hud.push(dig12(h)); out.live.push(dig12(l));
+      out.all.push(dig12(s + '\n' + h + '\n' + l));
+      out.states.push(G.state);
+      out.ops.scene.push(opCount(sr)); out.ops.hud.push(opCount(hr)); out.ops.live.push(opCount(rec));
+      if (o.rawAt === i) out.raw = opStream(sr, true).split(';');
+    }
+    clearInput();
+    return out;
+  };
+  const A = run('A', { frames: RUN });
+  const B = run('B', { frames: RUN });
+  // clause 1 — the two runs are indistinguishable on every surface.
+  const bad = same(A.all, B.all);
+  assert(bad === 0, `clause 1: two identical ${RUN}-frame runs of the same route disagreed in ${bad} of ${RUN} frames; first difference ${firstStreamDiff(A.all, B.all)} (scene ${firstStreamDiff(A.scene, B.scene)}, hud ${firstStreamDiff(A.hud, B.hud)}, live ${firstStreamDiff(A.live, B.live)}); run A digests ${A.all.join(',')} run B digests ${B.all.join(',')}`);
+  // clause 2 — non-vacuity of the sample itself: every surface has to be
+  // carrying ops, or "byte-identical" would be comparing nothing. The medians
+  // are also what proves the hud layer is in the digest at all, which is why
+  // dropping it (the S-15 falsification control) cannot be mistaken for a
+  // pass of the same check.
+  const med = (a) => { a.sort((x, y) => x - y); return a[Math.floor(a.length / 2)]; };
+  const ops = { scene: med(A.ops.scene), hud: med(A.ops.hud), live: med(A.ops.live) };
+  assert(ops.scene >= 10 && ops.hud >= 10 && ops.live >= 1, `clause 2: the sampled frames are not a real draw — median ops per frame scene ${ops.scene} hud ${ops.hud} live ${ops.live} (floor 10/10/1)`);
+  // clause 3 — the FX deluge must be visible in the stream, and fxReset()
+  // must return the stream and not merely the counters.
+  const F = run('forced', { frames: SHAKEN + SAMPLE, shake: true, resetAt: SHAKEN });
+  const C = run('control', { frames: SHAKEN + SAMPLE, resetAt: SHAKEN });
+  assert(F.pool.off === 0 && F.pool.idle === true && F.pool.live === 0, `clause 3: after fxReset() the forced route still reported shake offset ${F.pool.off}, isIdle ${F.pool.idle}, ${F.pool.live} live — the pool was not actually empty, so the clean frames below prove nothing`);
+  const during = same(F.all.slice(0, SHAKEN), C.all.slice(0, SHAKEN));
+  assert(during > 0, `clause 3 non-vacuity: forcing fxShake(3) + a spark burst + a hit on every one of ${SHAKEN} frames changed no frame's stream at all — the digest is blind to FX, so every equality below is meaningless`);
+  const after = F.all.slice(SHAKEN), afterC = C.all.slice(SHAKEN);
+  const stillDirty = same(after, afterC);
+  assert(stillDirty === 0, `clause 3: ${stillDirty} of the ${SAMPLE} frames after fxReset() still differ from the never-shaken control at the same indices (first ${firstStreamDiff(after, afterC)}) — the reset returned the counters, not the stream`);
+  // clause 4 — the burst on its own must reach the surface. Clause 3's
+  // non-vacuity is a `during > 0` on a SHAKEN run, and a shake moves every
+  // world blit, so it would stay green even if fx.draw drew nothing at all.
+  // These two routes are identical and unshaken; the pool is the only
+  // difference, so the ops frame 20 of the burst run has and the bare run does
+  // not are the particles. 6 is what burst() spawns for n = 6
+  // (src/fx.js:249); anything over that is run dust whose jitter seed moved
+  // because burst() advances emitSalt (src/fx.js:243) — also fx, also fine.
+  const BX = run('burst', { frames: 40, burstAt: 20, rawAt: 20 });
+  const BY = run('bare', { frames: 40, rawAt: 20 });
+  const mult = (a) => { const m = new Map(); for (const o of a) m.set(o, (m.get(o) || 0) + 1); return m; };
+  const mx = mult(BX.raw);
+  const my = mult(BY.raw);
+  let extra = 0;
+  const examples = [];
+  for (const [o, n] of mx) {
+    const d = n - (my.get(o) || 0);
+    if (d > 0) { extra += d; if (examples.length < 2) examples.push(o.slice(0, 64)); }
+  }
+  assert(extra >= 6, `clause 4: a 6-particle spark burst put ${extra} new op${extra === 1 ? '' : 's'} into the frame-20 scene stream over the bare frame — burst() spawns 6 for n = 6 (src/fx.js:249), so an fx draw is not reaching the recorded surface (examples: ${examples.join(' ;; ') || 'none, the two frames hold the same ops'})`);
+  return `draw-stream determinism: 2x${RUN} frames of one route are byte-equal on all three surfaces (scene ${streamDigest(A.scene.join(','))} hud ${streamDigest(A.hud.join(','))} live ${streamDigest(A.live.join(','))} all ${streamDigest(A.all.join(','))}, run B all ${streamDigest(B.all.join(','))}); ${A.states.length + B.states.length} sampled frames, states ${[...new Set(A.states.concat(B.states))].join('/')}; ops/frame median scene ${ops.scene} hud ${ops.hud} live ${ops.live}; forced FX: ${during}/${SHAKEN} frames differ from the never-shaken control, then pool {live ${F.pool.live}, shake ${F.pool.off}, idle ${F.pool.idle}} and ${SAMPLE - stillDirty}/${SAMPLE} post-reset frames equal the control (${streamDigest(after.join(','))} = ${streamDigest(afterC.join(','))}); bare-vs-burst frame 20 scene ops +${extra}`;
+});
+
+// R51 — FROZEN GAMEPLAY SNAPSHOT DIFF: the same 600 fixed steps must put
+// every number in the world in the same place twice, and a render-only FX
+// deluge on every 10th step must not move one of them.
+//
+// Route — the one S-10 froze (:58-70 of its result, /tmp/vb-s10-result.json):
+// newGame(), hold right + run, press jump on every 45th frame with the held
+// jump released 9 frames later, 600 fixed steps, snapshots at 60 / 120 / 600.
+// The snapshot fields are S-10's list verbatim, with two coercions that the
+// shipped objects force: `kind: e.kind ?? e.type` (a turnip carries `type`,
+// the frozen dump names it `kind`) and Boolean() around `dead`/`squashed`
+// (neither a shipped turnip nor a shipped fruit carries an own `dead` or
+// `squashed` until one is set, and the frozen dump writes them out false).
+// `vx`/`vy` stay straight reads, so the fruit entries drop those keys exactly
+// as the frozen bytes do.
+//
+// The four published anchors below are S-10's measured shipped-code bytes
+// (pristine and bake-patched copies agreed to the same digest). This check
+// reproduces them byte for byte, which is a stronger claim than run-vs-run
+// equality: a red here means the world moved under a graphics slice, and the
+// message says to re-anchor in GRAPHICS_STATE.md rather than let the check
+// shrink. G.state is asserted at every sampled frame for R50's reason —
+// src/render.js:199-200 blinks the title on Date.now()/500. No wall clock is
+// read and no timing figure is printed.
+check('R51', () => {
+  const FRAMES = [60, 120, 600];
+  const ANCHOR_BYTES = 4919;
+  const ANCHOR_DUMP = 'b8a8c73fb8077ee0a810b0b0059946b265809ce56fd20e4a326520aff25378f5';
+  const ANCHOR_SNAPS = ['38d977fe', 'cca225d3', '069132e3'];
+  const snapshot = (frame) => {
+    const p = G.player;
+    return {
+      frame, state: G.state, score: G.score, fruitCount: G.fruitCount, lives: G.lives,
+      levelIndex: G.levelIndex, checkpointX: G.checkpointX, checkpointIndex: G.checkpointIndex,
+      camX: G.cam.x,
+      player: { x: p.x, y: p.y, vx: p.vx, vy: p.vy, big: p.big, h: p.h, onGround: p.onGround, dead: p.dead, invulnT: p.invulnT },
+      enemies: G.enemies.map((e) => ({ kind: e.kind ?? e.type, x: e.x, y: e.y, vx: e.vx, vy: e.vy, dead: Boolean(e.dead), squashed: Boolean(e.squashed) })),
+      items: G.items.map((it) => ({ kind: it.kind ?? it.type, x: it.x, y: it.y, vx: it.vx, vy: it.vy, dead: Boolean(it.dead), squashed: Boolean(it.squashed) })),
+    };
+  };
+  const route = (heavy) => {
+    newGame();
+    clearInput();
+    input.right = true; input.run = true;
+    const snaps = [];
+    let errors = 0, fx = 0;
+    for (let f = 1; f <= FRAMES[FRAMES.length - 1]; f++) {
+      const phase = (f - 1) % 45;
+      if (phase === 0) { input.jumpPressed = true; input.jump = true; }
+      if (phase === 9) input.jump = false;
+      if (heavy && f % 10 === 0) {
+        // Four calls per iteration, 60 iterations. R52 clause 4 censused the
+        // same deluge (its 120 forced calls climbed 225 -> 652 live
+        // particles) and proved it moves no gameplay number; this applies it
+        // to the snapshots instead of the pixels.
+        const p = G.player;
+        fxBurst(p.x, p.y, 6, KIND.SPARK); fx++;
+        fxHit(p, 'jump'); fx++;
+        if (G.enemies.length > 0) { fxHit(G.enemies[0], 'stomp'); fx++; }
+        fxShake(3); fx++;
+      }
+      if (step()) errors++;
+      if (FRAMES.includes(f)) snaps.push(snapshot(f));
+    }
+    clearInput();
+    return { snaps, errors, fx };
+  };
+  const textDiff = (a, b) => {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if (a[i] === b[i]) continue;
+      return `@${i} '${a.slice(Math.max(0, i - 40), i + 40)}' vs '${b.slice(Math.max(0, i - 40), i + 40)}'`;
+    }
+    return 'none';
+  };
+  const A = route(false);
+  const B = route(true);
+  const ja = A.snaps.map((s) => JSON.stringify(s));
+  const jb = B.snaps.map((s) => JSON.stringify(s));
+  const shaA = ja.map((s) => sha256Hex(s)), shaB = jb.map((s) => sha256Hex(s));
+  // clause 1 — every number in the world, byte-identical under the deluge.
+  const moved = FRAMES.filter((_, i) => shaA[i] !== shaB[i]);
+  assert(moved.length === 0, `clause 1: the heavy-FX run moved the world — snapshots at frames ${moved.join(', ')} differ (clean ${shaA.map((h) => h.slice(0, 12)).join(' ')} vs heavy ${shaB.map((h) => h.slice(0, 12)).join(' ')}); first difference ${textDiff(ja.join('\n'), jb.join('\n'))}`);
+  assert(A.errors === 0 && B.errors === 0, `clause 1: the frozen route threw in ${A.errors} (clean) / ${B.errors} (heavy) of ${FRAMES[FRAMES.length - 1]} steps — a thrown frame is not a frozen one`);
+  // clause 2 — non-vacuity: a snapshot of an empty world proves nothing.
+  const census = A.snaps.map((s) => ({ e: s.enemies.length, i: s.items.length, p: s.items.filter((it) => it.kind === 'popup').length }));
+  const mostE = Math.max(...census.map((c) => c.e)), mostI = Math.max(...census.map((c) => c.i));
+  assert(mostE >= 1 && mostI >= 1, `clause 2: the sampled set held at most ${mostE} enemies and ${mostI} items — nothing in the snapshots to move`);
+  // clause 3 — every sampled frame is in PLAYING (and the run reached
+  // S-10's measured end state: score 200, lives 1, fruit 0 at frame 600).
+  const last = A.snaps[A.snaps.length - 1];
+  const notPlaying = A.snaps.filter((s, i) => s.state !== 'PLAYING' || B.snaps[i].state !== 'PLAYING').map((s) => `${s.frame}=${s.state}/${B.snaps[FRAMES.indexOf(s.frame)].state}`);
+  assert(notPlaying.length === 0, `clause 3: a sampled frame was not in PLAYING (${notPlaying.join(', ')}) — a TITLE frame blinks on Date.now()/500 (src/render.js:199-200) and an end-state frame stops the simulation; either way the run is not the frozen route`);
+  assert(last.score === 200 && last.lives === 1 && last.fruitCount === 0, `clause 3: frame ${last.frame} read score ${last.score}/lives ${last.lives}/fruit ${last.fruitCount}, not S-10's measured score 200/lives 1/fruit 0 — the route drifted, and a drifted route freezes the wrong run`);
+  // clause 4 — the S-10 anchors, exactly.
+  const dA = JSON.stringify(A.snaps, null, 1), dB = JSON.stringify(B.snaps, null, 1);
+  const bytesA = Buffer.byteLength(dA, 'utf8');
+  assert(bytesA === ANCHOR_BYTES && sha256Hex(dA) === ANCHOR_DUMP, `clause 4: the frozen dump is ${bytesA} B / sha ${sha256Hex(dA)}, not S-10's shipped-code ${ANCHOR_BYTES} B / ${ANCHOR_DUMP} — the world moved under a graphics slice (or the snapshot fields did). Re-anchor in GRAPHICS_STATE.md with the new numbers and the commit that moved them; do not loosen this assertion`);
+  const missPerFrame = shaA.map((h, i) => (h.slice(0, 8) === ANCHOR_SNAPS[i] ? null : `frame ${FRAMES[i]}: ${h.slice(0, 8)} vs ${ANCHOR_SNAPS[i]}`)).filter(Boolean);
+  assert(missPerFrame.length === 0, `clause 4: the per-snapshot anchors drifted (${missPerFrame.join('; ')}) even though the dump matched, which cannot happen unless the array framing changed`);
+  assert(dB === dA, `clause 4: the heavy-FX dump is not the clean dump (${textDiff(dA, dB)})`);
+  return `frozen gameplay: ${FRAMES.join('/')} snapshots of the ${FRAMES[FRAMES.length - 1]}-step run are byte-identical under ${B.fx} forced fx calls (dump ${bytesA} B sha ${sha256Hex(dA).slice(0, 16)}… = S-10's; per-frame ${shaA.map((h) => h.slice(0, 8)).join(' ')} = S-10's ${ANCHOR_SNAPS.join('/')}); per frame enemies/items/popups ${census.map((c) => `${c.e}/${c.i}/${c.p}`).join(' ')}; frame ${last.frame} state ${last.state} score ${last.score} lives ${last.lives} fruit ${last.fruitCount} camX ${last.camX.toFixed(3)}; steps that threw ${A.errors}/${B.errors}`;
+});
+
 // MARKER:CHECKS
 
 // ---------------------------------------------------------------------------
