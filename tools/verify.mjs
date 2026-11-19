@@ -989,6 +989,7 @@ globalThis.innerHeight = 800;
 const C = await import('../src/config.js');
 const { LEVELS } = await import('../src/levels.js');
 const { parseLevel, isSolid } = await import('../src/level.js');
+const { tileAt } = await import('../src/level.js'); // R49: the LEVEL, not pixel coverage, decides which tiles are non-sky. Same module as :991, so the import is cached and this binding is free.
 const { hurtPlayer, killPlayer, makePlayer, updatePlayer } = await import('../src/player.js');
 const { makeBoss, makeTurnip, updateBoss, updateTurnip } = await import('../src/enemy.js');
 const { makeBerry, makeFruit, makePopup, updateItems } = await import('../src/items.js');
@@ -5581,6 +5582,201 @@ check('R52', () => {
   }
   assert(firstBad < 0, `clause 3: frame ${firstBad} of the idle run (settled 1-1 at spawn, clearInput(), nothing driven) read ${badAt} — §6: shake is 0 unless a check asks for it`);
   return `shake is render-only: ${RUN}-sample cam.x stream digest ${dig(A.cam)} and player.x digest ${dig(A.pl)} are byte-identical with fx.shake(3) forced every step (forced run B digests ${dig(B.cam)} / ${dig(B.pl)}); the same pair of runs' scene op logs differ on ${sceneDiff}/${RUN} frames (${B.nonzero} of them shaken, peak |shakeOffset| ${B.maxOff}) so clause 1 is not vacuous; idle path: settled 1-1 at spawn (idle at +${idleAt}), clearInput(), nothing driven -> shakeOffset() 0 and isIdle() true on all ${RUN} frames`;
+});
+
+// ---------------------------------------------------------------------------
+// R49 — ART DENSITY (§8): a real frame must carry real art, not flat colour.
+//
+// WHY `main` CANNOT HOST THIS CHECK: `main` (d16b002) has no `sceneRec()`, no `composite.js`
+// and no `drawStats()` — S-12 proved the same blocker for R47 — so "must be red on `main`" is
+// met by QUOTING main's browser-readback census here and by falsifying the clauses in-harness
+// instead (flat-palette control, S-14's RESULT block in GRAPHICS_STATE.md): same code path,
+// flat input, red output.
+//   `main` d16b002, browser pixel readback, 12 frames / 426 tile samples, cam 0 -> 366.3:
+//   tone bands exact min 2 / med 3 / p10 3 / max 6; bands q8 2 / 3 / 3 / 4;
+//   colours exact min 2 / med 3 / max 7; colours q8 2 / 3 / 5; unique colours per frame 35-56.
+//   -> ALL THREE clauses are red on `main` at these thresholds: unique 35-56 < 90, band
+//      med 3 < 5, colour med 3 < 6. Evidence: /tmp/vb-probe-tiles-main.json,
+//      /tmp/vb-probe-density-main.json, /tmp/vb-probe-tiles-branch.json.
+//   Branch browser readback: bands 18/38/30/46, colours 20/44/35/53, unique 800-801/frame.
+//   The margin is thin by design (`main`'s band med 3 against a gate of 5) and two plan
+//   parentheticals are wrong in-doc — §2's "21 unique colours on screen" does not reproduce
+//   (`main` carries 35-56) and §8's "med 2 / min 1 / max 5" bands measured med 3 / min 2 /
+//   max 6 (old colours/tile max 7, not 10). Docs get corrected in S-19; THRESHOLDS NEVER MOVE.
+//
+// WHAT IS COUNTED, AND WHERE: the MODELLED ink of the §7 `scene` layer (`sceneRec().pixels`
+// after `renderFrames(1, { ink: true })`), not a browser readback census. Deliberate: the
+// ink-model header (:247-260) requires every colour COUNT to come from the model, where drift
+// can neither split one colour into two nor merge two into one, and `scene` is the LOGICAL
+// 256x240 world layer cleared whole every frame (`src/render.js:260`), so its ink IS the frame
+// under test. Never the live `rec`: it holds DEVICE px, is truncated at `INK_CAP` (262144 <
+// 768*720) and a full-screen logical window over it reads empty — a check pointed at it would
+// go green on a blind read. `R45`'s ink half (:5083-5107) is the existing precedent for
+// snapshotting this recorder. Clause 1 counts the model's EXACT distinct colours (a
+// canonicalisation could only merge them and the header forbids that inside the model); clause
+// 3 must canonicalise, because "distinct colours per tile" is the count a screenshot is
+// supposed to corroborate at ±3 LSB — see CANONICALISATION below.
+//
+// TILE DEFINITION (the probes' definition, with ONE supersession written down): a non-sky tile
+// is decided by the LEVEL — `isSolid(tileAt(G.level, wtx, ty))` — never by pixel coverage.
+// Deciding it by "the rect has >= 1 inked px" makes `minimum` unfalsifiable (a lone sprite-edge
+// px can never hold 3 tone bands) so the clause could only ever fail; control (d) in S-14's
+// RESULT block shows the band minimum collapse under that definition. A tile's screen rect is
+// `x0 = wtx*TILE - camX + o`, `y0 = ty*TILE - o` and it must show >= 14 of its 16 px on screen
+// IN EACH AXIS to be sampled (the area reading — 14 of the 256 px — would drop nothing at all,
+// which is not what the rule is for: it exists to drop straddlers rather than merge them with a
+// neighbour). SUPERSESSION: the probes wrote `wtx*16 - cam.x`; this check uses the camera the
+// RENDERER used, `camX = Math.floor(G.cam.x)` (src/render.js:259) plus fx's ONE shake int,
+// because `G.cam.x` is fractional and rounding it shifts every window up to 1 px off the
+// destination the strips were really blitted to (`dx = i*STRIP_W - stripPhase - (camX - o)`,
+// src/terrain.js:471) — the same "window disagrees with the renderer's arithmetic" bug that
+// fabricated the old "terrain draws a hole at column 31" report. Screen 16 px cells are never
+// bucketed into world columns. The integer camera is also what makes one inked pixel belong to
+// exactly ONE world column, so the scan is a single floor, not a candidate sweep.
+//
+// CANONICALISATION (clause 3): colours whose every channel agrees within `INK_TOL` (3 LSB) are
+// merged by GREEDY MERGE over the sorted colour strings — a colour joins the first `colorNear`
+// representative, so the result is deterministic. Bucketing (rounding channels to multiples of
+// 4) was rejected on purpose: a 3-vs-6 pair splits across buckets, which only INFLATES a count,
+// and every gate here is a minimum, so inflation weakens it. The `quantiseInk(c, 8)` variant is
+// printed as context and never gated, exactly as the ink-model header prescribes for a
+// screenshot cross-check. `lumsIn`'s shipped semantics (opaque px only, rounded Rec.709
+// luminance) are what a tone band is, so dither and soft AO cannot fake a band.
+//
+// MEASURED RED ON THIS TREE (S-14, HEAD 35770bb) — a FINDING, not a threshold problem: all
+// three density clauses are red on the MODELLED ink of this branch, and the reason is the ink
+// model's coverage, not the art. Over the scroll below (9 inked frames at 9 distinct cam.x
+// positions, sampled cam.x 0.0->328.7 of a scroll that reached 361.6, 309 LEVEL-solid on-screen
+// tile samples): unique colours/frame min 75, med 134, max 155; tone bands med 0 / min 0 /
+// max 15 (n 309); colours/tile med 1 / min 1 — i.e. clause 1 misses 90 and clauses 2 and 3
+// measure a frame with essentially no opaque art ink. Why: the ambient wash
+// (`src/render.js:79` blitting `ambientFor()`, whose ramp is baked through
+// `ctx.createLinearGradient` — `src/pixels.js:459`) writes the harness's one unparseable colour
+// token `[object Object]` (`parseInk` answers null, header :265-266) over 46-49k of the ~52k
+// inked px of EVERY frame (the wash covers the whole 256x240 logical frame), and a traced ground
+// pixel — (64,208), row 13 'X' — receives EXACTLY ONE
+// ink write in a whole frame: that wash. The terrain-strip and atlas blits do reach `inkBlit`
+// with parseable ink (3,275 to 66,208 px per source, `unmodelledOps` empty), yet none of it
+// lands on the sampled tiles, so the frame holds ~2,146 opaque px and 134 parseable colours
+// where the browser readback counts 800-801. Both read paths agree: `renderFrames(1,
+// { ink: true })` and R45's own `inkedRender(() => renderScene(G))` answer the same census, and
+// `hud` (18 colours, all opaque, 510 px) shows the model itself is not broken — it is blind
+// where baked art arrives as sparse blit ink. Every existing scene-ink check compares two
+// EQUALLY blind renders, so only a count can see this; R49 is the first count. The numbers are
+// printed on every line below so the red cannot be mistaken for a frozen probe.
+// ---------------------------------------------------------------------------
+check('R49', () => {
+  const MIN_UNIQUE = 90, BAND_MED = 5, BAND_MIN = 3, COLOUR_MED = 6; // plan §8, unchanged
+  const MIN_SAMPLES = 200, CAM_TARGET = 360, MAX_SAMPLES = 10, EVERY = 15, SCROLL_BOUND = 600; // 10 inked frames of the scroll (every ~50 px of camera travel): the >=200 tile-sample floor is still met ~1.7x over and the check stays under 3 s
+  const EDGE_PX = 14, T = C.TILE, VW = C.VIEW_W, VH = C.VIEW_H;
+  const chars = ['X', 'P', 'B', '|']; // the tile chars whose per-char floor the probes published
+  const stats = (xs) => {
+    const s = [...xs].sort((a, b) => a - b);
+    const q = (p) => (s.length ? s[Math.floor((s.length - 1) * p)] : 0); // p10 = index floor(0.1*(n-1))
+    return { n: s.length, min: s.length ? s[0] : 0, p10: q(0.1), med: q(0.5), max: s.length ? s[s.length - 1] : 0 };
+  };
+  const canonCount = (colours) => {
+    const reps = [];
+    for (const c of [...colours].sort()) if (!reps.some((r) => colorNear(r, c))) reps.push(c);
+    return reps.length;
+  };
+  newGame();
+  steps(120); // the level banner has to expire: its text runs are not a steady frame (R47's idiom)
+  let idleAt = 0;
+  while (!fxIsIdle() && idleAt < 600) { steps(1); idleAt++; }
+  assert(fxIsIdle(), `the particle pool never went idle within 600 steps (${JSON.stringify(fxMetrics())}) — R49 cannot measure a settled scroll off a live pool`);
+  clearInput();
+  const uniq = [], uniqQ8 = [], hudCols = [], bands = [], cols = [], colsQ8 = [], opaque = [], unnameable = [];
+  const cams = [], perChar = new Map();
+  let samples = 0, ticks = 0, tileSamples = 0, dryTiles = 0, maxShake = 0;
+  let leftPlaying = '';
+  input.right = true; input.run = true; // R52's held-input scroll: run right until the camera has moved
+  while (samples < MAX_SAMPLES && G.cam.x < CAM_TARGET && ticks < SCROLL_BOUND) {
+    const sampled = ticks % EVERY === EVERY - 1;
+    if (sampled) renderFrames(1, { ink: true }); else steps(1); // renderFrames steps exactly ONE frame, ink model armed
+    ticks++;
+    if (G.state !== 'PLAYING') { leftPlaying = `G.state left PLAYING at scroll step ${ticks} (${G.state}) — sampling stopped there`; break; }
+    if (!sampled) continue;
+    const px = sceneRec().pixels;
+    const o = fxShakeOffset();
+    if (Math.abs(o) > maxShake) maxShake = Math.abs(o);
+    const camX = Math.floor(G.cam.x); // render.js:259 floors the camera; that is the camera the art landed on
+    cams.push(G.cam.x);
+    const frame = new Set();
+    const cell = new Map();
+    let opq = 0, unnamed = 0;
+    for (const [key, color] of px) {
+      frame.add(color);
+      const p = parseInk(color);
+      if (p === null) unnamed++; // the ambient wash's `[object Object]` token: one entry, no band
+      else if (p.a >= 1) opq++;
+      const comma = key.indexOf(',');
+      const x = Number(key.slice(0, comma));
+      const y = Number(key.slice(comma + 1));
+      const tx = Math.floor((x + camX - o) / T);
+      const ty = Math.floor((y + o) / T);
+      const x0 = tx * T - camX + o;
+      const y0 = ty * T - o;
+      const ch = tileAt(G.level, tx, ty);
+      if (!isSolid(ch)) continue; // the LEVEL decides what is terrain, never the pixel coverage
+      if (Math.min(x0 + T, VW) - Math.max(x0, 0) < EDGE_PX) continue;
+      if (Math.min(y0 + T, VH) - Math.max(y0, 0) < EDGE_PX) continue;
+      let e = cell.get(tx + ',' + ty);
+      if (!e) { e = { ch, colours: new Set(), lums: new Set() }; cell.set(tx + ',' + ty, e); }
+      e.colours.add(color);
+      if (p !== null && p.a >= 1) e.lums.add(Math.round(0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b)); // `lumsIn` semantics
+    }
+    uniq.push(frame.size);
+    const fq8 = new Set();
+    for (const c of frame) fq8.add(quantiseInk(c, 8));
+    uniqQ8.push(fq8.size);
+    opaque.push(opq);
+    unnameable.push(unnamed);
+    const hud = new Set();
+    for (const c of hudRec().pixels.values()) hud.add(c); // context only, never gated
+    hudCols.push(hud.size);
+    for (let tx = Math.floor((camX - o) / T) - 1; tx <= Math.ceil((camX - o + VW) / T); tx++) {
+      for (let ty = 0; ty < C.ROWS; ty++) {
+        if (!isSolid(tileAt(G.level, tx, ty))) continue;
+        const x0 = tx * T - camX + o;
+        const y0 = ty * T - o;
+        if (Math.min(x0 + T, VW) - Math.max(x0, 0) < EDGE_PX) continue;
+        if (Math.min(y0 + T, VH) - Math.max(y0, 0) < EDGE_PX) continue;
+        tileSamples++;
+        if (!cell.has(tx + ',' + ty)) dryTiles++; // LEVEL says solid, ink says nothing landed there
+      }
+    }
+    for (const e of cell.values()) {
+      const b = e.lums.size, c3 = canonCount(e.colours), c8 = new Set([...e.colours].map((s) => quantiseInk(s, 8))).size;
+      bands.push(b); cols.push(c3); colsQ8.push(c8);
+      const pc = perChar.get(e.ch) || { bands: [], cols: [], colsQ8: [] };
+      pc.bands.push(b); pc.cols.push(c3); pc.colsQ8.push(c8);
+      perChar.set(e.ch, pc);
+    }
+    samples++;
+  }
+  clearInput();
+  const U = stats(uniq), U8 = stats(uniqQ8), B = stats(bands), CO = stats(cols), C8 = stats(colsQ8);
+  const HD = stats(hudCols), OP = stats(opaque), UN = stats(unnameable);
+  const span = cams.length ? `${Math.min(...cams).toFixed(1)}->${Math.max(...cams).toFixed(1)}` : 'no sample';
+  const reached = G.cam.x.toFixed(1); // how far the scroll itself got, so the sampled span is not mistaken for it
+  const pcLine = chars.map((ch) => {
+    const e = perChar.get(ch);
+    return `${ch} n=${e ? e.bands.length : 0} band<=${e ? stats(e.bands).min : 0} col<=${e ? stats(e.cols).min : 0} q8<=${e ? stats(e.colsQ8).min : 0}`;
+  }).join(' ');
+  // Every measured figure goes on EVERY line, pass or fail, so a frozen 0 or an empty sample set
+  // is visible in whichever clause trips first and the integrator never has to re-run to see why.
+  const measured = `${samples} inked frames at ${new Set(cams).size} distinct cam.x positions over ${ticks} scroll steps (sampled cam.x ${span}, the scroll reached ${reached}), ${tileSamples} LEVEL-decided on-screen tile samples (gate >= ${MIN_SAMPLES}, ${dryTiles} with no inked px), |shakeOffset| max ${maxShake}, ${leftPlaying || 'stayed PLAYING'}; `
+    + `unique colours/frame min ${U.min} (gate ${MIN_UNIQUE}) med ${U.med} max ${U.max} [q8 ${U8.min}-${U8.max}], `
+    + `tone bands med ${B.med} / min ${B.min} / p10 ${B.p10} / max ${B.max} (n ${B.n}, gates ${BAND_MED}/${BAND_MIN}), `
+    + `colours/tile med ${CO.med} / min ${CO.min} (q8 med ${C8.med} / min ${C8.min}, gate ${COLOUR_MED}), `
+    + `per-char minima: ${pcLine}; `
+    + `frame ink ${OP.min}-${OP.max} opaque px and ${UN.min}-${UN.max} unparseable px of ${OP.max + UN.max} inked, hud colours ${HD.min}-${HD.max} (context only)`;
+  assert(samples > 0 && tileSamples >= MIN_SAMPLES, `clause 4 (non-vacuity): the scroll produced ${samples} inked frames / ${tileSamples} tile samples, < ${MIN_SAMPLES} (target cam.x ${CAM_TARGET} in ${ticks} steps) — an empty or near-empty sample set cannot certify art density. Measured: ${measured}`);
+  assert(U.min >= MIN_UNIQUE, `clause 1: a sampled frame held only ${U.min} distinct colours, < ${MIN_UNIQUE}. Measured: ${measured}`);
+  assert(B.med >= BAND_MED && B.min >= BAND_MIN, `clause 2: per-tile tone bands med ${B.med} / min ${B.min} (n ${B.n}) fail the med >= ${BAND_MED} AND min >= ${BAND_MIN} gates. Measured: ${measured}`);
+  assert(CO.med >= COLOUR_MED, `clause 3: per-tile distinct colours (canonicalised at +/-${INK_TOL} LSB) med ${CO.med} < ${COLOUR_MED}. Measured: ${measured}`);
+  return `art density: ${measured}`;
 });
 
 // MARKER:CHECKS
