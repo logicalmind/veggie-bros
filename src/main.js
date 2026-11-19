@@ -35,6 +35,7 @@ import {
   setupTouch,
 } from './input.js';
 import { audio } from './audio.js';
+import { configure as configureComposite, layers as compositeLayers, layout as compositeLayout } from './composite.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -57,8 +58,22 @@ function fit() {
   const whole = Math.floor(r);
   const halfStep = Math.floor(r / SCALE_STEP) * SCALE_STEP;
   const s = Math.min(SCALE_MAX, Math.max(SCALE_MIN, whole >= CRISP_MIN_SCALE ? whole : halfStep));
-  canvas.style.width = VIEW_W * s + 'px';
-  canvas.style.height = VIEW_H * s + 'px';
+  const cssW = VIEW_W * s;
+  const cssH = VIEW_H * s;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  // §4: the BACKING STORE is the composite's number, never arithmetic re-derived here. `configure`
+  // owns the dpr clamp and the MAX_BACKING_PX cap, and it returns the same table `layers()` allocates
+  // from, so `upscale` and the backing store cannot disagree about k — a re-derived `cssW * dpr` here
+  // would be a second sizing authority and would silently down/up-scale the final blit on a capped
+  // display. `window.` is load-bearing: the harness pins devicePixelRatio on the window proxy only.
+  const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+  const lay = configureComposite(cssW, cssH, dpr);
+  canvas.width = lay.backing.w;
+  canvas.height = lay.backing.h;
+  // Resizing a canvas RESETS its 2D context state, and :41's nearest-neighbour flag is the shipped
+  // look — re-arm it here, or the first resize after boot turns pass 2 into a bilinear smear.
+  ctx.imageSmoothingEnabled = false;
 }
 window.addEventListener('resize', fit);
 fit();
@@ -590,6 +605,25 @@ function updateState(dt) {
 let last = performance.now();
 let acc = 0;
 
+// §4's two-pass composite, and the ONLY thing that ever draws on the visible canvas. Three
+// nearest-neighbour blits (the ctx flags are all false), the `k` step integer so nothing downscales:
+//   1. `scene` (logical 256x240, LIT) → `upscale` at sceneW*k × sceneH*k
+//   2. `hud`   (logical 256x240, unlit) → the SAME rect, on top: never multiplied/lighted, never shaken
+//   3. `upscale` → the canvas at the exact backing size `configure` chose (pass 2, the only fractional one)
+// No clearRect of `upscale` or of the canvas: blit 1 covers both 1:1 every frame, and both logical
+// layers are themselves whole-surface cleared by render.js — TITLE included, whose `drawTitle` opens
+// with an opaque sky fill, so the stale `scene` content blit 1 lays down is always covered. Blits 1
+// and 2 landing on `upscale` also keeps the live context's per-frame op stream at ONE drawImage.
+function composite() {
+  const lay = compositeLayout();
+  const L = compositeLayers();
+  const w = lay.sceneW * lay.k, h = lay.sceneH * lay.k;
+  const up = L.upscale.ctx;
+  up.drawImage(L.scene.c, 0, 0, w, h);
+  up.drawImage(L.hud.c, 0, 0, w, h);
+  ctx.drawImage(L.upscale.c, 0, 0, lay.backing.w, lay.backing.h);
+}
+
 function frame(now) {
   // Re-arm before doing any work: one throw from update() or render() must not be able to
   // stop the loop, or the canvas freezes for good with no way back but a page reload. The
@@ -610,7 +644,8 @@ function frame(now) {
       updateFx(STEP);
       acc -= STEP;
     }
-    render(ctx, G);
+    render(G);
+    composite();
   } catch (err) {
     console.error(err);
   }

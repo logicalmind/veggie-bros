@@ -572,6 +572,24 @@ const mkCtx = (rec, owner) => new Proxy({}, {
       // stays on ITS recorder, so a 'lighter' emissive blit into a lightmap can
       // never pollute the game canvas' `rec.pixels`.
       if (!src) return;
+      // S-09b2: a composite LAYER whose WHOLE area is replaced every frame by a `source-over`, alpha-1
+      // blit taken FROM ANOTHER PROVEN PER-FRAME LAYER is per-frame scratch on exactly the argument the
+      // whole-surface `clearRect` in the handler below uses — everything it holds was drawn by the
+      // current frame. §4's `upscale` gets no clear of its own (`src/main.js`'s blit 1 covers it 1:1 in
+      // logical terms, so a clear would be a wasted full-surface op) and its source is `scene`, which IS
+      // cleared every frame, so its ink may follow the live-ink demand. Without this flip `upscale`
+      // models ink FOREVER (`__writer` is `main.js`, so `resolveInkOwner` rightly does not demote it):
+      // measured 132.6 ms per steady frame over 20 frames, because `scene`'s ink model is never cleared
+      // outside an `inkedRender` scope and every later frame's blit re-walked its 61 440 stale cells ×
+      // k² = 553k refused `ink()` calls (`inkDropped` 6.1M). Demand-gating costs no read: no check reads
+      // `upscale`, and inside `inkedRender` the frame's ink still transits scene → upscale → canvas
+      // (control: the live recorder holds 262 144 modelled px after one inked frame, `inkAt(2,2)` =
+      // `#4aa94c` grass; 0 after a plain frame).
+      if (rec.inkLayer && !rec.inkVolatile && src.inkVolatile && gOp === 'source-over' && !(gAlpha < 1)) {
+        const bd = rec.dims ? rec.dims() : null;
+        if (bd && bd.w > 0 && bd.h > 0 && Math.min(SDX, SDX + SDW) <= 0 && Math.min(SDY, SDY + SDH) <= 0
+          && Math.max(SDX, SDX + SDW) >= bd.w && Math.max(SDY, SDY + SDH) >= bd.h) rec.inkVolatile = true;
+      }
       inkBlit(rec, src, Number(SSX) || 0, Number(SSY) || 0, Number(SSW) || 0, Number(SSH) || 0,
         Number(SDX) || 0, Number(SDY) || 0, Number(SDW) || 0, Number(SDH) || 0, seq, gAlpha, gOp);
     };
@@ -993,6 +1011,18 @@ const { layers: compositeLayers } = await import('../src/composite.js'); // the 
 function sceneRec() {
   const c = compositeLayers().scene.c;
   if (!c || !c._rec) throw new Fail('the §7 scene layer has no op recorder — world-space draws cannot be asserted');
+  return c._rec;
+}
+
+// The §4 HUD layer's recorder — the same re-point as `sceneRec()`, one surface later. Since S-09b2
+// `src/render.js` draws the HUD, the banner, the overlays and TITLE into `composite.layers().hud`
+// (LOGICAL 256x240, so R19's runs and R24's zones stay in the coordinate space their claims were
+// written in) and `src/main.js` blits it onto `upscale` at `k`: a live-context op log can no longer
+// contain a HUD draw. Like `scene`, `hud` is whole-surface cleared by render.js, so its `.pixels`
+// hold exactly the frame under test.
+function hudRec() {
+  const c = compositeLayers().hud.c;
+  if (!c || !c._rec) throw new Fail('the §4 hud layer has no op recorder — HUD-space draws cannot be asserted');
   return c._rec;
 }
 
@@ -2173,18 +2203,20 @@ check('R19', () => {
   G.state = 'LEVEL_CLEAR';
   G.clearT = 1.39 - C.STEP;   // update() adds one STEP before the frame renders
   G.bannerT = 0;
+  const hr = hudRec(); // the flash, the overlay text and the HUD all live on the §4 `hud` layer now
+  hr.rects.length = 0; // a bake recorder's op log is never reset and stops at BAKE_LOG_CAP: bound it to this frame
   renderFrames(1);
   assert(G.state === 'LEVEL_CLEAR', `the level advanced out of LEVEL_CLEAR before the frame could render (clearT=${G.clearT})`);
-  const flash = rec.rects.find((q) => q[4] === C.PALETTE.white && q[2] >= C.VIEW_W && q[3] >= C.VIEW_H);
+  const flash = hr.rects.find((q) => q[4] === C.PALETTE.white && q[2] >= C.VIEW_W && q[3] >= C.VIEW_H);
   assert(flash, 'no full-screen white flash rect was drawn at clearT=1.39');
   const bad = [];
   if (!(flash[5] <= 0.9)) bad.push(`the flash alpha is ${flash[5].toFixed(2)} (> 0.9 clamp) — the last frames are a pure white screen`);
-  const stage = rec.rects.filter((q) => q[4] === C.PALETTE.black && q[1] >= 90 && q[1] < 120 && q[3] === 2 && q[2] >= 2 && q[2] <= 12); // scale-2 text runs (post-R16: overlay text is fillRect runs, not fillText)
-  const plus = rec.rects.filter((q) => q[4] === C.PALETTE.black && q[1] >= 120 && q[1] < 150 && q[3] === 1 && q[2] >= 1 && q[2] <= 6); // scale-1 text runs
+  const stage = hr.rects.filter((q) => q[4] === C.PALETTE.black && q[1] >= 90 && q[1] < 120 && q[3] === 2 && q[2] >= 2 && q[2] <= 12); // scale-2 text runs (post-R16: overlay text is fillRect runs, not fillText)
+  const plus = hr.rects.filter((q) => q[4] === C.PALETTE.black && q[1] >= 120 && q[1] < 150 && q[3] === 1 && q[2] >= 1 && q[2] <= 6); // scale-1 text runs
   assert(stage.length > 0 && plus.length > 0, `STAGE CLEAR/+1000 text runs not found (stage ${stage.length}, plus ${plus.length} rects)`);
   const firstText = Math.min(stage[0][6], plus[0][6]); // rects carry seq at index 6
   if (flash[6] > firstText) bad.push(`the flash (draw #${flash[6]}) is issued AFTER 'STAGE CLEAR'/'+1000' (draw #${firstText}) — draw the flash first so the text sits on top of the fade`);
-  const hud = rec.rects.filter((q) => q[4] === C.PALETTE.black && q[1] < 30 && q[3] === 1 && q[2] >= 1 && q[2] <= 6);
+  const hud = hr.rects.filter((q) => q[4] === C.PALETTE.black && q[1] < 30 && q[3] === 1 && q[2] >= 1 && q[2] <= 6);
   if (hud.length && hud.every((q) => q[6] < flash[6]) && flash[5] > 0.9) bad.push('the HUD is drawn under a full-strength flash');
   assert(bad.length === 0, bad.join(' | '));
   return `flash alpha ${flash[5].toFixed(2)} (clamped) and drawn before the overlay text (draw #${flash[6]} vs #${firstText})`;
@@ -2340,6 +2372,12 @@ check('R24', () => {
   G.lives = 9;
   G.muted = true;
   G.bannerT = 0;
+  // The read is taken off the §4 `hud` layer's recorder, not the live one, together with the surface
+  // the HUD now draws into (`src/render.js` 254/298-309). The zones above and below are LOGICAL px and
+  // `hud` is LOGICAL 256x240, so every window, predicate and assertion below is byte-identical to the
+  // live-recorder read; only the surface moves. Reading the live recorder here would find nothing once
+  // §4 lands, because the live recorder holds DEVICE px (k x) — the R23/R45 precedent.
+  const hr = hudRec();
   renderFrames(1, { ink: true });
   // The renderer's own width contract: drawPixelText returns the textW it laid the
   // string out with, so the zones below are derived from the same metric.
@@ -2381,16 +2419,33 @@ check('R24', () => {
       }
     }
     for (const z of zs) {
-      const cols = rec.colsWhere(Math.floor(z.x0), Math.ceil(z.x1), band.y0, band.y1, isHudInk);
+      const cols = hr.colsWhere(Math.floor(z.x0), Math.ceil(z.x1), band.y0, band.y1, isHudInk);
       if (!cols.length) bad.push(`'${z.name}' has no ink inside its layout rect [${z.x0},${z.x1}) x [${band.y0},${band.y1}) — the HUD moved away from the widths textW reports`);
     }
-    const stray = rec.colsWhere(0, C.VIEW_W, band.y0, band.y1, isHudInk)
+    const stray = hr.colsWhere(0, C.VIEW_W, band.y0, band.y1, isHudInk)
       .filter((c) => !zs.some((z2) => c >= Math.floor(z2.x0) - 1 && c < Math.ceil(z2.x1) + 1));
     if (stray.length) bad.push(`HUD ink at x=${stray[0]}..${stray[stray.length - 1]} lies outside every layout rect in the y ${band.y0}..${band.y1} band`);
     const right = Math.max(...zs.map((z) => z.x1));
     if (right > C.VIEW_W - 4) bad.push(`the rightmost HUD rect ends at x=${right}, leaving less than a 4px margin`);
   }
   assert(bad.length === 0, bad[0]);
+  { // The CANARY, last: one 1×1 fillRect painted by the harness itself through the same mock context
+    // the zones were read from — the `hud` layer's — into a column of the 'score' zone that currently
+    // holds no ink, then the identical window read again. If this read cannot see a pixel painted
+    // through that ctx, the PASS above is worth nothing (S-09h2's canary, same reasoning).
+    const band = bands[0], z = band.zones[0];
+    const px0 = Math.floor(z.x0), px1 = Math.ceil(z.x1);
+    const before = hr.colsWhere(px0, px1, band.y0, band.y1, isHudInk);
+    const gone = new Set(before);
+    let px = -1;
+    for (let x = px0; x < px1; x++) if (!gone.has(x)) { px = x; break; }
+    assert(px >= 0, `R24's canary found no un-inked column in the '${z.name}' zone [${px0},${px1}) x [${band.y0},${band.y1}) (${before.length} of ${px1 - px0} columns inked) — the read is saturated, so a painted pixel could not be distinguished from the HUD`);
+    const hc = compositeLayers().hud.ctx;
+    hc.fillStyle = C.PALETTE.black; // the exact colour isHudInk accepts
+    inkedRender(() => hc.fillRect(px, band.y0 + 9, 1, 1)); // the ink gate, open like the frame's
+    const after = hr.colsWhere(px0, px1, band.y0, band.y1, isHudInk);
+    assert(after.length === before.length + 1 && after.includes(px), `R24's own ink read did not notice a 1×1 fillRect painted into the hud layer at ${px},${band.y0 + 9} (columns ${before.length} → ${after.length}) — the probe sees nothing, so every zone PASS above is worth nothing`);
+  }
   return `${bands[0].zones.length + bands[1].zones.length} HUD rects, min gap ${minGap}px, widest right edge ${Math.max(...bands[0].zones.map((z) => z.x1))}`;
 });
 
@@ -4793,7 +4848,7 @@ check('R43', () => {
 //          (a draw that happens only on the frame a hero runs through the band at RUN_MAX, or only for
 //          the first N frames of a run). Clause 2 covers the audible/pushable half of that one real
 //          crossing.
-//      render() is a pure function of (ctx, G) in PLAYING — its only wall-clock input is drawTitle's
+//      render() is a pure function of (G) in PLAYING — its only wall-clock input is drawTitle's
 //      Date.now() blink, which the PLAYING path never reaches — so repeating a render is a determinism
 //      test rather than an assumption, and it is run as one on every camera position.
 //
@@ -4825,11 +4880,34 @@ check('R43', () => {
 // ---------------------------------------------------------------------------
 
 check('R45', () => {
-  // One frame's draw stream, as data. `scale`/`translate` are captured into the compared string, but
-  // only the first three kinds get a per-call diff message, because those are what a re-added sprite
-  // changes.
-  const stream = (r) => JSON.stringify([r.rects, r.text, r.blits, r.scaleCalls, r.translateCalls]);
-  const shot = () => { const r = mkRecorder(); renderScene(mkCtx(r), G); return stream(r); };
+  // One frame's draw stream, as data — over BOTH surfaces `render()` now writes: `scene` (world, FX)
+  // and `hud` (HUD, banner, overlay, TITLE). Since S-09b2 `render(g)` takes NO destination ctx (the two
+  // §4 layers ARE its destination), so the old `renderScene(mkCtx(mkRecorder()), G)` would have handed
+  // a scratch recorder to a function that never draws into it: two EMPTY streams comparing equal, which
+  // is this check passing because it went blind. `scale`/`translate` are captured into the compared
+  // string, but only the first three kinds get a per-call diff message, because those are what a
+  // re-added sprite changes.
+  // Both recorders are `bake`-scope: their op logs are never reset and stop appending at BAKE_LOG_CAP,
+  // so every shot clears them with `reset()` and compares exactly one render's ops — a stale or capped
+  // log would make the comparison lie in both directions. `reset()` (not just truncating the five logs)
+  // is load-bearing: `blits` entries carry the recorder's `seq`, and a monotonically growing `seq` makes
+  // the determinism pair below compare 743 against 1042 and call a deterministic renderer non-deterministic.
+  const STREAM_LOGS = ['rects', 'text', 'blits', 'scaleCalls', 'translateCalls'];
+  const stream = (rs) => JSON.stringify(STREAM_LOGS.map((k) => rs.reduce((all, r) => all.concat(r[k]), [])));
+  const shot = () => {
+    const rs = [sceneRec(), hudRec()];
+    // Both sides of every comparison must start from the SAME context state, and `rec.rects` carries the
+    // alpha column read off the destination context (`Number(t.globalAlpha)`). On the old scratch ctx
+    // that column was `NaN` forever, because nothing ever set the state; on a real §4 layer ctx the
+    // banner's `hud.globalAlpha = Math.min(1, bannerT)` (`src/render.js:305`) persists — the stub's
+    // `restore()` unwinds the CTM and depth but NOT `globalAlpha`, so a post-banner frame would report
+    // alpha 1 and a pre-banner one `NaN` for byte-identical glyph runs. Reset what the renderer may
+    // legitimately leave behind, so the diff compares draws, not last frame's context state.
+    for (const L of [compositeLayers().scene, compositeLayers().hud]) { L.ctx.globalAlpha = 1; L.ctx.globalCompositeOperation = 'source-over'; }
+    for (const r of rs) r.reset();
+    renderScene(G);
+    return stream(rs);
+  };
   const firstDiff = (a, b, la = 'with checkpoints', lb = 'without them') => {
     const A = JSON.parse(a);
     const B = JSON.parse(b);
@@ -4862,7 +4940,7 @@ check('R45', () => {
   //       `g.checkpointIndex` ("appears after you bank") impossible to hide, including one whose
   //       coordinates have nothing to do with `level.checkpoints`.
   // Then a third, NON-differential half (the absolute probe below) covers markers that no checkpoint
-  // state can make appear or disappear. `render()` is a pure function of (ctx, G) in PLAYING — its only
+  // state can make appear or disappear. `render()` is a pure function of (G) in PLAYING — its only
   // wall-clock input is drawTitle's Date.now() blink, which the PLAYING path never reaches — so
   // repeating a render is a determinism test rather than an assumption, and it is run as one.
   const STATES = [
@@ -5014,9 +5092,11 @@ check('R45', () => {
       }
       for (let i = 0; i < boxes.length; i++) hits[i] = fresh[i];
     };
-    // The live destination recorder stays ink-blind (default `inkRects = false`): the world's
-    // ink lives on `scene` now, and only the frame snapshot below feeds the box reports.
-    inkedRender(() => renderScene(mkCtx(mkRecorder()), G));
+    // `render(g)` has no destination ctx to hand a scratch recorder to since S-09b2 — passing one now
+    // hands the mock ctx to `render` AS `g`, and `bakeLevel(undefined)` goes red. The world's ink lands
+    // on the `scene` layer, whose snapshot `scan` takes below; the HUD/banner draws in the same call go
+    // to `hud`, a different recorder, so they cannot reach a world-space band window either.
+    inkedRender(() => renderScene(G));
     scan(); // snapshot NOW: the next render (or the canary's pixel) overwrites the shared buffer
     return { ctx: compositeLayers().scene.ctx, boxReport: (i) => fmtBox(hits[i]), rescan: scan };
   };

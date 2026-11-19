@@ -239,11 +239,22 @@ function drawOverlay(ctx, g) {
   }
 }
 
-export function render(ctx, g) {
-  if (g.state === 'TITLE') {
-    drawTitle(ctx);
-    return;
-  }
+export function render(g) {
+  // No caller-supplied destination: `render` draws the world into `composite.layers().scene` and
+  // the HUD/banner/overlay/TITLE into `composite.layers().hud`, and `main.js` owns the ONLY blits
+  // that reach the visible canvas (§4's `scene -> upscale -> canvas`, `hud -> upscale` on top).
+  // A destination ctx here would be a lie: nothing this function draws can land anywhere else.
+  const L = layers();
+  const hud = L.hud.ctx;
+  // The FIRST op on `hud` comes from THIS file, deliberately (it mirrors `scene`'s clear below):
+  // the harness resolves a composite-allocated surface's ink owner from that first op's stack and
+  // demotes a `composite.js`-primed surface to FX scratch, so a composite-side priming clear would
+  // make every HUD ink assertion (R19's runs, R24's zones) blind. Whole-surface, every frame, so
+  // nothing here can inherit last frame's banner or a stale overlay.
+  hud.clearRect(0, 0, VIEW_W, VIEW_H);
+  // The title screen takes the same surface as the HUD: it is unlit, unshaken glyph art, and a
+  // `drawTitle(ctx)` on the live canvas would put it in the top-left third of a css*dpr backing store.
+  if (g.state === 'TITLE') { drawTitle(hud); return; }
   const level = g.level;
   const camX = Math.floor(g.cam.x);
 
@@ -252,10 +263,9 @@ export function render(ctx, g) {
   // transform anywhere (R45 diffs the draw stream), and never the HUD or the overlays (R52).
   const o = shakeOffset();
   const baked = worldFor(g);
-  // Everything that can be LIT is drawn into the scene layer, which is a persistent buffer: it
-  // is emptied first so the frame cannot inherit last frame's bloom, and the single blit below
-  // is the only thing the live canvas ever takes from the world (§7, R52).
-  const L = layers();
+  // Everything that can be LIT is drawn into the scene layer, which is a persistent buffer: it is
+  // emptied first so the frame cannot inherit last frame's bloom. `main.js` blits it; nothing here
+  // touches the visible canvas (§7, R52, §4's pass order).
   const sc = L.scene.ctx;
   sc.clearRect(0, 0, VIEW_W, VIEW_H);
   drawWorld(sc, baked, camX, o, -o);
@@ -279,22 +289,22 @@ export function render(ctx, g) {
   applyLightmap(sc);
   buildBloom(g, baked);
   applyBloom(sc);
-  // One blit, 1:1 logical px, on the live context's own nearest-neighbour flag.
-  ctx.drawImage(L.scene.c, 0, 0, VIEW_W, VIEW_H);
+  // The scene → upscale → canvas chain lives in `main.js` now, at `k`, so `R45`'s draw-stream
+  // comparisons read the `scene` recorder and the live context takes exactly one blit per frame.
 
-  // HUD, banner and overlay stay on the LIVE context, after the composite, and take no shake:
-  // glyph ink never goes through the scene buffer, so no `multiply`/`lighter` upscale can blur it.
+  // HUD, banner and overlay go on the `hud` layer, never on the lit scene and never shaken: glyph
+  // ink keeps its own logical grid so §4's nearest-neighbour upscale cannot blur it (§4).
   if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'LEVEL_CLEAR') {
-    drawHud(ctx, g);
+    drawHud(hud, g);
   }
 
   if (g.state === 'PLAYING' && g.bannerT > 0) {
     const text = 'WORLD ' + level.label + ' \u2014 ' + level.name.toUpperCase();
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, g.bannerT);
-    drawPixelText(ctx, text, (VIEW_W - textW(text)) / 2, 60, INK);
-    ctx.restore();
+    hud.save();
+    hud.globalAlpha = Math.min(1, g.bannerT);
+    drawPixelText(hud, text, (VIEW_W - textW(text)) / 2, 60, INK);
+    hud.restore();
   }
 
-  drawOverlay(ctx, g);
+  drawOverlay(hud, g);
 }
