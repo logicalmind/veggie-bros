@@ -81,9 +81,9 @@ One subagent at a time; brief with exact paths **and** line ranges, ≤ ~400 lin
 
 ```
 Continue the veggie_bros graphics upgrade as INTEGRATOR. cwd /Users/jasonjordan/repos/veggie_bros,
-branch feature/graphics-upgrade, HEAD b7b01da9fc, clean tree. The user's own jsconfig.json and the
-src/main.js @type line are already committed (b7b01da9fc): do not re-add them, re-lint them, or wire
-tsc into the gates.
+branch feature/graphics-upgrade at its tip (the commit that last touched GRAPHICS_HANDOFF.md), clean
+tree. The user's own jsconfig.json and the src/main.js @type line are already committed (b7b01da9fc):
+do not re-add them, re-lint them, or wire tsc into the gates.
 
 THE PREVIOUS SESSION ENDED WITH A MACHINE RESTART, so assume /tmp is empty: rebuild
 /tmp/vb-verify-each.sh (recipe in GRAPHICS_HANDOFF.md's artifact table) and re-run ./serve-local.sh
