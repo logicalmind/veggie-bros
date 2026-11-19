@@ -642,14 +642,17 @@ const mkCtx = (rec, owner) => new Proxy({}, {
         for (let py = Math.ceil(by + size * 0.1); py < Math.floor(by + size * 0.47); py++) rec.ink(px, py, color, seq);
       }
     };
-    // `blits` keeps its exact historical shape (R45 stringifies it); the fuller
-    // record the §8 budgets need lives in `drawImages`.
+    // `drawImages` is the ONLY blit log. It expands the 3- and 5-argument short forms from the
+    // whole source canvas and carries the source canvas's own identity, so one entry can be NAMED
+    // as an atlas cell (source rect -> dest rect). The pre-S-16b `blits` log held the RAW args —
+    // `undefined` for every short form, dest filed under `sx..sh` — which is exactly why the old
+    // R45 comparison could not tell two same-size cells apart (plan §8:186). Nothing read it after
+    // S-16b, so it is deleted rather than left as the shorter, blinder name to reach for.
     if (k === 'drawImage') return function (img, sx, sy, sw, sh, dx, dy, dw, dh) {
       bump(rec, 'drawImage');
       const argc = arguments.length;
       if (!rec) return;
       const seq = rec.seq++;
-      log(rec, rec.blits, { sx, sy, sw, sh, dx, dy, dw, dh, seq });
       // The short forms (drawImage(c,x,y) / (c,x,y,w,h)) take their source rect
       // from the whole source canvas — that is the form §4's two-pass upscale
       // and §7's layer blits use, so its rects have to be recorded too.
@@ -822,7 +825,7 @@ function mkRecorder(scope = 'scratch', dims = null) {
     // a check legitimately reads. `INK_CAP` bounds that surface instead, and
     // `reset()` frees it every frame.
     dims,
-    rects: [], text: [], blits: [], drawImages: [], clears: [], gradients: [], patterns: [], imageOps: [],
+    rects: [], text: [], drawImages: [], clears: [], gradients: [], patterns: [], imageOps: [],
     pixels: new Map(), textInk: [], scaleCalls: [], translateCalls: [], transformCalls: [], stateLog: [],
     seq: 0, glyphInk: true, inkRects: false, depth: 0, unknown: new Set(),
     // `inkRects` is the ONE switch for "this surface models ink": it gates
@@ -906,7 +909,7 @@ function mkRecorder(scope = 'scratch', dims = null) {
       return { entries: this.pixels.size, dropped: this.inkDropped, cap: INK_CAP, unmodelledOps: [...this.unmodelledOps].sort() };
     },
     reset() {
-      this.rects.length = 0; this.text.length = 0; this.blits.length = 0; this.drawImages.length = 0;
+      this.rects.length = 0; this.text.length = 0; this.drawImages.length = 0;
       this.clears.length = 0; this.gradients.length = 0; this.patterns.length = 0; this.imageOps.length = 0;
       this.scaleCalls.length = 0; this.translateCalls.length = 0; this.transformCalls.length = 0;
       this.stateLog.length = 0;
