@@ -51,6 +51,7 @@ import {
 import { audio } from './audio.js';
 import { configure as configureComposite, layers as compositeLayers, layout as compositeLayout } from './composite.js';
 
+/** @type {HTMLCanvasElement} */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
