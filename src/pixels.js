@@ -119,12 +119,16 @@ export function hslToRgb(h, s, l) {
 
 // ------------------------------------------------------------- §5.1 ramp builder
 
-// Lit surfaces take on the key light's hue; shadows take the sky's blue-violet bounce.
-// "base * 0.7" is exactly what made the old 21-colour screen read flat.
+// Lit surfaces take on the key light's hue; a shadow takes only a nudge toward the sky's
+// blue-violet bounce, never a commitment to it. "base * 0.7" is what made the flat 21-colour read.
 const LIGHT_HUE = { h: 42 / 360, s: 0.85 };
 const SHADOW_HUE = { h: 262 / 360, s: 0.55 };
-// signed pull toward the target hue (negative = toward blue-violet), in degrees out of 90
-const SHIFT = { deep: -46, shade: -22, base: 0, lit: 15, hi: 32 };
+// signed pull toward the target hue (negative = toward the sky bounce), in degrees out of 90,
+// taken along the SHORTEST arc — so a warm base (27-47°) reaching 262° at -46 ran backwards
+// through red into wine (dirt #c77d40 27° -> #5d103f 323°) and 16 of the 115 ramp steps landed
+// saturated inside the wine/petrol bands. At -16/-8 the widest base->deep arc is 27.7° (shade
+// 14.2°) and no step lands in those bands; the bands and the arcs are what R55 gates.
+const SHIFT = { deep: -16, shade: -8, base: 0, lit: 15, hi: 32 };
 const LSTEP = { deep: -0.30, shade: -0.13, base: 0, lit: 0.11, hi: 0.21 };
 const SSTEP = { deep: 0.10, shade: 0.04, base: 0, lit: -0.04, hi: -0.11 };
 const STEPS = ['deep', 'shade', 'base', 'lit', 'hi'];

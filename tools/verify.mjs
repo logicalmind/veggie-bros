@@ -6554,6 +6554,112 @@ check('R54', () => {
   return `landing shake envelope, ${RUN_STEPS} driven fixed steps: ${A.landings.length} landings (${showLandings}) -> ${runs.length} shake windows (${showRuns}); normal landing #${normal.at} power ${normalLanding.power.toFixed(3)} printed [${normal.v.join(',')}] peak ${peak(normal.v)} px over ${normalSpan} = ${normal.v.length} samples (<= ${MAX_NORMAL} px, ${RUN_MIN}..${RUN_MAX} samples, strictly under the ceiling's ${ceilingWindow.n}); driven peak ${peak(A.off)} px, ceiling probe fx.shake(${CLAMP_REQUEST}) -> [${A.ceiling.join(',')}] peak ${peak(A.ceiling)} <= ${MAX_ANY} px; ${SETTLE + RUN_STEPS + CLAMP_STEPS} frames, pool live ${fxMetrics().live} after`;
 });
 
+// ---------------------------------------------------------------------------
+// R55 — EVERY DARK RAMP STEP STAYS IN ITS OWN FAMILY (§5.1 hue pull, S-23).
+//
+// WHAT WAS WRONG: `SHIFT = { deep: -46, shade: -22, ... }` (`src/pixels.js:127`) pulled each
+// shadow step 46/90 of the way to SHADOW_HUE (262°) along the SHORTEST hue arc, so a warm base
+// (hue 27-47°) reached 262° by running BACKWARDS through red into magenta: dirt `#c77d40` 27° ->
+// `#5d103f` 323° (wine), grass `#54b44b` 115° -> `#164650` 190° (petrol), stone `#d3caa8` 47° ->
+// `#9a3562` 333° (hot pink on grey), turnipBody `#e4d3b6` 38° -> `#bd2c79` 328°. `+frac*0.12` of
+// saturation at `:148` dragged near-neutral stone (s 0.33 -> 0.49) along with it, and the same
+// pull darkened heroSeed (deep-drop 152.1 luma) and sky (148.9) past any usable floor.
+//
+// THE FIX IS TWO NUMBERS: `deep: -16`, `shade: -8`. Same single builder, same five steps,
+// LSTEP/SSTEP/STEPS, PALETTE, LIGHT_HUE and SHADOW_HUE untouched, no family special-cased.
+//
+// CLAUSES, every figure below measured over `buildRamps(PALETTE)` (23 families x 5 steps,
+// analytic, no canvas) with the shipped and the candidate constants, 2026-11-19:
+//   1 THE FALSIFIER — no step lands in a foreign chroma band: sat > 0.45 && luma < 120 && the
+//     family's own base hue OUTSIDE WINE 290..356 / PETROL 165..225 && the step hue INSIDE one.
+//     Shipped 16 flagged (every one a `.deep`); candidate 0. The exempt families are exactly the
+//     ones that legitimately live in a band (red/heroBody base 355°, sky/black base 193°),
+//     because the rule is derived from each family's own base, not from a family list.
+//   2 THE SECOND FALSIFIER — the hue arc stays in family: base->deep <= 32°, base->shade <= 18°.
+//     Shipped max 80.0° at deep (hillFar; dirt 63.7, pumpkin 65.4, brick 66.7, turnipBody 69.7,
+//     pineapple 71.5, platform 72.4, crown 72.8, heroSeed 73.5, stone 74.2, white 75.0, grass
+//     75.5) and 38.1° at shade (hillFar, white 35.1). Candidate max 27.7° / 14.2°, both hillFar.
+//     Every family's arc is printed in the PASS line: a future widening must be visible.
+//   3 A REGRESSION GUARD, NOT A FALSIFIER — it is green before AND after (shipped max +0.17,
+//     candidate +0.13): sat(deep) - sat(base) <= 0.20 for every family, plus <= 0.15 for the
+//     low-chroma subset (base sat <= 0.35), which the census finds to be stone/white/black:
+//     shipped +0.16/+0.16/+0.15 (red), candidate +0.12/+0.12/+0.13 (green). Relative on purpose:
+//     stone's honest deep is `#965b39` at s 0.45, so an absolute ceiling such as "deep sat <=
+//     0.30" would force a legitimate warm shadow to be crushed instead.
+//   4 A FALSIFIER THROUGH THE CEILING — the ramp still shades and nobody gets crushed:
+//     45 <= luma(base) - luma(deep) <= 140, non-strict monotone deep <= shade <= base <= lit with
+//     hi >= base, and >= 3 distinct hexes among the 5. Shipped 2 violations (heroSeed 152.1 and
+//     sky 148.9 over the 140 ceiling); candidate 0, deep-drop 61.9 (heroBody) .. 129.1 (heroSeed).
+//     Non-strict and 3 hexes deliberately: cloud's lit/hi clamp onto base (3 distinct hexes) and
+//     white's `hi` clips 0.8 luma below its `lit`, both legitimate — a strict clause is red on
+//     both even after the fix, which is a bad gate, not a defect.
+//
+// COST, measured 2026-11-19: `node tools/verify.mjs R55` standalone 0.10 s wall in the per-check
+// timing sweep; the census is arithmetic over 115 hexes. No Date/performance/RNG in the PASS line, so
+// byte-identical between runs.
+// ---------------------------------------------------------------------------
+const { buildRamps: buildRampsR55, parseColor: parseColorR55, rgbToHsl: rgbToHslR55 } = await import('../src/pixels.js');
+check('R55', () => {
+  const STEPS_R55 = ['deep', 'shade', 'base', 'lit', 'hi'];
+  const WINE = [290, 356], PETROL = [165, 225], SAT_BAND = 0.45, LUMA_BAND = 120;
+  const ARC_DEEP = 32, ARC_SHADE = 18;
+  const SLACK = 0.20, SLACK_LOW = 0.15, LOW_CHROMA = 0.35;
+  const DROP_MIN = 45, DROP_MAX = 140;
+  const px = (hex) => { const c = parseColorR55(hex); assert(!!c, `R55: unparseable ramp colour ${hex}`); return c; };
+  const hslOf = (hex) => { const c = px(hex); return rgbToHslR55(c.r, c.g, c.b); };
+  const hueOf = (hex) => hslOf(hex).h * 360;
+  const satOf = (hex) => hslOf(hex).s;
+  const lumaOf = (hex) => { const c = px(hex); return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b; };
+  const arcOf = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+  const inBand = (h) => (h >= WINE[0] && h <= WINE[1]) || (h >= PETROL[0] && h <= PETROL[1]);
+  const R = buildRampsR55(C.PALETTE);
+  const fams = Object.keys(R);
+  assert(fams.length >= 20, `R55: buildRamps(PALETTE) returned ${fams.length} families, expected the shipped 23 — a census over an empty table gates nothing`);
+  // (1) a step that only the shadow pull could have coloured
+  const flagged = [];
+  for (const f of fams) {
+    const bh = hueOf(R[f].base);
+    for (const s of STEPS_R55) {
+      const hex = R[f][s];
+      if (satOf(hex) > SAT_BAND && lumaOf(hex) < LUMA_BAND && !inBand(bh) && inBand(hueOf(hex))) {
+        flagged.push(`${f}.${s} ${hex} base ${bh.toFixed(0)}deg -> ${hueOf(hex).toFixed(0)}deg s${satOf(hex).toFixed(2)} L${lumaOf(hex).toFixed(1)}`);
+      }
+    }
+  }
+  assert(flagged.length === 0, `clause 1: ${flagged.length} ramp step(s) sit in a foreign chroma band (WINE ${WINE[0]}..${WINE[1]} or PETROL ${PETROL[0]}..${PETROL[1]} deg) with sat > ${SAT_BAND} and luma < ${LUMA_BAND} while their family's own base hue is outside both — the shadow pull is dragging hue again: ${flagged.join(' | ')}`);
+  // (2) every step stays within a few degrees of the family's own hue
+  const arcs = fams.map((f) => ({ f, deep: arcOf(hueOf(R[f].base), hueOf(R[f].deep)), shade: arcOf(hueOf(R[f].base), hueOf(R[f].shade)) }));
+  const arcBad = arcs.filter((a) => a.deep > ARC_DEEP || a.shade > ARC_SHADE)
+    .map((a) => `${a.f}${a.deep > ARC_DEEP ? ` deep ${a.deep.toFixed(1)}deg > ${ARC_DEEP}` : ''}${a.shade > ARC_SHADE ? ` shade ${a.shade.toFixed(1)}deg > ${ARC_SHADE}` : ''}`);
+  assert(arcBad.length === 0, `clause 2: ${arcBad.length}/${fams.length} families left their own hue family: ${arcBad.join(' | ')}`);
+  // (3) regression guard (green before AND after), relative to each base's own chroma
+  const slack = fams.map((f) => ({ f, d: satOf(R[f].deep) - satOf(R[f].base), base: satOf(R[f].base) }));
+  const slackBad = slack.filter((x) => x.d > SLACK).map((x) => `${x.f} +${x.d.toFixed(2)}`);
+  const low = slack.filter((x) => x.base <= LOW_CHROMA);
+  const lowBad = low.filter((x) => x.d > SLACK_LOW).map((x) => `${x.f} +${x.d.toFixed(2)} (base sat ${x.base.toFixed(2)})`);
+  assert(slackBad.length === 0, `clause 3: ${slackBad.length} families gained more than ${SLACK} saturation between base and deep: ${slackBad.join(' | ')}`);
+  assert(low.length >= 3, `clause 3: only ${low.length} families have base sat <= ${LOW_CHROMA}, expected the shipped 3 (stone/white/black) — the subset this clause protects is missing`);
+  assert(lowBad.length === 0, `clause 3: ${lowBad.length}/${low.length} low-chroma famil${lowBad.length === 1 ? 'y' : 'ies'} (base sat <= ${LOW_CHROMA}) gained more than ${SLACK_LOW} saturation at deep — a near-neutral stone/cream/grey is being turned into a colour: ${lowBad.join(' | ')}`);
+  // (4) the ramp still shades, and no family gets crushed past the ceiling
+  const crush = [];
+  let dropLo = Infinity, dropHi = -Infinity, dropLoF = '', dropHiF = '';
+  for (const f of fams) {
+    const L = STEPS_R55.map((s) => lumaOf(R[f][s]));
+    const drop = L[2] - L[0];
+    if (drop < dropLo) { dropLo = drop; dropLoF = f; }
+    if (drop > dropHi) { dropHi = drop; dropHiF = f; }
+    if (drop < DROP_MIN || drop > DROP_MAX) crush.push(`${f} deep-drop ${drop.toFixed(1)} outside ${DROP_MIN}..${DROP_MAX}`);
+    if (!(L[0] <= L[1] && L[1] <= L[2] && L[2] <= L[3] && L[4] >= L[2])) crush.push(`${f} luma order deep ${L[0].toFixed(1)} shade ${L[1].toFixed(1)} base ${L[2].toFixed(1)} lit ${L[3].toFixed(1)} hi ${L[4].toFixed(1)}`);
+    const distinct = new Set(STEPS_R55.map((s) => R[f][s])).size;
+    if (distinct < 3) crush.push(`${f} only ${distinct} distinct hex(es) of ${STEPS_R55.length}`);
+  }
+  assert(crush.length === 0, `clause 4: ${crush.length} violation(s) of shade-without-crush: ${crush.join(' | ')}`);
+  const maxDeep = arcs.reduce((m, a) => (a.deep > m.deep ? a : m), arcs[0]);
+  const maxShade = arcs.reduce((m, a) => (a.shade > m.shade ? a : m), arcs[0]);
+  const maxSlack = slack.reduce((m, x) => (x.d > m.d ? x : m), slack[0]);
+  return `${fams.length} families x ${STEPS_R55.length} steps of buildRamps(PALETTE), analytic: clause 1 0 steps inside the WINE ${WINE[0]}..${WINE[1]} / PETROL ${PETROL[0]}..${PETROL[1]} deg bands (sat > ${SAT_BAND}, luma < ${LUMA_BAND}, family base outside both); clause 2 arcs base->deep / base->shade all <= ${ARC_DEEP}/${ARC_SHADE} deg, max ${maxDeep.deep.toFixed(1)} (${maxDeep.f}) / ${maxShade.shade.toFixed(1)} (${maxShade.f}) — ${arcs.map((a) => `${a.f} ${a.deep.toFixed(1)}/${a.shade.toFixed(1)}`).join(' ')}; clause 3 (regression guard, green pre-change too) max sat deep-base +${maxSlack.d.toFixed(2)} (${maxSlack.f}) <= ${SLACK}, low-chroma subset ${low.map((x) => `${x.f} +${x.d.toFixed(2)}`).join(' ')} all <= ${SLACK_LOW}; clause 4 0 violations, deep-drop ${dropLo.toFixed(1)} (${dropLoF}) .. ${dropHi.toFixed(1)} (${dropHiF}) inside ${DROP_MIN}..${DROP_MAX}, every ramp non-strict monotone with >= 3 distinct hexes`;
+});
+
 
 // ---------------------------------------------------------------------------
 // `VB_DRAWSTATS=1 node tools/verify.mjs` — the §8 instrumentation probe.
