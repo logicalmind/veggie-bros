@@ -6660,6 +6660,119 @@ check('R55', () => {
   return `${fams.length} families x ${STEPS_R55.length} steps of buildRamps(PALETTE), analytic: clause 1 0 steps inside the WINE ${WINE[0]}..${WINE[1]} / PETROL ${PETROL[0]}..${PETROL[1]} deg bands (sat > ${SAT_BAND}, luma < ${LUMA_BAND}, family base outside both); clause 2 arcs base->deep / base->shade all <= ${ARC_DEEP}/${ARC_SHADE} deg, max ${maxDeep.deep.toFixed(1)} (${maxDeep.f}) / ${maxShade.shade.toFixed(1)} (${maxShade.f}) — ${arcs.map((a) => `${a.f} ${a.deep.toFixed(1)}/${a.shade.toFixed(1)}`).join(' ')}; clause 3 (regression guard, green pre-change too) max sat deep-base +${maxSlack.d.toFixed(2)} (${maxSlack.f}) <= ${SLACK}, low-chroma subset ${low.map((x) => `${x.f} +${x.d.toFixed(2)}`).join(' ')} all <= ${SLACK_LOW}; clause 4 0 violations, deep-drop ${dropLo.toFixed(1)} (${dropLoF}) .. ${dropHi.toFixed(1)} (${dropHiF}) inside ${DROP_MIN}..${DROP_MAX}, every ramp non-strict monotone with >= 3 distinct hexes`;
 });
 
+// ---------------------------------------------------------------------------
+// R56 — THE GROUND IS STRUCTURE, NOT STATIC (§6): "the ground ... does not look good",
+// measured into a gate (S-24).
+//
+// WHAT WAS WRONG: every dirt detail test hashed its own pixel coordinate (`sp(x, y, ...)`), so
+// grit, pits and pebbles landed as single cells. Measured on the shipped `ground.body` grid: 60
+// of its 107 same-tone runs were 1 px long, and its rows changed tone 5.69 times on average
+// (median 6, max 10). `GROUND_BODY` then painted rows 14 and 15 with a constant '1' as a
+// contact shadow toward the tile below — a full-width single-tone band every stacked tile copies.
+//
+// INSTRUMENT. Clauses 1, 2 and 4 census the shipped ground grids: `tileGrid` hands back the very
+// arrays the atlas bakes 'ground.top' / 'ground.body' from, so `sp`, `litAt` and every threshold
+// are the game's, not a copy. A colour read of the baked art cannot answer "tone seam or §5.5
+// stipple?": bake pass 4 paints a dithered cell `ramp.base` or `ramp.shade`, and on the dirt
+// ladder the shade of the '4' tone IS the '3' map tone (probed through the real bake: a flat
+// #c77d40 field bakes to #c77d40 / #9d4728 / #5b1812), so a stippled flat field and a genuine
+// two-tone seam are the same two colours. Measured both ways at this HEAD: strip-ink colour
+// transitions per row read median 8 / max 11 before the fix and 7 / 9 after — no threshold
+// separates those; the character grid reads median 6 / mean 5.69 / max 10 before and median 4 /
+// mean 4.19 / max 6 after, which is what clause 1 asserts. Clause 3 stays on baked colour from
+// the terrain strip recorder, where an anti-flatten floor does mean something.
+//
+// POSITIVE CONTROL (scratch copy of this HEAD): reverting the clustering to per-pixel `sp`
+// reddens clause 1 (median 6, max 10) and clause 4 (1 px); restoring `GROUND_BODY`'s
+// `y >= 14` row on top of the clustering reddens clause 2 alone (2 pairs).
+const { tileGrid: tileGridR56 } = await import('../src/sprites.js');
+const { bakeLevel: bakeLevelR56, visibleStrips: visibleStripsR56 } = await import('../src/terrain.js');
+check('R56', () => {
+  const T = C.TILE;
+  newGame(); steps(120); clearInput(); renderFrames(1);
+  const grids = { body: tileGridR56('ground.body'), cap: tileGridR56('ground.top') };
+  assert(grids.body !== null && grids.cap !== null,
+    'R56: tileGrid() handed back no ground grid — the census has no instrument and every clause below would pass on nothing');
+  const med = (xs) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[(s.length - 1) >> 1] : 0; };
+  const LOWER = Math.ceil((Math.min(grids.body.length, grids.cap.length) * 2) / 3);
+  const seen = { body: 0, cap: 0 };
+  const rowTrans = { body: [], cap: [] };
+  const runLens = { body: [], cap: [] };
+  const flatPairs = { body: [], cap: [] };
+  const tileMed = { body: [], cap: [] };
+  const first = Math.floor(G.cam.x / T) - 1;
+  for (let tx = first; tx <= first + Math.ceil(C.VIEW_W / T) + 1; tx++) {
+    for (let ty = 0; ty < C.ROWS; ty++) {
+      if (!isSolid(tileAt(G.level, tx, ty))) continue;
+      const key = isSolid(tileAt(G.level, tx, ty - 1)) ? 'body' : 'cap';
+      const rows = grids[key];
+      seen[key]++;
+      const single = [];
+      const tRow = [];
+      rows.forEach((row, y) => {
+        let t = 0;
+        for (let x = 1; x < row.length; x++) if (row[x] !== row[x - 1]) t++;
+        tRow.push(t);
+        single.push(t === 0);
+        let run = 1;
+        for (let x = 1; x <= row.length; x++) {
+          if (x < row.length && row[x] === row[x - 1]) run++;
+          else { runLens[key].push(run); run = 1; }
+        }
+      });
+      rowTrans[key].push(...tRow);
+      tileMed[key].push(med(tRow));
+      let pairs = 0;
+      for (let y = LOWER; y + 1 < rows.length; y++) if (single[y] && single[y + 1]) pairs++;
+      flatPairs[key].push(pairs);
+    }
+  }
+  assert(seen.body >= 8, `R56 sampled only ${seen.body} ground-body tiles at level coordinates — clause 1 needs at least 8`);
+  const b = rowTrans.body;
+  const tMed = med(b);
+  const tMax = Math.max(...b);
+  const tMean = b.reduce((s, v) => s + v, 0) / b.length;
+  assert(tMed <= 4.5 && tMax <= 8, `clause 1 red: ${seen.body} ground-body tiles change tone ${tMed} times per 16-px row (median), max ${tMax}, over ${b.length} rows — floors are median <= 4.5 and max <= 8, and the shipped per-pixel salt measures median 6 / mean 5.69 / max 10, so the soil is still being decided one cell at a time (per-tile medians ${tileMed.body.join(' ')})`);
+  const flat = Math.max(0, ...flatPairs.body, ...flatPairs.cap);
+  assert(flat === 0, `clause 2 red: a ground tile holds ${flat} pair(s) of adjacent full-width single-tone rows at or below row ${LOWER} of ${grids.body.length} — that constant band is the dark stripe every stacked tile copies, and the shipped GROUND_BODY has 2 such rows (y 14 and y 15)`);
+  const rMed = med(runLens.body);
+  assert(rMed >= 2, `clause 4 red: the median maximal same-tone run in a ground-body row is ${rMed} px, floor 2 — the soil is sprinkled per pixel again instead of stamped in patches`);
+  const camX = Math.floor(G.cam.x);
+  const strips = visibleStripsR56(bakeLevelR56(G.level, ['fields', 'canyon', 'palace'][G.levelIndex] || 'fields'), camX);
+  const cols = [];
+  const bands = [];
+  for (const s of strips) {
+    const rec = s.canvas._rec;
+    assert(rec !== undefined && rec.pixels !== undefined, 'R56: the ground strip canvas carries no ink recorder, so clause 3 has nothing to census');
+    const k = s.canvas.height / (C.ROWS * T); // the strip blits the atlas cell through the ctx scale
+    const tx0 = Math.floor(Math.round(Number(s.dx) + camX) / T);
+    for (let tx = tx0; tx < tx0 + 4; tx++) {
+      for (let ty = 0; ty < C.ROWS; ty++) {
+        if (!isSolid(tileAt(G.level, tx, ty)) || !isSolid(tileAt(G.level, tx, ty - 1))) continue;
+        const gx = (tx * T - Math.round(Number(s.dx) + camX)) * k;
+        const gy = ty * T * k;
+        const cs = new Set();
+        const ls = new Set();
+        let miss = 0;
+        for (let v = 0; v < T; v++) for (let u = 0; u < T; u++) {
+          const c = rec.inkAt(gx + u * k, gy + v * k);
+          if (c === null) { miss++; continue; }
+          cs.add(c);
+          const p = parseInk(c);
+          if (p !== null && p.a >= 1) ls.add(Math.round(0.2126 * p.r + 0.7152 * p.g + 0.0722 * p.b));
+        }
+        if (miss !== 0) continue;
+        cols.push(cs.size);
+        bands.push(ls.size);
+      }
+    }
+  }
+  assert(cols.length >= 8, `R56 clause 3 read only ${cols.length} fully-inked baked ground tiles off the strip recorder, floor 8`);
+  assert(med(cols) >= 9, `clause 3 red: a baked ground tile holds ${med(cols)} distinct colours (median), floor 9 (R49's measured minimum per tile, and the shipped soil measures 15) — the fix flattened the soil palette rather than its structure`);
+  assert(med(bands) >= 5 && Math.min(...bands) >= 3, `clause 3 red: a baked ground tile holds ${med(bands)} distinct tone bands (median) with ${Math.min(...bands)} as the minimum, floors 5 / 3`);
+  const flatSum = flatPairs.body.reduce((s, v) => s + v, 0) + flatPairs.cap.reduce((s, v) => s + v, 0);
+  return `${seen.body + seen.cap} ground tiles at level coords (${seen.body} body / ${seen.cap} cap, ${cols.length} baked): clause 1 tone changes per 16-px row median ${tMed} mean ${tMean.toFixed(2)} max ${tMax} over ${b.length} rows (floors median <= 4.5 max <= 8; every body tile's own median ${[...new Set(tileMed.body)].join('/')} — the level shares one 'ground.body' atlas cell; shipped per-pixel salt measured median 6 mean 5.69 max 10); clause 2 adjacent full-width single-tone row pairs at row >= ${LOWER}: max ${flat} per tile, ${flatSum} across the sample (floor 0; shipped GROUND_BODY has 2, y 14 and y 15); clause 3 baked strip ink per body tile: colours median ${med(cols)}, tone bands median ${med(bands)} min ${Math.min(...bands)} (floors 9 / 5 / 3); clause 4 median maximal same-tone run ${rMed} px (floor 2; shipped 1 px)`;
+});
 
 // ---------------------------------------------------------------------------
 // `VB_DRAWSTATS=1 node tools/verify.mjs` — the §8 instrumentation probe.

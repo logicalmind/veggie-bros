@@ -152,32 +152,49 @@ function litAt(x, y, w, h) {
   return Math.max(0, Math.min(4, Math.round(1 + (1 - (u * 0.55 + v * 0.45)) * 2.6)));
 }
 const step = (x, y, w, h, letters = FIVE) => letters[litAt(x, y, w, h)];
+// Sprinkle detail is decided on a 2 px grid and stamped, never per pixel. `blot` is a 2x2
+// patch, `fleck` a 2 px run for the single-row sprinkles; a block is one `sp` draw and four
+// pixels, so the same threshold covers the same number of cells as the old per-pixel test —
+// the palette budget is untouched, only the size of the mark that carries it.
+const blot = (x, y, salt) => sp(x >> 1, y >> 1, salt);
+const fleck = (x, y, salt) => sp(x >> 1, y, salt);
 
 // --------------------------------------------------------------------------- terrain
 // Dirt is a dithered gradient field, so the auto-lit top row and auto-shaded bottom row a solid
 // tile gets from the bake read as soil rather than as a bevel; the buried grit is stone, which
 // is where the tile's darkest and lightest tones come from.
+//
+// Detail is stamped on a 2 px grid, never per pixel. Measured on the shipped per-pixel field:
+// 60 of the tile's 107 same-tone runs were exactly 1 px long, the rows ran 5.69 tone changes
+// (median 6, max 10) and the median run was 1 px — under the 2x scene scale that is TV static.
+// Deciding on `bx, by` blocks puts one threshold across four cells at once, which measured
+// 4.19 changes per row (median 4, max 6), a 2 px median run, and the same seven characters.
 const dirtField = (seam) => (x, y) => {
-  const s = sp(x, y + seam, 1);
+  const bx = x >> 1;
+  const by = (y + seam) >> 1;
+  const s = sp(bx, by, 1);
   if (s > 0.93) return '5'; // grit catching the key
   if (s > 0.86) return '1'; // a pit
-  if (sp(x, y + seam, 2) > 0.955) return 'h'; // a buried pebble
-  if (sp(x, y + seam, 3) > 0.985) return 'i'; // its lit edge
+  if (sp(bx, by, 2) > 0.955) return 'h'; // a buried pebble
+  if (sp(bx, by, 3) > 0.985) return 'i'; // its lit edge
   return step(x, y, 16, 16 - seam, FIVE);
 };
 
+// The contact shadow toward the tile below is the ramp's own last steps, not a constant row:
+// `step`'s field runs 5 -> 4 -> 3 -> 2 down the tile, so the darkest tone the gradient reaches
+// ('2') sits along the bottom edge and the tile under it opens on its brightest band.
+// R56's clause 2 keeps these bottom rows from collapsing back into a constant tone.
 const GROUND_BODY = grid(16, 16, (x, y) => {
-  if (y >= 14) return '1'; // contact shadow toward the tile below
-  if (y === 13 && sp(x, 13, 4) > 0.7) return '2';
+  if (y === 13 && fleck(x, y, 4) > 0.7) return '2';
   return dirtField(0)(x, y);
 });
 
 const GROUND_TOP = grid(16, 16, (x, y) => {
   if (y > 4) return dirtField(5)(x, y);
-  if (y === 4) return sp(x, y, 6) > 0.6 ? '2' : '1'; // soil lip under the sward
-  if (y === 0) return sp(x, y, 7) > 0.72 ? '5' : '4';
-  if (y === 3) return sp(x, y, 8) > 0.5 ? 'a' : '2'; // sward underside, in shade
-  return sp(x, y, 9) > 0.8 ? '4' : step(x, y, 16, 4, 'abcde');
+  if (y === 4) return fleck(x, y, 6) > 0.6 ? '2' : '1'; // soil lip under the sward
+  if (y === 0) return fleck(x, y, 7) > 0.72 ? '5' : '4';
+  if (y === 3) return fleck(x, y, 8) > 0.5 ? 'a' : '2'; // sward underside, in shade
+  return blot(x, y, 9) > 0.8 ? '4' : step(x, y, 16, 4, 'abcde');
 });
 
 // Stone and brick are masonry, so a bevel belongs on them — the tone field runs the other way
@@ -191,7 +208,7 @@ const STONE = grid(16, 16, (x, y) => {
   if ((x === 11 && y === 4) || (x === 10 && y === 5)) return '1';
   if ((x === 12 && y === 4) || (x === 11 && y === 5) || (x === 12 && y === 3)) return '4';
   if (x === 9 && y === 11) return 'W';
-  if (sp(x, y, 11) > 0.9) return '3';
+  if (blot(x, y, 11) > 0.9) return '3';
   return step(x, y, 16, 16, FIVE);
 });
 
@@ -202,8 +219,8 @@ const BRICK = grid(16, 16, (x, y) => {
   if (y === 15 || x === 15) return '1';
   if (y === 0 || x === 0) return '5';
   if (y === 1 && x > 1 && x < 6) return '4';
-  if (sp(x, y, 12) > 0.92) return '3';
-  if (sp(x, y, 13) > 0.985) return '5';
+  if (blot(x, y, 12) > 0.92) return '3';
+  if (blot(x, y, 13) > 0.985) return '5';
   return step(x, y, 16, 16, FIVE);
 });
 
@@ -213,10 +230,10 @@ const PLATFORM = grid(16, 16, (x, y) => {
   if (y === 2) return '3';
   if (x === 0 || x === 15) return y < 3 ? 'c' : y > 12 ? 'a' : 'b'; // bush-wrapped ends
   if (y >= 14) return '1';
-  if (y === 13) return sp(x, y, 14) > 0.6 ? '2' : '1';
+  if (y === 13) return fleck(x, y, 14) > 0.6 ? '2' : '1';
   if (y === 6 && x > 2 && x < 13) return '4';
-  if (sp(x, y, 15) > 0.94) return '4';
-  if (sp(x, y, 16) > 0.985) return 'W';
+  if (blot(x, y, 15) > 0.94) return '4';
+  if (blot(x, y, 16) > 0.985) return 'W';
   return step(x, y, 12, 11, FIVE);
 });
 
@@ -227,7 +244,7 @@ const PUMPKIN_USED = grid(16, 16, (x, y) => {
   if ((x === 5 && y > 2 && y < 9) || (x === 10 && y > 4 && y < 12)) return '1'; // split ribs
   if ((x === 6 && y === 9) || (x === 11 && y === 12)) return '2';
   if ((x === 4 && y === 4) || (x === 12 && y === 6)) return '2'; // hollowed faces
-  if (sp(x, y, 17) > 0.93) return '4';
+  if (blot(x, y, 17) > 0.93) return '4';
   return step(x, y, 16, 16, FIVE);
 });
 
@@ -244,7 +261,7 @@ const PIPE_BODY = grid(14, 16, (x, y) => {
   if (x === 13) return '2';
   if (y === 0) return x === 1 || x === 2 ? '5' : '4';
   if (y === 15) return '1';
-  if (sp(x, y, 18) > 0.95) return '4';
+  if (blot(x, y, 18) > 0.95) return '4';
   return step(x, y, 14, 16, FIVE);
 });
 
@@ -259,7 +276,7 @@ const PIPE_CAP = grid(16, 16, (x, y) => {
   if (x === 12) return '2';
   if (x === 15) return '2';
   if (y === 15) return '1';
-  if (sp(x, y, 19) > 0.95) return '4';
+  if (blot(x, y, 19) > 0.95) return '4';
   return step(x, y, 14, 16, FIVE);
 });
 
@@ -302,7 +319,7 @@ const BUSH = grid(14, 5, (x, y) => {
   if (x === 0 || x === 13) return '2';
   if ((x === 4 && y === 2) || (x === 9 && y === 3)) return '5'; // lit tips
   if ((x === 6 && y === 1) || (x === 11 && y === 2)) return 'f'; // berries
-  if (sp(x, y, 21) > 0.88) return '2';
+  if (blot(x, y, 21) > 0.88) return '2';
   return step(x, y, 14, 5, FIVE);
 });
 
@@ -847,6 +864,16 @@ register({ key: 'fx.dust', frames: [FX_DUST], map: M_DUST, anchor: { x: 0, y: 0 
 register({ key: 'fx.spark', frames: FX_SPARK, map: M_SPARK, anchor: { x: 0, y: 0 }, opts: opts({ ...PADDED(RM.crown.deep), emissive: { chars: 'E', color: P.crown, threshold: 0.2 } }) });
 register({ key: 'fx.poof', frames: FX_POOF, map: M_POOF, anchor: { x: 0, y: 0 }, opts: opts(PADDED(RM.used.deep)) });
 register({ key: 'fx.chip', frames: [FX_CHIP], map: M_CHIP, anchor: { x: 0, y: 0 }, opts: opts(PADDED(RM.brick.deep)) });
+
+/** The ground tile grids, for the harness's texture census (R56). The bake cannot answer
+ *  "is this a tone seam or the §5.5 stipple?" from colour: pass 4 paints a dithered cell
+ *  `ramp.base` or `ramp.shade`, and on the dirt ladder the shade of the '4' tone is exactly
+ *  the '3' map tone, so a stippled field and a real seam are the same two colours. The
+ *  character grid is where that distinction lives; the game only ever reads it through the
+ *  atlas, which bakes these same arrays. */
+export function tileGrid(key) {
+  return key === 'ground.top' ? GROUND_TOP : key === 'ground.body' ? GROUND_BODY : null;
+}
 
 // Boot drives this; the draw wrappers below also guard, so the module is safe however wave 3
 // sequences the boot (R48 counts these calls and expects exactly one).
