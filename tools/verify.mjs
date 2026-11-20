@@ -6449,6 +6449,111 @@ check('R53', () => {
 });
 
 // MARKER:CHECKS
+// ---------------------------------------------------------------------------
+// R54 — LANDING SHAKE ENVELOPE (§6): "the shake when hitting the ground is way too much",
+// measured into a gate (S-22).
+//
+// WHAT WAS WRONG: `fx.landing()` asked for `shake(1 + 2 * power)` and a landing always
+// saturates `power` — MAX_FALL (420 px/s) is reached by a 38 px fall (2.4 tiles), and a held
+// jump comes back at |vy| = 640 — so even a 300 ms hop requested amplitude 3.00; `shake()`
+// capped the INCREMENT instead of the SUM, so two coincident emitters still added; and
+// `SHAKE_DECAY = 0.22` left `round(amp * U(-1,1))` printing visible jitter for ~18 frames.
+// `render.js` turns that one int into `translate(o, -o)` on the WHOLE world, so a sample of 2
+// is ~2.8 px of diagonal screen jump every frame for ~0.3 s.
+//
+// WHAT IS DRIVEN (the real landing path, never a forced `fx.shake()`): `newGame()` (1-1 at
+// spawn), SETTLE steps, `fxReset()` — which zeroes fx's own frame clock, so the sampled
+// sequence cannot depend on the order the checks run in — then three jumps through
+// `input.jumpPressed` / `input.jump`, the same held-input pattern R52 uses: released hop, held
+// jump, released hop. Every landing is detected INDEPENDENTLY as a rising edge of `p.onGround`
+// and its `power` recomputed from the same `|vyBefore| / MAX_FALL` main.js compares against
+// `LAND_MIN_POWER`; `fx.shakeOffset()` is sampled once per fixed step (STEP = 1/60).
+//
+// WHY CLAUSE 1 ALSO FORCES `fx.shake(4)`: clauses 2-5 are the driven landings; clause 1 is the
+// ceiling the report is about, and a ceiling no driven landing can reach (a power-1.000 landing
+// asks for only 1.10) would be unfalsifiable, so it requests MORE than §6 allows — the same
+// non-vacuity hammer R51/R52 use with `fx.shake(3)`. It also gives clause 5 its ruler: the
+// ceiling's own window is the longest a single impact may ever be, and clause 5 demands a
+// LANDING stay strictly shorter than it.
+//
+// POSITIVE CONTROLS, both red, both run in a scratch copy of the tree under /tmp (never here):
+// (a) `SHAKE_MAX = 4` -> the ceiling probe prints [-3,-1,-1,-1,1,1,1] -> CLAUSE 1; (b) a second
+// `shake(0.35 + 0.75 * power)` emitter re-added to `landing()`, i.e. exactly the double emitter
+// this slice removed -> the normal landing's window grows from 4 samples to 7 (measured red draw:
+// steps 93..99, peak still 1 px) -> CLAUSE 5. Clause 3 keeps the literal 2..8 band the report
+// asks for, so 7 samples still fits it; clause 2 catches (b) only on a draw where the sum rounds
+// to 2 px, which is why clause 5 exists.
+//
+// COST, measured 2026-11-19: 13-19 ms when something else in the process has already paid the
+// one-time art bake (e.g. `node tools/verify.mjs R52 R54` -> 13.3 ms); ~230 ms if R54 is the
+// first check in the process, because the bake lands inside its own timing. No live ms figure is
+// printed: this line is `cmp`-diffed across runs, so the PASS line carries only deterministic
+// counts. §6 still documents ±3 px / 0.25 s — a doc figure this slice did not measure or edit.
+// ---------------------------------------------------------------------------
+check('R54', () => {
+  const MAX_ANY = 2, MAX_NORMAL = 1, RUN_MIN = 2, RUN_MAX = 8;
+  const SETTLE = 30, RUN_STEPS = 160, CLAMP_STEPS = 12, CLAMP_REQUEST = 4; // > §6's worst case, on purpose
+  const JUMPS = [[0, 1], [60, 100], [130, 131]]; // [press, release): 1 step = released hop, 40 = held jump
+  const win = (xs) => { let a = -1, b = -1; xs.forEach((v, i) => { if (v !== 0) { if (a < 0) a = i; b = i; } }); return { from: a, to: b, n: b - a + 1 }; };
+  const peak = (xs) => xs.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  const windows = (off) => {
+    const runs = [];
+    let cur = null;
+    off.forEach((v, i) => {
+      if (v === 0) { cur = null; return; }
+      if (!cur) { cur = { at: i, v: [] }; runs.push(cur); }
+      cur.v.push(v);
+    });
+    return runs;
+  };
+  const drive = (script, n) => {
+    newGame();
+    steps(SETTLE);
+    fxReset();
+    const off = [], landings = [];
+    let was = G.player.onGround;
+    for (let i = 0; i < n; i++) {
+      const press = script(i); // 1 = press edge, 0 = held, null = released
+      input.jump = press !== null;
+      input.jumpPressed = press === 1;
+      const vy = G.player.vy; // main.js reads exactly this before updatePlayer()
+      steps(1);
+      off.push(fxShakeOffset());
+      const ground = G.player.onGround;
+      if (ground && !was) landings.push({ at: i, power: Math.min(1, Math.abs(vy) / C.MAX_FALL) });
+      was = ground;
+    }
+    clearInput();
+    fxReset(); // the ceiling probe needs no fresh game; fxReset() re-zeroes fx's frame clock too
+    fxShake(CLAMP_REQUEST); // nothing in the game may ask for this much
+    const ceiling = [];
+    for (let i = 0; i < CLAMP_STEPS; i++) { steps(1); ceiling.push(fxShakeOffset()); }
+    return { off, landings, ceiling };
+  };
+  const A = drive((i) => {
+    for (const [a, b] of JUMPS) if (i >= a && i < b) return i === a ? 1 : 0;
+    return null;
+  }, RUN_STEPS);
+  const runs = windows(A.off);
+  const showLandings = A.landings.map((l) => `#${l.at} power ${l.power.toFixed(3)}`).join(' ');
+  const showRuns = runs.map((r) => `#${r.at}[${r.v.join(',')}]=${r.v.length}`).join(' ');
+  const normalLanding = A.landings.find((l) => l.power > 0.99) || null; // the held jump: power saturates
+  const normal = normalLanding ? (runs.find((r) => r.at === normalLanding.at) || null) : null;
+  const ceilingWindow = win(A.ceiling);
+  const normalSpan = normal ? `steps ${normal.at}..${normal.at + normal.v.length - 1}` : 'no window';
+  // (1) nothing, driven or forced, prints more than the ceiling
+  assert(Math.max(peak(A.off), peak(A.ceiling)) <= MAX_ANY, `clause 1: |shakeOffset| reached ${Math.max(peak(A.off), peak(A.ceiling))} px — driven run peak ${peak(A.off)}, ceiling probe fx.shake(${CLAMP_REQUEST}) -> [${A.ceiling.join(',')}] peak ${peak(A.ceiling)} (the one int render.js:264 translates the whole world by, so it must stay inside ${MAX_ANY} px)`);
+  // (2) the ordinary landing is a 1 px thump, not a screen-shake
+  assert(!!normal && peak(normal.v) <= MAX_NORMAL, `clause 2: the normal landing (${normalLanding ? `power ${normalLanding.power.toFixed(3)} at step #${normalLanding.at}` : 'no power>0.99 landing was driven — landings: ' + showLandings}) printed [${normal ? normal.v.join(',') : 'no run'}], peak ${normal ? peak(normal.v) : 'n/a'} over the ${MAX_NORMAL} px allowance`);
+  // (3) anti-deletion floor: the thump must be visible for 2..8 fixed steps, and stop
+  assert(!!normal && normal.v.length >= RUN_MIN && normal.v.length <= RUN_MAX, `clause 3: that landing's nonzero window was ${normal ? `${normal.v.length} samples at ${normalSpan} [${normal.v.join(',')}]` : 'empty'}, outside ${RUN_MIN}..${RUN_MAX} samples — below the floor the shake has been deleted and this gate is blind, above it the shake outstays one small thump (all windows: ${showRuns})`);
+  // (4) exactly one shake per landing — the double emitter going back would print two runs
+  assert(runs.length === A.landings.length && A.landings.length >= 3, `clause 4: ${A.landings.length} landing(s) (${showLandings}) emitted ${runs.length} shake window(s) (${showRuns}) — a landing owns exactly one window, and ${JUMPS.length} landings must be driven for this to mean anything`);
+  // (5) no landing may print the ceiling's window: stacking pushes it there
+  assert(!!normal && normal.v.length < ceilingWindow.n, `clause 5: the normal landing printed ${normalSpan} = ${normal ? normal.v.length : 0} samples while ONE impact at the ${MAX_ANY} px ceiling prints ${ceilingWindow.n} ([${A.ceiling.join(',')}]) — a landing whose window has grown to the ceiling's length has stacked more than one emitter behind it`);
+  return `landing shake envelope, ${RUN_STEPS} driven fixed steps: ${A.landings.length} landings (${showLandings}) -> ${runs.length} shake windows (${showRuns}); normal landing #${normal.at} power ${normalLanding.power.toFixed(3)} printed [${normal.v.join(',')}] peak ${peak(normal.v)} px over ${normalSpan} = ${normal.v.length} samples (<= ${MAX_NORMAL} px, ${RUN_MIN}..${RUN_MAX} samples, strictly under the ceiling's ${ceilingWindow.n}); driven peak ${peak(A.off)} px, ceiling probe fx.shake(${CLAMP_REQUEST}) -> [${A.ceiling.join(',')}] peak ${peak(A.ceiling)} <= ${MAX_ANY} px; ${SETTLE + RUN_STEPS + CLAMP_STEPS} frames, pool live ${fxMetrics().live} after`;
+});
+
 
 // ---------------------------------------------------------------------------
 // `VB_DRAWSTATS=1 node tools/verify.mjs` — the §8 instrumentation probe.

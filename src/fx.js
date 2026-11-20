@@ -48,9 +48,15 @@ const TAB = Object.freeze([
     speed0: 110, speed1: 150, rise: 150 }),
 ]);
 
-// Shake (§6): peak <= 3 px, linear decay to zero in 0.22 s from any amplitude, integer out.
-const SHAKE_MAX = 3;
-const SHAKE_DECAY = 0.22;
+// Shake (§6): |offset| <= 2 px, integer out, and the ceiling applies to the SUM of coincident
+// emitters (`shake()`), never to the increment. Decay is linear at SHAKE_MAX / SHAKE_DECAY =
+// 15.4 px/s, so one impact's visible window is 7 fixed steps at the ceiling and 4 at a
+// full-power landing. While a shake is live the offset never rounds to 0, so the tail reads as
+// a 1 px thump instead of the old ~18 frames of ±1. Measured 2026-11-19 by R54 on driven 1-1
+// landings: a released hop lands at power 0.619 -> 3 samples of |offset| 1; a held jump at
+// power 1.000 -> 4 samples, peak 1; fx.shake(4) clamps to the ceiling -> 7 samples, peak 2.
+const SHAKE_MAX = 2;
+const SHAKE_DECAY = 0.13;
 const SHAKE_RATE = SHAKE_MAX / SHAKE_DECAY;
 
 // Squash-and-stretch (§5.6). Slots are pre-allocated and round-robined, so a `hit()` in a
@@ -217,8 +223,10 @@ export function dust(x, y, dir) {
   }
 }
 
-// Landing puff + the shake that sells it. `power` is normalised impact (|vy| / MAX_FALL),
-// clamped here so a caller that forgets to normalise still cannot exceed the 3 px cap.
+// Landing puff + the shake that sells it: one small vertical thump, then still. `power` is
+// normalised impact (|vy| / MAX_FALL), clamped here so a caller that forgets to normalise
+// still cannot exceed the 2 px cap. main.js's LAND_MIN_POWER gate is the ONLY caller, so a
+// landing emits exactly one shake (§6/R54 clause 4).
 export function landing(x, y, power) {
   ensure();
   const p = power > 0 ? (power < 1 ? power : 1) : 0;
@@ -233,7 +241,7 @@ export function landing(x, y, power) {
       -(t.rise * 0.5 + t.rise * (0.5 + p) * rnd(i, 1)),
       t.life * (0.8 + 0.4 * p), y, 60 + i);
   }
-  shake(1 + 2 * p);
+  shake(0.35 + 0.75 * p);
 }
 
 // Generic radial burst. `kind` is a KIND value ('fx.spark' for a stomp / boss hit,
@@ -286,11 +294,14 @@ export function poof(x, y) {
   }
 }
 
-// Peak semantics: a second impact while still shaking takes the larger amplitude, it never
-// sums, so two coincident shakes cannot blow past the 3 px / 0.25 s envelope.
+// Peak semantics: coincident emitters ADD, and the SUM is what the ceiling caps, so two
+// `landing()` calls in one fixed step cannot stack past 2 px. A stray 0 / negative / NaN is
+// not an impact and leaves the live amplitude alone.
 export function shake(amount) {
   ensure();
-  if (amount > shakeAmp) shakeAmp = amount < SHAKE_MAX ? amount : SHAKE_MAX;
+  if (!(amount > 0)) return;
+  const sum = shakeAmp + amount;
+  shakeAmp = sum < SHAKE_MAX ? sum : SHAKE_MAX;
 }
 
 // Integer offset for the world composite ONLY — never cam.x, never the HUD (R52). Cached by
@@ -373,7 +384,11 @@ export function update(dt) {
     shakeAmp -= SHAKE_RATE * h;
     if (shakeAmp <= 0) { shakeAmp = 0; shakeOff = 0; }
     else {
-      let o = Math.round(shakeAmp * (seeded(frame, 7919) * 2 - 1));
+      const r = seeded(frame, 7919) * 2 - 1;
+      let o = Math.round(shakeAmp * r);
+      // The ±1 floor: a live amplitude must never print a still frame, so a decaying tail is
+      // 1 px of jitter and then silence instead of frames that round to zero mid-shake.
+      if (o === 0) o = r < 0 ? -1 : 1;
       if (o > SHAKE_MAX) o = SHAKE_MAX; else if (o < -SHAKE_MAX) o = -SHAKE_MAX;
       shakeOff = o;
       if (o !== 0) shakeFrames += 1;
