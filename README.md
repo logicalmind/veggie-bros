@@ -9,9 +9,10 @@ No install needed. From the repo root:
 ```sh
 ./serve-local.sh      # localhost only -> http://127.0.0.1:8010
 ./serve-network.sh    # all interfaces  -> play it from a phone on the same Wi-Fi
+./stop-server.sh      # stop the server on 8010 (a foreground one stops with Ctrl-C)
 ```
 
-Both take an optional port (`./serve-local.sh 8020`) and default to **8010**. **Never use port 8000** — it is reserved for the splash inference engine, and both scripts refuse it and exit. They also refuse an already-listening port. (`npx serve .` works too. A plain `file://` open does not: the game loads ES modules.)
+All three take an optional port (`./serve-local.sh 8020`) and default to **8010**. **Never use port 8000** — it is reserved for the splash inference engine, and all three scripts refuse it and exit. The serve scripts also refuse an already-listening port; `./stop-server.sh` stops by port (either bind address) and refuses to touch a port held by anything other than the `python3 -m http.server` it expects. (`npx serve .` works too. A plain `file://` open does not: the game loads ES modules.)
 
 ## Controls
 
