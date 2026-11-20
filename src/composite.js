@@ -29,9 +29,12 @@ import { emissive } from './atlas.js';
 export const MAX_BACKING_PX = 1024 * 960;   // 983040
 const DPR_MIN = 1, DPR_MAX = 3;
 export const SCENE_SCALE = 1;
-// §7 bloom ceiling, mirroring render.js's CLEAR_FLASH_MAX_ALPHA. Nothing consumes it
-// yet — S-06's bloom composite does.
-export const BLOOM_MAX_ALPHA = 0.35;
+// §7's ceiling on the additive bloom pass, mirroring render.js's CLEAR_FLASH_MAX_ALPHA, and the
+// only place it is applied (applyBloom's Math.min). S-21: the halo the user called too bright is
+// BOTH the lightmap core and this second additive light source, so the ceiling came down to 0.18.
+// `R53` clause 4 measures the pass alpha on the op log: render.js:291 calls applyBloom with no
+// argument, so the constant IS what the `scene` recorder sees, and the clause pins it <= 0.22.
+export const BLOOM_MAX_ALPHA = 0.18;
 const BYTE_BUDGET = 8 * 1024 * 1024; // sanity ceiling over the six layers (worst case 4.30 MiB)
 const LAYER_NAMES = ['scene', 'hud', 'upscale', 'lightmap', 'bloom', 'bloomHalf'];
 
@@ -155,15 +158,23 @@ let ambientCss = AMBIENT_DEFAULT;
 const LM_COLS = Math.ceil(VIEW_W / TILE) + 2;
 // Radii are LOGICAL px (§7's small / large / gate) baked at scale 1 so the disc is art-crisp, and
 // blitted at FX_SCALE: GLOW[].dw is the lightmap-px footprint, so a '12' bucket covers 12 logical
-// px on screen. Base alphas are all distinct, so a probe can attribute a blit by (dw, alpha) alone.
+// px on screen. Base alphas are all distinct within a dw, so a probe can attribute a blit by
+// (dw, alpha) alone, and `pumpkin-dim` stays strictly dimmer than `pumpkin`: it lights a spent block.
+// S-21 RETUNED THE ALPHAS (0.95/0.60/0.85/0.70/0.80/0.22 -> 0.11/0.10/0.08/0.09/0.11/0.04). Why so
+// small: `bakeRadial`'s disc CENTRE carries the full base alpha (pixels.js:443, the (1-t)^2 falloff),
+// and 1-1's ambient base is #dff2c9 = luma 232 of 255, i.e. 13-32 units of headroom per channel, so
+// anything above ~0.1 clips r and g at the core — that white crater, and the ~12 logical px pale
+// apron around it, is what the user called too bright. Ceiling `R53` now pins from this table: peak
+// modelled lightmap lift over the ambient <= 18 luma, every bucket's >= 4-luma apron inside 0.8 of
+// its own radius, any two overlapping discs' midpoint <= 22, peak >= 8 so the light is still a light.
 const HURT = 0, GATE = 1, WARM_S = 2, WARM_L = 3, PUMPKIN = 4, PUMPKIN_DIM = 5;
 const GLOW_SPEC = [
-  { key: 'hurt', color: '#ff5138', r: 24, a: 0.95 },
-  { key: 'gate', color: '#a6ff72', r: 32, a: 0.60 },
-  { key: 'warm-s', color: '#ffe3a6', r: 12, a: 0.85 },
-  { key: 'warm-l', color: '#ffc46a', r: 24, a: 0.70 },
-  { key: 'pumpkin', color: '#ff9b2e', r: 12, a: 0.80 },
-  { key: 'pumpkin-dim', color: '#c9701c', r: 12, a: 0.22 },
+  { key: 'hurt', color: '#ff5138', r: 24, a: 0.11 },
+  { key: 'gate', color: '#a6ff72', r: 32, a: 0.10 },
+  { key: 'warm-s', color: '#ffe3a6', r: 12, a: 0.08 },
+  { key: 'warm-l', color: '#ffc46a', r: 24, a: 0.09 },
+  { key: 'pumpkin', color: '#ff9b2e', r: 12, a: 0.11 },
+  { key: 'pumpkin-dim', color: '#c9701c', r: 12, a: 0.04 },
 ];
 const GLOW = GLOW_SPEC.map((s) => ({ key: s.key, a: s.a, c: null,
   dw: Math.max(1, Math.round(s.r * 2 * FX_SCALE)) }));
@@ -174,6 +185,15 @@ function glowBucket(i) {
   b.c = bakeRadial(GLOW_SPEC[i].color, GLOW_SPEC[i].r, 1);
   glowBakes++;                        // lazy: > 0 only on the frame that first needs a bucket
   return b;
+}
+
+// S-21: the halo's own budget, exported for `R53` in tools/verify.mjs. The lightmap, bloom and
+// bloomHalf layers model no ink (SURFACE ROLES), so the only way to gate the halo is to MODEL the
+// disc sum analytically — and that model has to read this table, or retuning an alpha would silently
+// re-green the gate instead of moving the number. Read-only by construction: fresh objects per call,
+// no reference to the mutable ambient or the baked canvases.
+export function haloBudget() {
+  return { ambient: ambientCss, buckets: GLOW_SPEC.map((s) => ({ key: s.key, color: s.color, r: s.r, a: s.a })) };
 }
 
 // One triple buffer for the whole frame: (x, y, alpha multiplier) in float32 — positions are
@@ -295,12 +315,22 @@ export function applyLightmap(sceneCtx) {
 // and footprint below is a lightmap value times FX_SCALE again. Smoothing on those two buffers is
 // the whole blur; §7 forbids escalating to a blur-op, a shadow-cast, or a second blur mechanism.
 const BLOOM_SCALE = FX_SCALE * FX_SCALE;
-// Per-'lighter'-pass gain of the energy boost. 0.5 is a 2.25x total gain, which measured (S-06 probe
-// b3/b4, one 1-1 frame with 6 lights + 3 masks) leaves 27 clipped px of 403 inked px and a peak
-// energy of 243.7/255 — cores clip, the falloff keeps its shape. A 1.0 gain is a 4x total, i.e. that
-// same peak clipping ~1.6x over, which is §7's "looks muddy" failure mode. 0.5 keeps applyBloom's
-// ceiling a ceiling rather than a whitener.
-const BLOOM_GAIN = 0.5;
+// Per-'lighter'-pass gain of the energy boost. The two self-blits below are additive, so the
+// accumulator leaves this pass as exactly (1 + 2*BLOOM_GAIN) x its input energy before the mip blur:
+// 1.5x at 0.25, where 0.5 made it 2.25x. S-21 cut it because that boost re-whitens discs the ambient
+// has already clipped (1-1's base is luma 232 of 255) — a second whitener on top of the lightmap core
+// is the halo the user objected to, and §7's "looks muddy" side of the same knob. There is no
+// bloom-buffer readback in the harness (these three layers model no ink, SURFACE ROLES), so the only
+// energy figure anyone may quote here is that arithmetic; `R53` clause 4 measures the op log instead —
+// both boost blits record this alpha and the sampled frame's disc blits share it, all <= 0.30.
+const BLOOM_GAIN = 0.25;
+// Entry gain for the baked emissive masks, the accumulator's OTHER additive input. Measured by R53:
+// 1-1's two fruit masks reached this buffer at alpha 1 — the brightest input on the recorder, and the
+// only one above the 0.30 ceiling every glow disc (<= 0.11) and both boost passes (0.25) stay under.
+// Masks are art, but they are art that blooms: 1-1's fruit halo is exactly "a halo around an object",
+// and the mip blur below smears whatever enters here across the buffer. There is still no readback, so
+// R53 clause 4 measures the op log: after this line every `lighter` blit on the bloom recorder is <= 0.25.
+const BLOOM_MASK_ALPHA = 0.25;
 // Keys that own a baked `<key>:emissive` mask. atlas.js exposes no enumeration API, so this is the
 // `grep -n "emissive" src/sprites.js` list verbatim as of 2026-11-18 — FIVE keys, one per `register`
 // call that passes an `emissive` opt: :831 pumpkin, :836 gate, :837 fruit, :838 berry, :847 fx.spark.
@@ -349,7 +379,9 @@ export function buildBloom(g, baked) {
     const dw = bk.dw * FX_SCALE;
     ctx.drawImage(bk.c, LIGHTS[i * 3] * FX_SCALE - dw / 2, LIGHTS[i * 3 + 1] * FX_SCALE - dw / 2, dw, dw);
   }
-  ctx.globalAlpha = 1;
+  // S-21: masks enter under their own ceiling (BLOOM_MASK_ALPHA), not at full strength — the witness
+  // for that is on the constant.
+  ctx.globalAlpha = BLOOM_MASK_ALPHA;
   emitN = 0;
   const camX = g.cam.x, items = g.items, enemies = g.enemies;
   for (let i = 0; i < items.length; i++) {

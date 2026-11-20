@@ -6264,6 +6264,190 @@ check('R51', () => {
   return `frozen gameplay: ${FRAMES.join('/')} snapshots of the ${FRAMES[FRAMES.length - 1]}-step run are byte-identical under ${B.fx} forced fx calls (dump ${bytesA} B sha ${sha256Hex(dA).slice(0, 16)}… = S-10's; per-frame ${shaA.map((h) => h.slice(0, 8)).join(' ')} = S-10's ${ANCHOR_SNAPS.join('/')}); per frame enemies/items/popups ${census.map((c) => `${c.e}/${c.i}/${c.p}`).join(' ')}; frame ${last.frame} state ${last.state} score ${last.score} lives ${last.lives} fruit ${last.fruitCount} camX ${last.camX.toFixed(3)}; steps that threw ${A.errors}/${B.errors}`;
 });
 
+// ---------------------------------------------------------------------------
+// R53 — THE HALO BUDGET (S-21). "The bright halo around objects is too bright." The lightmap, bloom
+// and bloomHalf surfaces model NO ink (SURFACE ROLES above: they are composite.js's own FX scratch) and
+// a readback is a banned API, so this gate reads the two things that ARE observable — the op streams
+// those layers record, and the disc sum modelled from the shipped table through `haloBudget()`. The
+// model is `bakeRadial`'s contract verbatim, not an approximation: the baked CENTRE carries the full
+// base alpha and every pixel is `a*(1-t)^2` (src/pixels.js:443), `drawLightmap` blits that `'lighter'`
+// onto the layer's own ambient `fillRect` (recorded, and read here rather than retyped), and the clip
+// at 255 per channel is exactly the white crater the complaint is about. Four clauses, own assert, own
+// printed witness:
+//   1 per-source ceiling — every glow-disc blit on the lightmap recorder has alpha <= 0.35. A camera
+//     that records no disc would pass every clause below vacuously, so the > 0 floor is asserted first.
+//   2 peak lift and halo reach — modelled peak over the ambient <= 18 luma and >= 8 (a halo tuned to
+//     nothing is not a fix), and every bucket's >= 4-luma apron inside 0.8 of its OWN radius.
+//   3 stacking — at the midpoint of any two disc centres closer than the sum of their radii the
+//     modelled lift <= 22 luma: the one case a per-source ceiling cannot see.
+//   4 bloom stays under the ceiling — every blit that ADDS energy to the `bloom` recorder (glow discs,
+//     the emissive masks, both BLOOM_GAIN boost self-blits) has alpha <= 0.30, and the final bloom blit
+//     on `scene` <= 0.22. The one op there with alpha 1 is the mip blur's write-back, and it is outside
+//     the ceiling on purpose: op 'copy' REPLACES the buffer, so it adds no light — it carries exactly
+//     what the gated additive blits put in, which is how the ceiling holds transitively. Its count and
+//     alpha are printed so a future blur that became 'lighter' shows up as a breach, not as a gap. The
+//     masks ARE inside: buildBloom adds them 'lighter', and 1-1's fruit halo is a halo around an object.
+// THE CAMERAS: eight fixed positions in 1-1. Measured from the op stream, 1-1 lights three kinds of
+// source: the pumpkin columns at map columns 16/20/23/64/110/113/116 (lightmap footprint 12, buckets
+// 'pumpkin'/'pumpkin-dim'), the gate at x 2656 (footprint 32), and the three fruits at x 2516/2548/2580
+// whose masks are the only emissive entries 1-1 has. A source at world x is gatherable only while camX
+// sits in [x-2(lmW+r), x+2r] for lightmap radius r (addLight's cull: sx = (x-camX)*FX_SCALE inside
+// [-r, lmW+r]) — for the footprint-12 discs that is camX in [x-268, x+12], which is how the eight
+// cameras below each land inside a window; clause 1's per-camera floor assert is the re-run proof. No
+// two of those sources reach each other, so clause 3's predicate cannot fire in this level and the
+// closest-approach figure below is what shows the predicate ran rather than was skipped. `G.state =
+// 'PAUSED'` is load-bearing (main.js:629-639 returns from update() while render.js:257 still draws the
+// world) — it is what lets a forced `camX` survive the frame, and the `G.cam.x` assert below says so
+// instead of trusting it.
+// ---------------------------------------------------------------------------
+const { haloBudget } = await import('../src/composite.js'); // :1108 already loaded the module: a cache hit
+
+check('R53', () => {
+  const DISC_ALPHA_CEIL = 0.35, BLOOM_BLIT_CEIL = 0.30, SCENE_BLIT_CEIL = 0.22;
+  const LIFT_CEIL = 18, LIFT_FLOOR = 8, STACK_CEIL = 22, APRON = 4, REACH_FRAC = 0.8;
+  const LATTICE_STEP = 2;   // lightmap px between lattice points; every disc CENTRE is also evaluated
+                            // exactly, so the coarse grid can only under-sample the sum, never overstate it
+  const CAMERAS = [170, 330, 896, 1024, 1520, 1700, 1856, 2600]; // 2880px level, one light window each
+  const luma = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b; // BT.601: the S-21 readback's weighting (a9e2c3 -> 205)
+  const rgbOf = (css, what) => {
+    const p = parseInk(css);
+    assert(p && p.a === 1, `${what} (${String(css)}) is not an opaque colour, so R53 cannot model its lift`);
+    return [p.r, p.g, p.b];
+  };
+  const L = compositeLayers();
+  const recOf = (n) => {
+    const r = L[n] && L[n].c && L[n].c._rec;
+    assert(r, `layer '${n}' has no op recorder — R53 cannot see the halo it gates`);
+    return r;
+  };
+  const lmRec = recOf('lightmap'), bloomRec = recOf('bloom'), scRec = sceneRec();
+  const budget = haloBudget(); // the six static buckets; the ambient is re-read after a frame, see below
+  assert(budget.buckets.length === 6, `haloBudget() returned ${budget.buckets.length} buckets, expected the six GLOW_SPEC entries — clause 2 models each of them`);
+  assert(LEVELS[0].label === '1-1', `R53's cameras are picked from 1-1's block columns, but LEVELS[0] is '${LEVELS[0].label}'`);
+  const level = parseLevel(LEVELS[0]);
+  const saved = { level: G.level, items: G.items, player: G.player, enemies: G.enemies, camX: G.cam && G.cam.x, state: G.state };
+  const discsSeen = new Map(), bloomSeen = new Map(), maskSeen = new Map();
+  let discs = 0, discAlphaMax = 0, bloomMax = 0, masks = 0, sceneBloom = -1;
+  let discBloom = 0, boost = 0, copies = 0, copyMax = 0;
+  let liftPeak = -Infinity, liftPeakAt = '', ambCss = null, amb = null, ambLuma = 0, ambDrift = '';
+  let pairs = 0, pairFreeCameras = 0, worst = null, nearGap = Infinity, near = '';
+  for (const camX of CAMERAS) {
+    installLevel(level, { camX });
+    fxReset();
+    G.state = 'PAUSED';
+    lmRec.rects.length = 0; lmRec.drawImages.length = 0; bloomRec.drawImages.length = 0; scRec.drawImages.length = 0;
+    renderFrames(1);
+    assert(Math.round(G.cam.x) === camX, `the census camera drifted: camX ${camX} was asked for, ${G.cam.x} drew — PAUSED is what holds a forced camera, and a drifting one samples discs this check did not choose`);
+    assert(lmRec.rects.length === 1, `the lightmap recorded ${lmRec.rects.length} fillRect(s) for camera ${camX}, expected the one ambient base fill (the settled frame is 1 fill / 1 blit per gathered light) — with no single base fill there is no ambient to measure a lift over`);
+    const css = lmRec.rects[0][4];
+    const ca = rgbOf(css, `the lightmap's own ambient base fill at camera ${camX}`);
+    const cl = luma(ca[0], ca[1], ca[2]);
+    if (amb === null) { ambCss = css; amb = ca; ambLuma = cl; } else if (css !== ambCss) ambDrift = `camera ${camX} filled ${css} while camera ${CAMERAS[0]} filled ${ambCss}`;
+    // drawLightmap is the only writer on this surface, so a `'lighter'` blit there IS a glow disc.
+    const blits = lmRec.drawImages.filter((e) => e.op === 'lighter');
+    assert(blits.length > 0, `clause 1: camera ${camX} recorded no glow-disc blit on the lightmap at all — a census of nothing turns every clause below green by blindness, not by lighting`);
+    const at = [];
+    for (const e of blits) {
+      const k = `${e.dw}/${e.alpha}`;
+      discsSeen.set(k, (discsSeen.get(k) || 0) + 1);
+      if (e.alpha > discAlphaMax) discAlphaMax = e.alpha;
+      const b = budget.buckets.find((x) => Math.max(1, Math.round(x.r * 2 * C.FX_SCALE)) === e.dw && Math.abs(x.a - e.alpha) <= 1e-9);
+      assert(b, `clause 1: a lightmap glow blit (${e.dw}x${e.dh} at ${e.dx},${e.dy}, alpha ${e.alpha}) matches no GLOW_SPEC bucket by (dw, alpha) — that pair is the ONLY way a probe attributes a disc, so an unattributable one means the gather or the bake moved and clause 2 would be modelling nothing`);
+      at.push({ cx: e.dx + e.dw / 2, cy: e.dy + e.dh / 2, r: e.dw / 2, a: e.alpha, col: rgbOf(b.color, `bucket '${b.key}'`) });
+    }
+    discs += blits.length;
+    assert(discAlphaMax <= DISC_ALPHA_CEIL, `clause 1: a glow-disc blit reached alpha ${discAlphaMax} on the lightmap recorder, over the ${DISC_ALPHA_CEIL} per-source ceiling (${[...discsSeen].map(([k, n]) => `${k} x${n}`).join(', ')})`);
+    const liftAt = (px, py) => {
+      let r = ca[0], g = ca[1], b = ca[2];
+      for (const d of at) {
+        const t = Math.hypot(px - d.cx, py - d.cy) / d.r;
+        if (t >= 1) continue;
+        const w = d.a * (1 - t) * (1 - t);
+        r += w * d.col[0]; g += w * d.col[1]; b += w * d.col[2];
+      }
+      return luma(Math.min(255, r), Math.min(255, g), Math.min(255, b)) - cl;
+    };
+    for (let y = 0; y < L.lightmap.h; y += LATTICE_STEP) {
+      for (let x = 0; x < L.lightmap.w; x += LATTICE_STEP) {
+        const v = liftAt(x, y);
+        if (v > liftPeak) { liftPeak = v; liftPeakAt = `cam ${camX} lm ${x},${y}`; }
+      }
+    }
+    for (const d of at) {
+      const v = liftAt(d.cx, d.cy);
+      if (v > liftPeak) { liftPeak = v; liftPeakAt = `cam ${camX} disc centre ${d.cx},${d.cy}`; }
+    }
+    let best = null;
+    for (let i = 0; i < at.length; i++) for (let j = i + 1; j < at.length; j++) {
+      const d = Math.hypot(at[i].cx - at[j].cx, at[i].cy - at[j].cy);
+      const gap = d - (at[i].r + at[j].r); // < 0 is the predicate; the closest approach is printed either way
+      if (gap < nearGap) { nearGap = gap; near = `centres ${d.toFixed(1)} lm apart vs ${at[i].r + at[j].r} summed radii (gap ${gap.toFixed(1)}) at cam ${camX}`; }
+      if (gap >= 0) continue;
+      const v = liftAt((at[i].cx + at[j].cx) / 2, (at[i].cy + at[j].cy) / 2); // ALL of that frame's discs, as the pixel sees them
+      if (!best || v > best.v) best = { v, a: at[i], b: at[j] };
+    }
+    if (best) {
+      pairs++;
+      if (!worst || best.v > worst.v) worst = { v: best.v, camX, i: `${best.a.cx},${best.a.cy}r${best.a.r}`, j: `${best.b.cx},${best.b.cy}r${best.b.r}` };
+    } else pairFreeCameras++;
+    const discSrc = new Set(blits.map((e) => e.src)); // the same baked canvases both layers receive
+    for (const e of bloomRec.drawImages) {
+      const k = `${e.dw}/${e.alpha}`;
+      // The ceiling is about energy ADDED, so it gates this buffer's 'lighter' blits: glow discs, baked
+      // emissive masks, and the two full-buffer boost passes. The mip blur's write-back is 'copy'
+      // (composite.js:404) and REPLACES the accumulator with the blurred half, so its alpha 1 is a
+      // rasterisation mechanism, not a light level — what it carries is the sum of the blits below, which
+      // is how this ceiling holds transitively. Counted and printed, so a blur that ever went 'lighter'
+      // shows up as a breach rather than as a gap in this clause.
+      if (e.op === 'copy') { copies++; if (e.alpha > copyMax) copyMax = e.alpha; continue; }
+      assert(e.op === 'lighter', `clause 4: camera ${camX} recorded a '${e.op}' blit on the bloom accumulator, which buildBloom opens 'lighter' and writes back with 'copy' only — an op this clause has no ceiling for`);
+      bloomSeen.set(k, (bloomSeen.get(k) || 0) + 1);
+      if (e.alpha > bloomMax) bloomMax = e.alpha;
+      if (discSrc.has(e.src)) discBloom++;
+      else if (e.dw === L.bloom.w && e.dh === L.bloom.h) boost++;
+      else masks++, maskSeen.set(k, (maskSeen.get(k) || 0) + 1);
+    }
+    const applied = scRec.drawImages.filter((e) => e.op === 'lighter' && e.dw === L.scene.w && e.dh === L.scene.h);
+    assert(applied.length === 1, `clause 4: the scene recorder saw ${applied.length} full-view 'lighter' blit(s) at camera ${camX}, expected exactly applyBloom's one (render.js:291) — with no bloom blit to read, the scene half of this clause is blind`);
+    if (applied[0].alpha > sceneBloom) sceneBloom = applied[0].alpha;
+  }
+  Object.assign(G, { level: saved.level, items: saved.items, player: saved.player, enemies: saved.enemies, cam: { x: saved.camX }, state: saved.state });
+  assert(ambDrift === '', `clause 2: ${ambDrift} — the census measures a lift over ONE ambient base, so a fog that changes mid-census makes the figure mean two things at once`);
+  // The buckets are static GLOW_SPEC rows, but `ambient` is live module state: setAmbient runs from
+  // render.js:177 on every frame and composite.js's module default is a different colour, so the
+  // accessor is read again here — after the census — to prove it reports the sky being shipped.
+  const live = haloBudget();
+  assert(live.ambient === ambCss, `clause 2: haloBudget() reports ambient ${live.ambient} but the lightmap filled ${ambCss} — the accessor has drifted from the shipped base fill and every figure below models the wrong sky`);
+  assert(liftPeak <= LIFT_CEIL, `clause 2: the modelled lightmap lift over the ${ambCss} base peaked at ${liftPeak.toFixed(1)} luma (${liftPeakAt}), over the ${LIFT_CEIL} ceiling — the disc centre carries the full base alpha, so an over-bright core is a GLOW_SPEC alpha, not a falloff shape`);
+  assert(liftPeak >= LIFT_FLOOR, `clause 2: across ${CAMERAS.length} cameras and ${discs} discs the peak modelled lift is only ${liftPeak.toFixed(1)} luma, under the ${LIFT_FLOOR} floor — that is the halo switched off, not retuned`);
+  const reaches = budget.buckets.map((k) => {
+    const col = rgbOf(k.color, `bucket '${k.key}'`);
+    let t = 1;
+    for (; t >= 0; t -= 0.002) {
+      const w = k.a * (1 - t) * (1 - t);
+      if (luma(Math.min(255, amb[0] + w * col[0]), Math.min(255, amb[1] + w * col[1]), Math.min(255, amb[2] + w * col[2])) - ambLuma >= APRON) break;
+    }
+    t = Math.max(0, t);
+    return { key: k.key, r: k.r, t, reach: t * k.r };
+  });
+  const wide = reaches.filter((r) => r.t > REACH_FRAC);
+  assert(wide.length === 0, `clause 2: ${wide.map((r) => `${r.key} still holds ${APRON}+ luma of lift out to ${r.reach.toFixed(1)}px = ${r.t.toFixed(2)} of its own ${r.r}px radius`).join('; ')} — the bright apron must stay inside ${REACH_FRAC} r, which is the whole difference between a light on an object and a wash over the level`);
+  // Built before the assert on purpose: a template literal that dereferences a null `worst` would crash
+  // the PASS path, and the closest-approach figure is the proof the predicate ran even when it never fired.
+  const stack = worst
+    ? `worst midpoint ${worst.v.toFixed(1)} luma (<= ${STACK_CEIL}) at cam ${worst.camX} between discs ${worst.i} and ${worst.j}`
+    : `NO sampled camera had an overlapping disc pair, so the predicate never fired; closest approach ${near}`;
+  assert(worst === null || worst.v <= STACK_CEIL, `clause 3: ${stack} is over the ${STACK_CEIL} luma stacking ceiling — every source is individually under ${DISC_ALPHA_CEIL} yet the pixel they share is not`);
+  // Two floors before the ceiling, so this clause cannot go green by going blind: the boost pass is a
+  // fixed pair of self-blits in buildBloom, and 1-1's fruit masks are the input whose ceiling S-21
+  // introduced — a census that never reached either would be gating nothing.
+  assert(boost === 2 * CAMERAS.length, `clause 4: the census saw ${boost} boost self-blits over ${CAMERAS.length} cameras, expected exactly 2 per frame (composite.js's two 'lighter' drawImage calls) — a census that does not sample the boost is not measuring the pass this clause gates`);
+  assert(masks > 0, `clause 4: no emissive mask entered the bloom accumulator in any sampled frame, so BLOOM_MASK_ALPHA is unmeasured here — ${CAMERAS.join(', ')} needs a camera that can still see 1-1's fruit`);
+  assert(bloomMax <= BLOOM_BLIT_CEIL, `clause 4: an additive blit on the ${L.bloom.w}x${L.bloom.h} bloom accumulator reached alpha ${bloomMax}, over the ${BLOOM_BLIT_CEIL} ceiling — ${discBloom} disc + ${masks} mask + ${boost} boost blits, alphas ${[...bloomSeen].map(([k, n]) => `${k} x${n}`).join(', ')}: discs share their lightmap alpha, the boost passes record BLOOM_GAIN, masks record BLOOM_MASK_ALPHA`);
+  assert(sceneBloom <= SCENE_BLIT_CEIL, `clause 4: the final bloom blit on the scene recorder carried alpha ${sceneBloom}, over the ${SCENE_BLIT_CEIL} ceiling — applyBloom's Math.min(BLOOM_MAX_ALPHA, alpha) is the only thing between the accumulator and the scene`);
+  return `halo budget over ${CAMERAS.length} PAUSED 1-1 cameras (${CAMERAS.join(', ')}): ${discs} glow-disc blits on the lightmap recorder, distinct (dw,alpha) ${[...discsSeen].map(([k, n]) => `${k} x${n}`).join(' ')} — every one <= ${DISC_ALPHA_CEIL} and attributable to a GLOW_SPEC bucket; modelled lift over the recorded ${ambCss} base (luma ${ambLuma.toFixed(1)}): peak ${liftPeak.toFixed(1)} at ${liftPeakAt} (<= ${LIFT_CEIL}, >= ${LIFT_FLOOR}), >= ${APRON}-luma apron reaches ${reaches.map((r) => `${r.key} ${r.reach.toFixed(1)}px=${r.t.toFixed(2)}r`).join(' ')} — every bucket <= ${REACH_FRAC} r; ${pairs}/${CAMERAS.length} cameras had an overlapping disc pair, ${stack}${pairFreeCameras ? `, ${pairFreeCameras} had none` : ''}; bloom accumulator took ${discBloom} disc + ${masks} mask + ${boost} boost additive blits at ${[...bloomSeen].map(([k, n]) => `${k} x${n}`).join(' ')}, peaking at alpha ${bloomMax.toFixed(3)} (<= ${BLOOM_BLIT_CEIL}); the mip write-back's ${copies} 'copy' blit(s) at alpha ${copyMax.toFixed(3)} replace that buffer instead of lighting it; the scene bloom blit is at ${sceneBloom.toFixed(3)} (<= ${SCENE_BLIT_CEIL})`;
+});
+
 // MARKER:CHECKS
 
 // ---------------------------------------------------------------------------
