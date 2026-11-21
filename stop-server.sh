@@ -28,8 +28,9 @@ for PID in $PIDS; do
   CMD=$(ps -ww -o command= -p "$PID" 2>/dev/null || true)
   # Matched case-insensitively: the interpreter binary is often "Python" (framework
   # builds), so a case-sensitive match would falsely refuse our own server.
+  # tools/serve.py is the no-store http.server the serve scripts now exec.
   case $(printf '%s' "$CMD" | tr 'A-Z' 'a-z') in
-    *python*http.server*) ;;
+    *python*http.server*|*python*serve.py*) ;;
     *)
       echo "port $PORT is held by PID $PID, which is not a python http.server — leaving it alone:" >&2
       echo "  ${CMD:-<unknown>}" >&2

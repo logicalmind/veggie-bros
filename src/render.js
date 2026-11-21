@@ -3,7 +3,7 @@ import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, setAmbient
 import { draw as drawFx, shakeOffset } from './fx.js';
 import { parseLevel } from './level.js';
 import { LEVELS } from './levels.js';
-import { ambientFor, bakeLevel, parallaxFor, visibleStrips } from './terrain.js';
+import { ambientFor, bakeLevel, parallaxFor, retileColumn as terrainRetile, visibleStrips } from './terrain.js';
 import { colorToCss } from './pixels.js';
 import { banner, hud, overlay, popup, title } from './ui.js';
 import { drawBerry, drawFruit, drawGate, drawShard } from './props.js';
@@ -38,6 +38,15 @@ function worldFor(g) {
   if (fog) setAmbient(colorToCss(fog));
   bakedFor = { level: g.level, theme, baked };
   return baked;
+}
+
+// R-6: a head-bump mutates the plan's level tiles in place (main.js); without this the
+// plan's frozen strip keys would serve the pre-punch art for that column forever.
+// Re-key the affected strips — the next visibleStrips() re-bakes them once. No-op before
+// the first render, or after loadLevel() replaced the level object, in which case
+// worldFor() re-plans from the fresh parse anyway.
+export function retileColumn(g, tx) {
+  if (bakedFor && bakedFor.level === g.level) terrainRetile(bakedFor.baked, tx);
 }
 
 // The whole background in 1 + 3 + (4..6) blits: baked sky wash, the three parallax depths,

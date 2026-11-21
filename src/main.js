@@ -23,7 +23,7 @@ import { makeBoss, makeTurnip, updateBoss, updateTurnip } from './enemy.js';
 import { BERRY_H, BERRY_W, makeBerry, makeFruit, makePop, makePopup, makeShards, updateItems } from './items.js';
 import { hurtPlayer, killPlayer, makePlayer, updatePlayer } from './player.js';
 import { CAMERA_FOLLOW_X, makeCamera, updateCamera } from './camera.js';
-import { render } from './render.js';
+import { render, retileColumn } from './render.js';
 import {
   burst,
   dust,
@@ -462,6 +462,7 @@ function updateState(dt) {
       const ch = G.level.tiles[ty][tx];
       if (ch === 'P') {
         G.level.tiles[ty][tx] = 'U';
+        retileColumn(G, tx);
         G.items.push(makePop(tx * 16 + 4, ty * 16 - 16, 'fruit'));
         G.fruitCount++;
         addScore(SCORE.fruit, tx * 16 + 4, ty * 16);
@@ -469,6 +470,7 @@ function updateState(dt) {
         burst(tx * 16 + 12, ty * 16 + 8, 6, KIND.SPARK);
       } else if (ch === 'Q') {
         G.level.tiles[ty][tx] = 'U';
+        retileColumn(G, tx);
         G.items.push(makePop(tx * 16 + 4, ty * 16 - 16, 'berry'));
         G.items.push(makeBerry(tx * 16 + 1, ty * 16 - 16));
         addScore(SCORE.berry, tx * 16 + 4, ty * 16);
@@ -477,6 +479,7 @@ function updateState(dt) {
       } else if (ch === 'B') {
         if (p.big) {
           G.level.tiles[ty][tx] = '.';
+          retileColumn(G, tx);
           G.items.push(...makeShards(tx * 16 + 4, ty * 16 + 6));
           addScore(SCORE.block, tx * 16 + 4, ty * 16);
           audio.sfx('break');

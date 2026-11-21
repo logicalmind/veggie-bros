@@ -12,7 +12,7 @@ No install needed. From the repo root:
 ./stop-server.sh      # stop the server on 8010 (a foreground one stops with Ctrl-C)
 ```
 
-All three take an optional port (`./serve-local.sh 8020`) and default to **8010**. **Never use port 8000** — it is reserved for the splash inference engine, and all three scripts refuse it and exit. The serve scripts also refuse an already-listening port; `./stop-server.sh` stops by port (either bind address) and refuses to touch a port held by anything other than the `python3 -m http.server` it expects. (`npx serve .` works too. A plain `file://` open does not: the game loads ES modules.)
+All three take an optional port (`./serve-local.sh 8020`) and default to **8010**. **Never use port 8000** — it is reserved for the splash inference engine, and all three scripts refuse it and exit. The serve scripts also refuse an already-listening port; `./stop-server.sh` stops by port (either bind address) and refuses to touch a port held by anything other than the dev server it expects. The serve scripts run `tools/serve.py` — the stdlib `http.server` plus `Cache-Control: no-store` — so a standard browser refresh always pulls the files straight from disk (plain `http.server` sends no cache headers, and a reload can otherwise re-serve a stale ES module). (`npx serve .` works too. A plain `file://` open does not: the game loads ES modules.)
 
 ## Controls
 

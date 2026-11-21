@@ -15,4 +15,4 @@ if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/
 fi
 
 echo "Veggie Bros. -> http://127.0.0.1:$PORT (localhost only)"
-exec python3 -m http.server "$PORT" --bind 127.0.0.1
+exec python3 tools/serve.py "$PORT" --bind 127.0.0.1

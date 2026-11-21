@@ -16,4 +16,4 @@ fi
 
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this-machine-ip>")
 echo "Veggie Bros. -> http://$LAN_IP:$PORT (all interfaces — use this address from other devices)"
-exec python3 -m http.server "$PORT" --bind 0.0.0.0
+exec python3 tools/serve.py "$PORT" --bind 0.0.0.0

@@ -323,6 +323,26 @@ function ensureStrip(baked, index) {
   return s;
 }
 
+// R-6: a punched 'P'/'Q' -> 'U' or a broken 'B' -> '.' mutates level.tiles in place
+// (main.js) but never re-plans the level, so the plan's frozen keys would serve the old
+// art for that column forever. Recompute only the keys of the strips whose digest range
+// [firstCol-2, firstCol+TILES_PER_STRIP+2] touches the mutated column — that range is
+// exactly the union of every tile read a bake performs (AO field ±2, fractional tap +1),
+// so the re-keyed set is precisely the set of strips whose pixels can change. The next
+// ensureStrip misses the LRU and re-bakes those strips once. Only keys are written —
+// no canvas allocation, no gameplay state.
+export function retileColumn(baked, tx) {
+  const level = baked._level;
+  const shift = baked.stripPhase / TILE; // firstCol(i) = i*TILES_PER_STRIP - shift
+  const k0 = Math.max(0, Math.ceil((tx + shift - TILES_PER_STRIP - 2) / TILES_PER_STRIP));
+  const k1 = Math.min(baked.stripCount - 1, Math.floor((tx + shift + 2) / TILES_PER_STRIP));
+  for (let i = k0; i <= k1; i++) {
+    baked.stripKeys[i] =
+      `${level.label}|${baked._theme.name}|${baked.stripPhase}|${i}|` +
+      `${stripDigest(level, baked.cols, i * TILES_PER_STRIP - shift)}`;
+  }
+}
+
 /**
  * Bake strip `index` of a planned level. PURE in (level, theme, stripIndex): every tile
  * read, every neighbour test and every seed speaks absolute world coordinates, and the
@@ -663,8 +683,8 @@ function paintPumpkin(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
   ctx.stroke();
   paintContact(ctx, th, m, level, cols, tx, ty, lx, y, 'P', soft);
 }
-// Spent block ('U'): the same rounded body in the muted 'used' ramp, with a dark hollow
-// where the prize used to be.
+// Spent block ('U'): the same rounded body in the muted 'used' ramp, plain face — no star,
+// no hollow (R-6: once the prize is gone the box is just solid colour).
 function paintPumpkinUsed(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
   const g = ctx.createLinearGradient(lx, y, lx, y + TILE);
   g.addColorStop(0, colorToCss(mix(m.lit, m.hi, 0.25)));
@@ -675,12 +695,6 @@ function paintPumpkinUsed(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
   ctx.save();
   roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
   ctx.clip();
-  const hg = ctx.createRadialGradient(lx + 8, y + 8, 1, lx + 8, y + 8, 6.5);
-  hg.addColorStop(0, rgba(m.deep, 0.85));
-  hg.addColorStop(1, rgba(m.deep, 0.55));
-  ctx.fillStyle = hg;
-  roundRectPath(ctx, lx + 3.5, y + 3.5, 10, 10, 2);
-  ctx.fill();
   vgrad(ctx, lx, y, y + 2.6, [[0, rgba(m.hi, 0.4)], [1, rgba(m.hi, 0)]]);
   ctx.fillRect(lx, y, TILE, 2.6);
   ctx.restore();

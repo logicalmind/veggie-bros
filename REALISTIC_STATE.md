@@ -219,4 +219,65 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     `distinctColors` gate must expect the vignette-free animated-title counts.
   - Next: R-6 (JASON request) — spent star boxes: remove the dark hollow so a hit P/Q block is a
     plain solid-coloured body (the star marking already vanishes on hit; the hollow in
-    `paintPumpkinUsed` is the delta).
+    `paintPumpkinUsed` is the delta). [NOTE: that parenthetical was an unverified inference and
+    was wrong — see R-6, the star did NOT vanish.]
+
+- [x] **R-6** — star boxes spend to solid colour (approved 2026-11-21)
+  - **Real bug found — the R-5 "Next:" note was wrong:** punched boxes kept drawing the intact
+    STAR art. `bakeLevel` computes each strip's LRU key (`label|theme|phase|i|digest`) ONCE at
+    level load, and `ensureStrip` looks the module-level `strips` Map up with those frozen keys —
+    a punched tile re-ran no planning, so the spent tile served the stale intact canvas forever.
+    The only post-punch change was the lightmap disc ('P' glow → 'U' `PUMPKIN_DIM`), and that
+    disc's radial read like an art change on a luma-diff map, which is how the earlier
+    "it re-bakes, just dim" misread happened. Reproduced byte-identically across three separate
+    page loads on two builds: spent box avg [155,93,30] vs intact [164,97,32], star-seal centre
+    [185,129,48] still bright (hi 171). That was JASON's report exactly.
+  - `terrain.js`: new export `retileColumn(baked, tx)` — recomputes `baked.stripKeys[i]` ONLY for
+    the strips whose digest range `[firstCol-2, firstCol+TILES_PER_STRIP+2]` touches the mutated
+    column (that range is exactly the union of every tile read a bake performs: AO field ±2,
+    fractional tap +1). The next `ensureStrip` misses the LRU and re-bakes those strips within one
+    frame; only keys are written (no canvas allocation, no gameplay state). Also
+    `paintPumpkinUsed`: the dark hollow clip (the `hg` radial block) is DELETED — the spent block
+    is now the plain used-ramp body + top strip + outline + contact shadow, per "just be the
+    solid color of the box".
+  - `render.js`: exports `retileColumn(g, tx)` — a no-op unless the cached plan's level identity
+    matches `g.level` (after `loadLevel()` the new identity re-plans anyway). `main.js`: one call
+    at each of the THREE runtime tile-mutation sites — P→U, Q→U, B→'.' (the parse-time writes in
+    `level.js` are pre-plan and need nothing). No gameplay logic touched: punch conditions,
+    physics, levels, camera unchanged. The `terrain.js:152` self-healing comment, which described
+    behaviour that never existed (the digest changed nothing until this pass re-runs it), is now
+    true.
+  - In-page catches: (1) a fresh page once ran STALE module code after a reload. Root cause was
+    the dev server: plain `python3 -m http.server` sends no cache headers, so the browser's
+    heuristic freshness re-served old nested ES modules. FIXED AT THE SOURCE this slice:
+    `tools/serve.py` (stdlib http.server + `Cache-Control: no-store`) now backs both serve
+    scripts (`serve-local.sh`/`serve-network.sh` exec it; `stop-server.sh` matches it; README
+    updated) — a standard browser refresh always pulls the files straight from disk. Verified
+    with a marker round-trip: comment added to terrain.js → standard `location.reload()` → page
+    served the marker; comment removed → standard reload → page served the removal. (Separately,
+    `tab.reload()` from the tool bridge no-ops silently in this environment — `location.reload()`
+    + a small `performance.now()` is the reliable in-test reload.) (2) A keyup ~40 ms after the
+    jump keydown triggers `JUMP_CUT_VY` (−200) and caps the arc at ~35 px — short of a block 36
+    px above the head; hold the jump through the arc for a real head-bump (punches here landed
+    71–95 ms after the held keydown).
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,"stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true},"distinctColors":7830}`
+    — seam hash unchanged (the probe never mutates tiles, so the re-key path is unexercised by it).
+    Zero console errors across boot → PLAYING → both real punches.
+  - Pixel evidence (visible 768×720 canvas; 44×44 box / 20×20 centre; P@21,9): intact star box
+    avg [153,104,48], centre [157,109,50] hi 154; spent WITHOUT re-bake (old behaviour —
+    reproduced by setting the tile 'U' by hand, which no game code path does) avg [155,105,48],
+    centre [161,110,50] hi 157 — **star persists**; spent after a REAL held-jump punch (tile 'U',
+    71 ms) avg [127,96,56], centre [131,98,56] hi 121 — plain tan, no star (box hi 212 = punch
+    sparks in-frame). First punch P@16,9: star centre [200,135,50] hi 184 → spent centre
+    [122,93,55] hi 117. B@22,9 (big hero, real punch): block [152,104,49] → [175,223,181] = the
+    background behind the block, art gone. Q→U shares P's exact two-line fix (same 'U' art).
+    PNGs: /tmp/vb-r6-intact.png (pristine star), /tmp/vb-r6-before.png (spent, star persists —
+    the reported symptom), /tmp/vb-r6-after.png (spent, plain box), /tmp/vb-r6-after-break.png
+    (B block broken).
+  - Parked `tools/verify.mjs` drift continues and is never re-run; a future re-pin must also
+    expect the new `retileColumn` export and the re-baked spent tiles.
+  - Deferral: "solid color" read as "no star, no hollow" — the rounded body gradient, top
+    highlight strip and outline stay. A literally flat single-colour fill is a one-line
+    follow-up if wanted.
+  - Next: R-6 was the last planned slice. All six commits are UNPUSHED (6554051, b27074e,
+    bfd3467, 9960a75, d1833e1, + this one); the branch awaits JASON's next request.
