@@ -1,18 +1,12 @@
-import { PALETTE, VIEW_H, VIEW_W } from './config.js';
-import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, SCENE_SCALE as HD, setAmbient } from './composite.js';
+import { PALETTE, SCENE_SCALE as HD, VIEW_H, VIEW_W } from './config.js';
+import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, setAmbient } from './composite.js';
 import { draw as drawFx, shakeOffset } from './fx.js';
 import { parseLevel } from './level.js';
 import { LEVELS } from './levels.js';
 import { ambientFor, bakeLevel, parallaxFor, visibleStrips } from './terrain.js';
 import { colorToCss } from './pixels.js';
-import {
-  TEXT_PITCH,
-  drawBerry,
-  drawFruit,
-  drawGate,
-  drawPixelText,
-  drawShard,
-} from './sprites.js';
+import { TEXT_PITCH, drawPixelText } from './sprites.js';
+import { drawBerry, drawFruit, drawGate, drawShard } from './props.js';
 import { drawBoss, drawHero, drawTurnip } from './chars.js';
 
 const P = PALETTE;

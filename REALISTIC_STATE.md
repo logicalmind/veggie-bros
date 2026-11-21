@@ -82,3 +82,50 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     arc); all 28 sheet frames inked, left-facing flips verified, HUD lives icon live.
   - Items/FX/tiles remain 8-bit until R-3; title-screen hero + HUD lives icon are the
     transitional bilinear downscales (R-4 redesigns the HUD).
+
+- [x] **R-3** — HD items (approved 2026-11-21)
+  - New `src/props.js` (~560 lines): fruit (4 spin frames, centre-anchored squash keys
+    1/0.62/0.24/0.62 — reads as rotation vs the old left-sweep), berry (14×7 capsule, radial
+    hi-core; one frame — the old glint-row pulse is the bloom mask's job now), shard (4×4, four
+    facets under the top-left key, verbatim old offset math `ox=(k%2)*8; oy=k<2?0:8;
+    dx=k%2?1:-1; dy=k<2?-1:1; o=round(t*8)`), melon gate (32×119 blitted at (x, y−103); the old
+    right plinth was a 7-wide matrix clipped to 2 px — both plinths now symmetric 7-wide), and the
+    four FX kinds (dust / spark / poof / chip) with `fxBlit` replicating the retired atlas
+    `drawRec` contract exactly (top-left anchor, round dest size, multiplicative alpha,
+    destination-space mirror). Emission: fruit (9×9 pumpkinLit r4.8) + berry
+    (14×7 berryBody.hi r6.5) only; gate/pumpkin/spark emission deferred to R-5.
+  - `src/sprites.js` rewritten as a pixel-text-only module (~130 lines, zero imports): the entire
+    old atlas pipeline (matrices, materials, rim arrays, registrations) deleted and
+    `src/atlas.js` removed. Items bake ONCE to plain `OffscreenCanvas`es at 4× logical size and
+    blit 1:1 under the scene transform — no per-frame rasterisation. `src/pixels.js` loses the
+    rasteriser/rampCache/rgbCache; `src/config.js` drops `ART_MAX_PX`. `SCENE_SCALE` moved to
+    `config.js` (chars/composite/props/render/terrain + `hd-verify` all import it from there) to
+    break the props↔composite import cycle; `composite.js` no longer exports it.
+  - `src/render.js` re-pointed to props (world + HUD icon call sites); `src/fx.js` aliases
+    `frames as frameCount, fxBlit as blit`; `src/composite.js` takes `emissive` from props with
+    `EMISSIVE_KEYS = ['fruit','berry']`; `src/main.js` drops `bakeSprites`/`ART_SCALE`;
+    `src/chars.js` comment-only.
+  - Two in-page catches: (1) `bake()` treated `makeLayer()`'s `{c, ctx}` return as a canvas →
+    `c.getContext is not a function` on the first `drawFruit`, aborting `drawItems` and blanking
+    everything drawn after items; now destructured like chars/terrain. (2) A boot
+    `SyntaxError: Importing binding name 'SCENE_SCALE'` proved to be a poisoned WebKit module
+    registry (stale pre-rewire `terrain.js` parse re-linked against the new `composite.js`), not a
+    source fault — served==disk byte-hash for all 16 src files; a fresh tab boots clean.
+  - Harness defect recorded (affects BEFORE evidence, not the game): the prior session's berry
+    injection lacked `vx` → `moveBerryX` computed `b.x += b.vx·dt` → NaN → the berry was silently
+    undrawn (no exception). The old 8-bit berry was blue (berryBody #4a6cf0→#2f4ab0) and the
+    BEFORE bench PNG has zero blue pixels in the berry region → the BEFORE shot has no berry; the
+    berry comparison is 8-bit design vs new render.
+  - Gates: `hd-verify` all green post-cutover:
+    `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,"stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true},"distinctColors":7174}`
+    (strip hash unchanged — items outside the seam probe; distinct up from 6328 = item pixels
+    moving to the new art). Zero console errors since seam reinstall.
+  - Pixel evidence (live scene layer, same D-mapping as R-2): fruit spin f0–f3 467/373/212/373
+    distinct, centre [236,186,81] gold (BEFORE f0: 430, [233,178,68]); berry 827 distinct, avg
+    [100,92,111] bluish, stable ≥5.6 s; shards 20×20 908 (BEFORE 419); gate 128×476 4170 distinct,
+    opaque, avg [118,133,78] (BEFORE 3743, [116,130,76]); bloom mask fruit 185 px / 141 tones,
+    berry 212 / 165, empty-terrain control 3 px. Screenshot crops (1.5×): fruit 9×9 957→864
+    distinct, [233,180,68]→[238,190,91]; berry region 1327 blue px / 609 tones; shards 20×16
+    1926→2110.
+  - Title/HUD fruit + lives icons still transitional old downscales (R-4); bloom params
+    (gain 0.25 / mask alpha 0.25) untouched — R-5 tuning.

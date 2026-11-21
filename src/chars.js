@@ -14,8 +14,7 @@
 //
 // All paint is pure — no Math.random, no clock: same inputs, same bytes, every boot.
 
-import { PALETTE } from './config.js';
-import { SCENE_SCALE } from './composite.js';
+import { PALETTE, SCENE_SCALE } from './config.js';
 import { buildRamps, makeLayer } from './pixels.js';
 
 const S = SCENE_SCALE;
@@ -606,7 +605,7 @@ function ensure() {
 }
 
 // Blit a baked canvas at LOGICAL size (w, h): 1:1 under the scene transform, bilinear
-// downscale on the logical HUD canvas. Same anchor/flip rect math as atlas.drawRec.
+// downscale on the logical HUD canvas.
 function hdBlit(ctx, c, w, h, x, y, ax, ay, flip) {
   const dx = Math.floor(x + ax);
   const dy = Math.floor(y + ay);

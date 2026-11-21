@@ -21,16 +21,15 @@
 // main.js; this module owns buffer geometry only and is window-free at import, so
 // the harness can import it.
 
-import { VIEW_W, VIEW_H, TILE, ROWS, FX_SCALE } from './config.js';
+import { VIEW_W, VIEW_H, TILE, ROWS, FX_SCALE, SCENE_SCALE } from './config.js';
 import { makeLayer, bakeRadial, parseColor, rgbToHex } from './pixels.js';
 import { tileAt } from './level.js';
-import { emissive } from './atlas.js';
+import { emissive } from './props.js';
 
 // The only resolution budget knob (plan §4); exported because S-09's boot sizing reads
 // it. NOT parity with config.js's MAX_SCREEN_PX / MAX_LAYERS, which §3 measures wrong.
 export const MAX_BACKING_PX = 1024 * 960;   // 983040
 const DPR_MIN = 1, DPR_MAX = 3;
-export const SCENE_SCALE = 4;
 // §7's ceiling on the additive bloom pass, mirroring render.js's CLEAR_FLASH_MAX_ALPHA, and the
 // only place it is applied (applyBloom's Math.min). S-21: the halo the user called too bright is
 // BOTH the lightmap core and this second additive light source, so the ceiling came down to 0.18.
@@ -220,7 +219,8 @@ function addLight(bi, sx, sy, mul) {
 
 // Entity origins are sprite top-left (level.js / enemy.js), so block lights centre on their tile and
 // enemies centre on their own w/h; items carry neither, so their glow sits half a sprite up-left of
-// the art — harmless at 6 lightmap px of radius, and S-09 can bias it once the atlas is the source.
+// the art — harmless at 6 lightmap px of radius. Item masks are anchored at their art top-left by
+// props.emissive; any residual bias is R-5 tuning.
 function scanBlocks(level, tx0, camX) {
   for (let ty = 0; ty < ROWS && lightN < MAX_LIGHTS; ty++) {
     for (let c = 0; c < LM_COLS; c++) {
@@ -333,11 +333,11 @@ const BLOOM_GAIN = 0.25;
 // and the mip blur below smears whatever enters here across the buffer. There is still no readback, so
 // R53 clause 4 measures the op log: after this line every `lighter` blit on the bloom recorder is <= 0.25.
 const BLOOM_MASK_ALPHA = 0.25;
-// Keys that own a baked `<key>:emissive` mask. atlas.js exposes no enumeration API, so this is the
-// `grep -n "emissive" src/sprites.js` list verbatim as of 2026-11-18 — FIVE keys, one per `register`
-// call that passes an `emissive` opt: :831 pumpkin, :836 gate, :837 fruit, :838 berry, :847 fx.spark.
-// A stale entry is self-policing: atlas.emissive counts it in `missing` (the suite asserts 0).
-export const EMISSIVE_KEYS = Object.freeze(['pumpkin', 'gate', 'fruit', 'berry', 'fx.spark']);
+// Keys that own an emissive mask in props.js — the two buildBloom actually emits: the fruit and
+// berry items. (The retired atlas also registered masks for pumpkin, gate and fx.spark, but the
+// items/enemies loops below only ever emit fruit and berry, so those entries were stale.) The
+// FRUIT_K/BERRY_K indices and EMISSIVE_SET derive from this list.
+export const EMISSIVE_KEYS = Object.freeze(['fruit', 'berry']);
 const EMISSIVE_SET = new Set(EMISSIVE_KEYS);
 const FRUIT_K = EMISSIVE_KEYS.indexOf('fruit'), BERRY_K = EMISSIVE_KEYS.indexOf('berry');
 // The emissive cap is MAX_LIGHTS again, and the cull margins are the widest mask extents in the set
@@ -355,7 +355,7 @@ function bloomLayer() {
   return bloomLay;
 }
 
-// `atlas.drawRec` floors its own destination from the anchor, so these stay fractional: passing
+// `props.emissive` floors its own destination from the anchor, so these stay fractional: passing
 // screen px here (not bloom px) is what keeps the mask registered on its own art at 0.25 scale.
 function emitMask(ctx, ki, frame, sx, sy) {
   if (emitN >= MAX_LIGHTS) return;

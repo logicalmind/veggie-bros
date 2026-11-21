@@ -9,11 +9,11 @@
 
 import { VIEW_W, VIEW_H } from './config.js';
 import { seeded } from './pixels.js';
-import { blit, frameCount } from './atlas.js';
+import { frames as frameCount, fxBlit as blit } from './props.js';
 
 export const MAX_PARTICLES = 96;
 
-// The atlas key for a kind IS its name, so emitters never build a string.
+// The props key for a kind IS its name, so emitters never build a string.
 export const KIND = Object.freeze({ DUST: 'fx.dust', SPARK: 'fx.spark', POOF: 'fx.poof', CHIP: 'fx.chip' });
 
 const DUST = 0;
@@ -108,7 +108,7 @@ const squashOwner = new WeakMap();
 const scratchSquash = { sx: 1, sy: 1 };
 const scratchOpts = { flipX: false, scaleX: 1, scaleY: 1, alpha: 1 };
 const damp = new Float32Array(NKIND);   // per-update drag constants: 4 divides, not 96
-const drawFrames = new Int32Array(NKIND); // this frame's atlas frame counts, refreshed once
+const drawFrames = new Int32Array(NKIND); // this frame's props frame counts, refreshed once
 
 // Deterministic noise. `frame << 6` wraps through ToInt32 after ~33 M ticks (~6 days at
 // 60 fps); the wrap is arithmetic, not float rounding, so it is still reproducible.

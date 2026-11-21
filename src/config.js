@@ -57,9 +57,11 @@ export const SOLID = "XSBPQU=|";
 // these only say how much DETAIL is baked per logical pixel and at what rate the FX buffers
 // run. Nothing in player/enemy/items/level/camera reads them.
 export const ART_SCALE = 2; // sprites and terrain bake at 2 logical px per art px (512x480 art)
+export const SCENE_SCALE = 4; // scene buffer is logical * 4 (256x240 -> 1024x960); baked art
+// canvases use this scale so they land 1:1 under the scene transform (composite.js owns the
+// buffers, config.js owns the grid)
 export const FX_SCALE = 0.5; // lightmap/fog/bloom run at 128x120: lighting is low-frequency,
 // so a quarter of the scene costs 1/16 the fill and still reads smooth when composited up.
-export const ART_MAX_PX = 2048; // atlas width ceiling; wider atlases fall off a GPU texture page
 // The one FX threshold main.js needs but no gameplay module owns: below this landing power the
 // touchdown is a tile seam, not a drop, so a flat walking pass must not spawn a dust puff.
 export const LAND_MIN_POWER = 0.15; // main.js compares |vy|/MAX_FALL against it

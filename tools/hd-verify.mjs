@@ -20,11 +20,12 @@
   const T = await import('/src/terrain.js');
   const { parseLevel } = await import('/src/level.js');
   const { LEVELS } = await import('/src/levels.js');
+  const { SCENE_SCALE } = await import('/src/config.js');
   const level = parseLevel(LEVELS[0]);
 
   // a) scene backing
-  out.sceneScale = C.SCENE_SCALE;
-  if (C.SCENE_SCALE !== 4) fail('sceneScale', C.SCENE_SCALE);
+  out.sceneScale = SCENE_SCALE;
+  if (SCENE_SCALE !== 4) fail('sceneScale', SCENE_SCALE);
   const lay = C.layout();
   out.scene = [lay.layers.scene.w, lay.layers.scene.h];
   if (lay.layers.scene.w !== 1024 || lay.layers.scene.h !== 960) fail('sceneDims', out.scene);
@@ -65,7 +66,7 @@
     ctx.drawImage(T.ambientFor(bk, camX).canvas, 0, 0, 256, 240);
     for (const L of T.parallaxFor(bk, camX)) {
       ctx.globalAlpha = L.alpha;
-      ctx.drawImage(L.canvas, L.dx, 0, L.canvas.width / C.SCENE_SCALE, L.canvas.height / C.SCENE_SCALE);
+      ctx.drawImage(L.canvas, L.dx, 0, L.canvas.width / SCENE_SCALE, L.canvas.height / SCENE_SCALE);
     }
     ctx.globalAlpha = 1;
     for (const s of T.visibleStrips(bk, camX)) ctx.drawImage(s.canvas, s.dx, 0, bk.stripW, 240);

@@ -22,8 +22,7 @@
 // and seeded detail — no atlas, no bitmap data — fully deterministic, and it keeps the
 // same pure-bake contract the seam argument relies on.
 
-import { TILE, ROWS, VIEW_W, VIEW_H, PALETTE } from './config.js';
-import { SCENE_SCALE as HD } from './composite.js';
+import { TILE, ROWS, VIEW_W, VIEW_H, PALETTE, SCENE_SCALE as HD } from './config.js';
 import { isSolid, tileAt } from './level.js';
 import { makeLayer, bakeVertical, buildRamps, seeded, parseColor, colorToCss } from './pixels.js';
 
