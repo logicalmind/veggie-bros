@@ -3,34 +3,33 @@
 // level (on first sight) and then only ever blitted, so nothing in this module runs per
 // frame and the hot path stays `drawImage`.
 //
-// STRIPS, NOT ONE GIANT CANVAS. 1-1 is 3600x240 logical, i.e. 7200x480 art px (~13 MB):
-// older iOS Safari clamps a canvas by AREA long before that. A strip is STRIP_W(64) x
-// level-height logical = 128x480 art px ~= 245 KB, so 12 live strips cost ~3 MB and each
-// canvas is ~61k px — far under every device limit. A strip evicted by the LRU re-bakes
-// from the level on the next sight, which is only legal because baking is PURE: bakeStrip
-// reads level tiles at ABSOLUTE world coordinates and never a neighbouring pixel of its
-// own canvas, so a crop of the level is byte-identical however it was cropped.
+// STRIPS, NOT ONE GIANT CANVAS. At SCENE_SCALE 4 a strip is 64 x level-height logical px =
+// 256x960 HD px ~= 983 KB; 8 live strips cost ~7.5 MiB, and each canvas is ~244k px —
+// under every device clamp an iOS Safari canvas limit cares about. A strip evicted by the
+// LRU re-bakes from the level on next sight, which is only legal because baking is PURE:
+// bakeStrip reads level tiles at ABSOLUTE world coordinates and never a neighbouring pixel
+// of its own canvas, so a crop of the level is byte-identical however it was cropped.
 //
 // That last point is the load-bearing one, so it is stated where it can rot: **every
-// edge/AO term in a strip is computed from level columns (`artTile`/`aoColumns`), never
-// from the strip's own pixels, and every seed is an absolute (tx,ty).** Any function that
-// reads `tx` relative to its strip, or reads back a canvas, will make the shading
+// edge/AO term in a strip is computed from level columns (`artTile`/`aoColumns`/`pipeRun`),
+// never from the strip's own pixels, and every seed is an absolute (tx,ty).** Any function
+// that reads `tx` relative to its strip, or reads back a canvas, will make the shading
 // disagree at every 64 px boundary — a visible seam down the level. The W2 probe proves
-// it by re-rendering the same view through two different strip phases (§8 R49-style
-// pixel read) and requiring a zero luminance delta at the seams.
+// it by re-rendering the same view through two different strip phases and requiring a
+// zero-delta result at the seams.
 //
-// No DOM/canvas work at import: `bakeLevel` only *plans* (keys + counts), so the harness
-// can plan a level under bare Node; canvases appear on first sight. Terrain must be baked
-// after `atlas.bakeAll()` — blit() of an unbaked atlas draws nothing (§3.1).
+// All tile and background art is procedural (R-1): vector paths, linear/radial gradients
+// and seeded detail — no atlas, no bitmap data — fully deterministic, and it keeps the
+// same pure-bake contract the seam argument relies on.
 
-import { TILE, ROWS, VIEW_W, VIEW_H, ART_SCALE, PALETTE } from './config.js';
-import { blit } from './atlas.js';
+import { TILE, ROWS, VIEW_W, VIEW_H, PALETTE } from './config.js';
+import { SCENE_SCALE as HD } from './composite.js';
 import { isSolid, tileAt } from './level.js';
 import { makeLayer, bakeVertical, buildRamps, seeded, parseColor, colorToCss } from './pixels.js';
 
-const STRIP_W = 64;   // logical px per strip (4 tiles) -> 128x480 art px, ~245 KB
+const STRIP_W = 64;   // logical px per strip (4 tiles) -> 256x960 HD px, ~983 KB
 const TILES_PER_STRIP = STRIP_W / TILE;
-const MAX_LIVE = 12;  // LRU cap on live strip canvases (~3 MB)
+const MAX_LIVE = 8;   // LRU cap on live strip canvases (~7.5 MiB at HD)
 const AO_ROWS = 4;    // how far (in tiles) a ceiling's soft shadow reaches down
 const AO_MAX = 0.30;  // alpha at the ceiling itself
 const FG_BOTTOM = 12; // §5.7 hard ceilings: the foreground band may never cover the hero's
@@ -80,7 +79,7 @@ const THEMES = {
   },
 };
 
-// Tile char -> atlas key + ramp family. Only keys §3.1 lists; no art is invented here.
+// Tile char -> painter key + ramp family. Only the keys §3.1 lists; no art is invented here.
 // 'Q' (mega-berry block) shares the pumpkin block's art on purpose: main.js turns BOTH
 // 'P' and 'Q' into 'U' when they are punched, and 'U' has exactly one sprite
 // (`pumpkin.used`), so the two are one block family with one spent look.
@@ -148,8 +147,9 @@ function solidArt(level, cols, tx, ty) {
   return isSolid(artTile(level, cols, tx, ty));
 }
 
-// One FNV-1a over the strip's tile chars plus the shadow kernel's context: two columns
-// on each side, matching the 5-wide kernel's reach exactly. It is what makes the strip
+// One FNV-1a over the strip's tile chars plus the AO context: two columns on each side —
+// the fractional air-AO interpolator taps one column past the 5-wide kernel's reach, so
+// the context spans both. It is what makes the strip
 // cache self-healing: main.js turns a punched 'P' into 'U' in level.tiles, the digest
 // changes, and that one strip re-bakes once with its spent block instead of serving stale
 // art forever. A punched block two columns over moves the shadow here, so the context
@@ -157,7 +157,7 @@ function solidArt(level, cols, tx, ty) {
 // => same keys out (§R50).
 function stripDigest(level, cols, firstCol) {
   let h = 0x811c9dc5;
-  for (let tx = firstCol - 2; tx <= firstCol + TILES_PER_STRIP + 1; tx++) {
+  for (let tx = firstCol - 2; tx <= firstCol + TILES_PER_STRIP + 2; tx++) {
     for (let ty = 0; ty < ROWS; ty++) {
       h ^= artTile(level, cols, tx, ty).charCodeAt(0);
       h = Math.imul(h, 0x01000193);
@@ -180,6 +180,7 @@ function themeOf(name) {
     const r = ramps[TILE_ART[ch].hue] || ramps.stone;
     mat[ch] = {
       key: TILE_ART[ch].key,
+      base: rgb(r.base, PALETTE.stone),
       deep: rgb(r.deep, PALETTE.black),
       shade: rgb(r.shade, PALETTE.black),
       lit: rgb(r.lit, PALETTE.white),
@@ -212,6 +213,8 @@ function themeOf(name) {
     mat,
     depths,
     ao: mix(rgb(def.pal.skyDark || PALETTE.skyDark, PALETTE.skyDark), { r: 26, g: 26, b: 40 }, 0.45),
+    grass: rgb(ramps.grass.base, PALETTE.grass),
+    cloud: rgb(def.pal.cloud || PALETTE.cloud, PALETTE.cloud),
   };
   themeCache.set(name, t);
   return t;
@@ -267,10 +270,10 @@ export function bakeLevel(level, theme, opts) {
     keys[i] = `${level.label}|${th.name}|${phase}|${i}|${stripDigest(level, cols, i * TILES_PER_STRIP - phase / TILE)}`;
   }
   const bundle = bundleFor(`${level.label}|${th.name}|${phase}`);
-  const stripBytes = STRIP_W * ART_SCALE * rows * TILE * ART_SCALE * 4;
-  const ambientBytes = VIEW_W * ART_SCALE * VIEW_H * ART_SCALE * 4;
+  const stripBytes = STRIP_W * HD * rows * TILE * HD * 4;
+  const ambientBytes = VIEW_W * HD * VIEW_H * HD * 4;
   let parallaxBytes = 0;
-  for (const d of DEPTHS) parallaxBytes += (VIEW_W + d.period) * ART_SCALE * VIEW_H * ART_SCALE * 4;
+  for (const d of DEPTHS) parallaxBytes += (VIEW_W + d.period) * HD * VIEW_H * HD * 4;
   return {
     theme: th.name,
     ambient: bundle.ambient, // lazily filled; the object identity is stable per level
@@ -336,13 +339,13 @@ function bakeStrip(baked, index) {
   // from nothing else, which is what makes a crop of the level reproducible.
   const origin = index * STRIP_W - baked.stripPhase;
   const firstCol = origin / TILE;
-  const { c, ctx } = makeLayer(STRIP_W * ART_SCALE, hPx * ART_SCALE);
-  // Think in logical px everywhere: blit's destination is logical px, and this transform
-  // turns it (and every shading fill below) into the art-scale backing store.
-  ctx.scale(ART_SCALE, ART_SCALE);
-  // Two columns of AO context on each side: the soft shadow is a 5-column kernel, so a
-  // strip must be able to see two doors down's ceiling without next door's pixels.
-  const ao = aoColumns(level, cols, firstCol - 2, firstCol + TILES_PER_STRIP + 1);
+  const { c, ctx } = makeLayer(STRIP_W * HD, hPx * HD);
+  // Think in logical px everywhere: this one transform turns every fill below into the
+  // SCENE_SCALE backing store, and the tile painters draw 1:1 HD geometry.
+  ctx.scale(HD, HD);
+  // AO context: the integer kernel needs two columns each side, and the fractional air-AO
+  // interpolator taps one column further right.
+  const ao = aoColumns(level, cols, firstCol - 2, firstCol + TILES_PER_STRIP + 2);
   for (let k = 0; k < TILES_PER_STRIP; k++) {
     const tx = firstCol + k;
     if (tx >= cols) break; // past the map's right edge: sky, not terrain
@@ -353,125 +356,428 @@ function bakeStrip(baked, index) {
       // the old kernel's hard 16 px side steps read as blocky shadow edges.
       const soft = aoKernel(ao, k, ty);
       const ch = artTile(level, cols, tx, ty);
+      // Each tile is clipped to its own 16 px column for the full strip height: the
+      // painters let ~1 px of detail (grass tips) lean across a tile edge, and clipping in
+      // tile space makes that cut identical in every strip — the only thing that keeps the
+      // seam probe (and the LRU that trusts it) honest.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(lx, 0, TILE, hPx);
+      ctx.clip();
       if (!isSolid(ch)) {
-        // Air: the only thing baked into a strip's transparent cells is the soft shadow
-        // of whatever ceiling is above it, which is what makes an overhang read as depth.
-        // The field is per-tile, so paint it as a 1-px row ramp between this tile's value
-        // and the tile below's: the old per-tile constant fill left four 16-px hard bands
-        // down every shadow pillar.
-        if (soft > 0.004) {
-          const below = aoKernel(ao, k, ty + 1);
-          if (Math.abs(below - soft) > 0.004) {
-            for (let p = 0; p < TILE; p++) {
-              const s = soft + ((below - soft) * (p + 1)) / TILE;
-              if (s <= 0.004) break; // the field is non-increasing downwards, so this is last
-              ctx.fillStyle = rgba(th.ao, AO_MAX * s);
-              ctx.fillRect(lx, ty * TILE + p, TILE, 1);
-            }
-          } else {
-            ctx.fillStyle = rgba(th.ao, AO_MAX * soft);
-            ctx.fillRect(lx, ty * TILE, TILE, TILE);
-          }
-        }
-        continue;
+        // Air: the only thing baked into a strip's transparent cells is the soft shadow of
+        // whatever ceiling is above it, painted with the fractional 4-subcolumn interpolant
+        // so the shadow fades across the tile width instead of stepping in 16-px bands.
+        paintAirAO(ctx, th, ao, k, ty, lx);
+      } else {
+        paintTile(ctx, baked, th, tx, ty, lx, soft);
       }
-      const m = matFor(th, level, cols, tx, ty, ch);
-      blit(ctx, m.key, m.frame || 0, lx, ty * TILE);
-      shadeTile(ctx, baked, th, m, tx, ty, lx, soft);
+      ctx.restore();
     }
   }
   return { index, key: baked.stripKeys[index], canvas: c, ctx };
 }
 
-// The atlas key for one solid tile: 'X' with air above is the grass-capped surface. A pipe
-// run is two tiles wide (no wider in shipped levels): the left column blits frame 0, the
-// right frame 1, so the run shades as one barrel lit from the left; the run's top tile is
-// its cap. All of it reads the level, never the canvas.
+// The material ramp for one solid tile: 'X' with air above is the grass-capped surface; a
+// pipe's top tile is its cap. The barrel gradient the pipe painter needs is computed from
+// the run itself (pipeRun), which reads the level, never the canvas.
 function matFor(th, level, cols, tx, ty, ch) {
   const base = th.mat[ch] || th.mat.X;
-  if (ch === 'X' && !solidArt(level, cols, tx, ty - 1)) return { key: SURFACE_KEY, deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
+  if (ch === 'X' && !solidArt(level, cols, tx, ty - 1)) return { key: SURFACE_KEY, base: base.base, deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
   if (ch === '|') {
-    const frame = artTile(level, cols, tx - 1, ty) === '|' ? 1 : 0;
     const key = artTile(level, cols, tx, ty - 1) !== '|' ? 'pipe.cap' : 'pipe.body';
-    return { key, frame, deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
+    return { key, base: base.base, deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
   }
   return base;
 }
 
-// Directional shading + contact shadows + burial tint, all from level columns (§5.1-§5.3).
-// Kept separate from the blit so the seam argument is auditable in one place.
-function shadeTile(ctx, baked, th, m, tx, ty, lx, soft) {
-  const level = baked._level;
-  const cols = baked.cols;
-  const ch = artTile(level, cols, tx, ty);
-  const up = solidArt(level, cols, tx, ty - 1);
-  const left = solidArt(level, cols, tx - 1, ty);
-  const right = solidArt(level, cols, tx + 1, ty);
-  const y = ty * TILE;
-  if (up) {
-    // §5.3: the 1-px joint where two solids meet, so stacked ground does not read as one
-    // slab. Only the top edge of the lower tile gets it, so the line is one pixel thick.
-    ctx.fillStyle = rgba(m.deep, 0.2);
-    ctx.fillRect(lx, y, TILE, 1);
-  } else {
-    // Exposed top face catches the key light (§5.2 up-left): a bright hairline, then a
-    // wider lit band, then the body — three tone bands on an otherwise flat cap.
-    ctx.fillStyle = rgba(m.hi, 0.34);
-    ctx.fillRect(lx, y, TILE, 1);
-    ctx.fillStyle = rgba(m.lit, 0.18);
-    ctx.fillRect(lx, y + 1, TILE, 2);
-    // Sparse surface speckle, seeded on ABSOLUTE tile coords so a re-crop is identical.
-    for (let s = 0; s < 2; s++) {
-      const r0 = seeded(tx * 131 + ty * 17 + s, 71);
-      const r1 = seeded(tx * 71 + ty * 131 + s, 72);
-      ctx.fillStyle = rgba(r0 < 0.5 ? m.shade : m.lit, 0.16);
-      ctx.fillRect(lx + Math.min(TILE - 1, (r0 * TILE) | 0), y + 3 + ((r1 * (TILE - 4)) | 0), 1, 1);
-    }
+// --------------------------------------------------------------------------- tile art
+// The HD tile painters (R-1). Every painter is a pure function of (level columns,
+// absolute (tx,ty), theme ramps) — the seam contract in one place. No atlas, no blits:
+// vector paths, linear/radial gradients, seeded detail.
+
+// Gradient fill helpers: stops are [offset, css] pairs.
+function vgrad(ctx, x, y0, y1, stops) {
+  const g = ctx.createLinearGradient(x, y0, x, y1);
+  for (const [o, c] of stops) g.addColorStop(o, c);
+  ctx.fillStyle = g;
+}
+function hgrad(ctx, y, x0, x1, stops) {
+  const g = ctx.createLinearGradient(x0, y, x1, y);
+  for (const [o, c] of stops) g.addColorStop(o, c);
+  ctx.fillStyle = g;
+}
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function starPath(ctx, cx, cy, ro, ri) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+    const r = i % 2 === 0 ? ro : ri;
+    const px = cx + Math.cos(a) * r;
+    const py = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
   }
-  if (!left) {
-    ctx.fillStyle = rgba(m.lit, 0.16);
-    ctx.fillRect(lx, y, 1, TILE);
-  }
-  if (!right) {
-    ctx.fillStyle = rgba(m.shade, 0.24);
-    ctx.fillRect(lx + TILE - 1, y, 1, TILE);
-  }
-  // Buried ground cools off with depth, which is what makes a pit wall read as cut earth,
-  // and carries two faint strata lines so a wall of `ground.body` is not one flat field
-  // (§5.4 wants 3 tone bands per material; the art may already have them, and low-alpha
-  // lines over art that does are invisible). Seeded on ABSOLUTE tile coords.
+  ctx.closePath();
+}
+// The contiguous '|' run this tile belongs to, walked through the level only, so the
+// barrel gradient is identical for every column of the run even when the run crosses a
+// strip boundary (a cap keeps its run's gradient, so it reads as the rim of the same
+// barrel as its neighbours).
+function pipeRun(level, cols, tx, ty) {
+  let left = tx;
+  while (artTile(level, cols, left - 1, ty) === '|') left--;
+  let right = tx;
+  while (artTile(level, cols, right + 1, ty) === '|') right++;
+  return { left, w: right - left + 1 };
+}
+// Shared contact terms for solid tiles, last step in every painter: burial cool, ceiling
+// shadow settle, and the lit/shaded bands on open side edges. Level columns only.
+function paintContact(ctx, th, m, level, cols, tx, ty, lx, y, ch, soft) {
   const depth = buriedRows(level, cols, tx, ty);
   if (depth > 0) {
     ctx.fillStyle = rgba(th.ao, 0.05 * depth);
     ctx.fillRect(lx, y, TILE, TILE);
-    if (m.key === 'ground.body') {
-      for (let s = 0; s < 2; s++) {
-        const sy = 3 + ((seeded(tx * 53 + ty * 97 + s, 73) * (TILE - 5)) | 0);
-        ctx.fillStyle = rgba(m.deep, 0.07 + 0.06 * seeded(tx * 17 + ty * 5 + s, 74));
-        ctx.fillRect(lx, y + sy, TILE, 1);
-      }
-    }
   }
-  // The same ceiling shadow that darkens the air also settles on the tile face below it.
   if (soft > 0.02) {
-    if (up && artTile(level, cols, tx, ty - 1) === ch) {
-      // Stacked / buried body (X under X, | under |): keep the old flat deep tone — a
-      // fade here would sawtooth at every 16-px body boundary.
-      ctx.fillStyle = rgba(th.ao, AO_MAX * soft * 0.7);
+    const a = AO_MAX * soft * 0.7;
+    if (artTile(level, cols, tx, ty - 1) === ch) {
+      ctx.fillStyle = rgba(th.ao, a);
       ctx.fillRect(lx, y, TILE, TILE);
     } else {
-      // A ceiling shadow landing on an exposed face (ground under a floating block, or a
-      // pipe's base on the ground): fade it down the tile so the contact shadow reads as
-      // a soft patch, not a hard-edged 16-px square.
-      for (let p = 0; p < TILE; p++) {
-        const a = AO_MAX * soft * 0.7 * (1 - p / TILE);
-        if (a <= 0.004) break;
-        ctx.fillStyle = rgba(th.ao, a);
-        ctx.fillRect(lx, y + p, TILE, 1);
-      }
+      vgrad(ctx, lx, y, y + TILE, [[0, rgba(th.ao, a)], [1, rgba(th.ao, 0)]]);
+      ctx.fillRect(lx, y, TILE, TILE);
     }
   }
+  if (artTile(level, cols, tx - 1, ty) === '.') {
+    hgrad(ctx, y, lx, lx + 2, [[0, rgba(m.lit, 0.22)], [1, rgba(m.lit, 0)]]);
+    ctx.fillRect(lx, y, 2, TILE);
+  }
+  if (artTile(level, cols, tx + 1, ty) === '.') {
+    hgrad(ctx, y, lx + TILE - 2.5, lx + TILE, [[0, rgba(m.shade, 0)], [1, rgba(m.shade, 0.3)]]);
+    ctx.fillRect(lx + TILE - 2.5, y, 2.5, TILE);
+  }
 }
+// Grass-capped surface ('X' with air above): a dirt body with pebbles under a grass cap
+// that has a lit crown, a dark contact line at the soil, a bright top rim and blades.
+function paintGroundTop(ctx, th, m, tx, ty, lx, y) {
+  vgrad(ctx, lx, y + 6, y + TILE, [
+    [0, colorToCss(mix(m.shade, m.deep, 0.45))],
+    [0.45, colorToCss(m.shade)],
+    [1, colorToCss(m.deep)],
+  ]);
+  ctx.fillRect(lx, y + 6, TILE, TILE - 6);
+  for (let p = 0; p < 5; p++) {
+    const r1 = seeded(tx * 31 + ty * 7 + p, 101);
+    const r2 = seeded(tx * 31 + ty * 7 + p, 102);
+    const r3 = seeded(tx * 31 + ty * 7 + p, 103);
+    ctx.fillStyle = r2 > 0.5 ? rgba(m.deep, 0.3) : rgba(m.lit, 0.22 + 0.2 * r3);
+    ctx.beginPath();
+    ctx.arc(lx + 1 + r1 * 14, y + 8.5 + r2 * 6, 0.5 + r3 * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  vgrad(ctx, lx, y, y + 6.5, [
+    [0, colorToCss(mix(m.hi, th.grass, 0.4))],
+    [0.45, colorToCss(th.grass)],
+    [1, colorToCss(mix(m.shade, th.grass, 0.45))],
+  ]);
+  ctx.fillRect(lx, y, TILE, 6.5);
+  ctx.fillStyle = rgba(m.deep, 0.3);
+  ctx.fillRect(lx, y + 6, TILE, 0.8);
+  vgrad(ctx, lx, y, y + 1.4, [[0, rgba(m.hi, 0.5)], [1, rgba(m.hi, 0)]]);
+  ctx.fillRect(lx, y, TILE, 1.4);
+  for (let b = 0; b < 9; b++) {
+    const r0 = seeded(tx * 13 + ty * 7 + b, 104);
+    const r1 = seeded(tx * 13 + ty * 7 + b, 105);
+    const r2 = seeded(tx * 13 + ty * 7 + b, 106);
+    const bx = lx + 0.6 + r0 * 14.8;
+    const bh = 2.6 + r1 * 3.2;
+    const lean = (r2 - 0.5) * 2.4;
+    ctx.strokeStyle = r2 > 0.5 ? rgba(m.lit, 0.8) : rgba(mix(th.grass, m.hi, 0.3), 0.8);
+    ctx.lineWidth = 0.7 + 0.4 * r2;
+    ctx.beginPath();
+    ctx.moveTo(bx, y + 1.2);
+    ctx.quadraticCurveTo(bx + lean * 0.4, y + 1.2 - bh * 0.6, bx + lean, y + 1.2 - bh);
+    ctx.stroke();
+  }
+}
+// Buried dirt body ('X' with solid art above): joint line under the ceiling tile, a
+// vertical body gradient, two faint strata lines and pebbles.
+function paintGroundBody(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  if (solidArt(level, cols, tx, ty - 1)) {
+    ctx.fillStyle = rgba(m.deep, 0.22);
+    ctx.fillRect(lx, y, TILE, 1);
+  }
+  vgrad(ctx, lx, y, y + TILE, [
+    [0, colorToCss(mix(m.shade, m.lit, 0.35))],
+    [0.5, colorToCss(m.shade)],
+    [1, colorToCss(mix(m.shade, m.deep, 0.5))],
+  ]);
+  ctx.fillRect(lx, y, TILE, TILE);
+  for (let s = 0; s < 2; s++) {
+    const r0 = seeded(tx * 17 + ty * 11 + s, 111);
+    const r1 = seeded(tx * 17 + ty * 11 + s, 112);
+    const sy = y + 3 + r0 * 10;
+    ctx.strokeStyle = rgba(m.deep, 0.08 + 0.08 * r1);
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(lx, sy);
+    ctx.bezierCurveTo(lx + 4, sy - 1 + r1 * 2, lx + 11, sy + 1 - r1 * 2, lx + TILE, sy);
+    ctx.stroke();
+  }
+  for (let p = 0; p < 4; p++) {
+    const r1 = seeded(tx * 19 + ty * 13 + p, 113);
+    const r2 = seeded(tx * 19 + ty * 13 + p, 114);
+    const r3 = seeded(tx * 19 + ty * 13 + p, 115);
+    ctx.fillStyle = r3 > 0.5 ? rgba(m.deep, 0.25) : rgba(m.lit, 0.18);
+    ctx.fillRect(lx + 1 + r1 * 14, y + 2 + r2 * 12, 0.9 + r3, 0.9);
+  }
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, 'X', soft);
+}
+// Stone block ('S'): a beveled slab — diagonal body gradient, diagonal key sweep, four
+// bevel bands, seeded cracks and speckle.
+function paintStone(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  const g = ctx.createLinearGradient(lx, y, lx + 11, y + 11);
+  g.addColorStop(0, colorToCss(mix(m.base, m.lit, 0.4)));
+  g.addColorStop(1, colorToCss(mix(m.base, m.shade, 0.4)));
+  ctx.fillStyle = g;
+  ctx.fillRect(lx, y, TILE, TILE);
+  const sweep = ctx.createLinearGradient(lx, y, lx + 11, y + 11);
+  sweep.addColorStop(0, rgba(m.hi, 0.28));
+  sweep.addColorStop(1, rgba(m.hi, 0));
+  ctx.fillStyle = sweep;
+  ctx.fillRect(lx, y, TILE, TILE);
+  vgrad(ctx, lx, y, y + 2, [[0, rgba(m.hi, 0.5)], [1, rgba(m.hi, 0)]]);
+  ctx.fillRect(lx, y, TILE, 2);
+  vgrad(ctx, lx, y + TILE - 3, y + TILE, [[0, rgba(m.deep, 0)], [1, rgba(m.deep, 0.55)]]);
+  ctx.fillRect(lx, y + TILE - 3, TILE, 3);
+  hgrad(ctx, y, lx, lx + 1.5, [[0, rgba(m.lit, 0.35)], [1, rgba(m.lit, 0)]]);
+  ctx.fillRect(lx, y, 1.5, TILE);
+  hgrad(ctx, y, lx + TILE - 2.5, lx + TILE, [[0, rgba(m.shade, 0)], [1, rgba(m.shade, 0.4)]]);
+  ctx.fillRect(lx + TILE - 2.5, y, 2.5, TILE);
+  const cracks = 1 + (seeded(tx * 7 + ty * 13, 121) < 0.5 ? 0 : 1);
+  ctx.strokeStyle = rgba(m.deep, 0.16);
+  ctx.lineWidth = 0.6;
+  for (let cc = 0; cc < cracks; cc++) {
+    const x0 = lx + 2 + seeded(tx * 5 + ty * 3 + cc, 122) * 10;
+    const y0 = y + 2 + seeded(tx * 5 + ty * 3 + cc, 123) * 10;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x0 + (seeded(tx * 5 + ty * 3 + cc, 124) - 0.5) * 5, y0 + 2 + seeded(tx * 5 + ty * 3 + cc, 125) * 3);
+    ctx.lineTo(x0 + (seeded(tx * 5 + ty * 3 + cc, 126) - 0.5) * 7, y0 + 4 + seeded(tx * 5 + ty * 3 + cc, 127) * 5);
+    ctx.stroke();
+  }
+  for (let s = 0; s < 3; s++) {
+    ctx.fillStyle = rgba(m.shade, 0.3);
+    ctx.fillRect(lx + 1 + seeded(tx * 3 + ty * 5 + s, 128) * 14, y + 1 + seeded(tx * 3 + ty * 5 + s, 129) * 14, 0.8, 0.8);
+  }
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, 'S', soft);
+}
+// Brick block ('B'): deep mortar, running-bond bricks 7x3 on an 8x4 pitch — one brick per
+// world 8-px column (slot j = tx*2 + b) so a brick straddling a tile boundary gets its
+// tint from the same slot in both strips.
+function paintBrick(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  ctx.fillStyle = colorToCss(m.deep);
+  ctx.fillRect(lx, y, TILE, TILE);
+  for (let row = 0; row < 4; row++) {
+    const by = y + row * 4;
+    const off = row % 2 === 1 ? 4 : 0;
+    for (let b = -1; b <= 2; b++) {
+      const bx = lx + b * 8 + off;
+      const x0 = Math.max(bx, lx);
+      const x1 = Math.min(bx + 7, lx + TILE);
+      if (x0 >= x1) continue;
+      const j = tx * 2 + b;
+      const t = seeded(j * 47 + row * 7 + ty * 977, 131);
+      const base = t < 0.5 ? mix(m.base, m.shade, (0.5 - t) * 0.32) : mix(m.base, m.lit, (t - 0.5) * 0.32);
+      vgrad(ctx, x0, by, by + 3, [
+        [0, colorToCss(mix(base, m.hi, 0.18))],
+        [1, colorToCss(mix(base, m.shade, 0.25))],
+      ]);
+      ctx.fillRect(x0, by, x1 - x0, 3);
+    }
+    vgrad(ctx, lx, by + 3, by + 4, [[0, rgba(m.deep, 0.4)], [1, rgba(m.deep, 0.05)]]);
+    ctx.fillRect(lx, by + 3, TILE, 1);
+  }
+  vgrad(ctx, lx, y, y + 1.5, [[0, rgba(m.hi, 0.4)], [1, rgba(m.hi, 0)]]);
+  ctx.fillRect(lx, y, TILE, 1.5);
+  vgrad(ctx, lx, y + TILE - 2.5, y + TILE, [[0, rgba(m.deep, 0)], [1, rgba(m.deep, 0.5)]]);
+  ctx.fillRect(lx, y + TILE - 2.5, TILE, 2.5);
+  hgrad(ctx, y, lx, lx + 1.5, [[0, rgba(m.lit, 0.3)], [1, rgba(m.lit, 0)]]);
+  ctx.fillRect(lx, y, 1.5, TILE);
+  hgrad(ctx, y, lx + TILE - 2.5, lx + TILE, [[0, rgba(m.shade, 0)], [1, rgba(m.shade, 0.35)]]);
+  ctx.fillRect(lx + TILE - 2.5, y, 2.5, TILE);
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, 'B', soft);
+}
+// Prize block ('P'/'Q'): a rounded pumpkin — vertical body ramp, radial key light from
+// the top-left, a bottom-right shade, two segment ridges and the glowing star seal.
+function paintPumpkin(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  const g = ctx.createLinearGradient(lx, y, lx, y + TILE);
+  g.addColorStop(0, colorToCss(mix(m.lit, m.hi, 0.3)));
+  g.addColorStop(0.45, colorToCss(m.base));
+  g.addColorStop(1, colorToCss(mix(m.shade, m.deep, 0.5)));
+  ctx.fillStyle = g;
+  roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
+  ctx.fill();
+  ctx.save();
+  roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
+  ctx.clip();
+  let rg = ctx.createRadialGradient(lx + 5, y + 4.5, 0.5, lx + 5, y + 4.5, 13);
+  rg.addColorStop(0, rgba(m.hi, 0.5));
+  rg.addColorStop(0.4, rgba(m.lit, 0.15));
+  rg.addColorStop(1, rgba(m.lit, 0));
+  ctx.fillStyle = rg;
+  ctx.fillRect(lx, y, TILE, TILE);
+  const lg = ctx.createLinearGradient(lx + 12, y + 10, lx, y + 2);
+  lg.addColorStop(0, rgba(m.deep, 0.42));
+  lg.addColorStop(1, rgba(m.deep, 0));
+  ctx.fillStyle = lg;
+  ctx.fillRect(lx, y, TILE, TILE);
+  ctx.strokeStyle = rgba(m.deep, 0.14);
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(lx + 4.5, y + 1);
+  ctx.quadraticCurveTo(lx + 3.2, y + 8, lx + 4.5, y + 15);
+  ctx.moveTo(lx + 11.5, y + 1);
+  ctx.quadraticCurveTo(lx + 12.8, y + 8, lx + 11.5, y + 15);
+  ctx.stroke();
+  const sg = ctx.createRadialGradient(lx + 8, y + 8.4, 0.5, lx + 8, y + 8.4, 5);
+  sg.addColorStop(0, rgba(mix(m.lit, m.hi, 0.7), 0.95));
+  sg.addColorStop(1, rgba(mix(m.lit, m.hi, 0.3), 0.75));
+  ctx.fillStyle = sg;
+  starPath(ctx, lx + 8, y + 8.4, 4.6, 2.0);
+  ctx.fill();
+  vgrad(ctx, lx, y, y + 2.6, [[0, rgba(m.hi, 0.5)], [1, rgba(m.hi, 0)]]);
+  ctx.fillRect(lx, y, TILE, 2.6);
+  ctx.restore();
+  ctx.strokeStyle = rgba(m.deep, 0.5);
+  ctx.lineWidth = 0.9;
+  roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
+  ctx.stroke();
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, 'P', soft);
+}
+// Spent block ('U'): the same rounded body in the muted 'used' ramp, with a dark hollow
+// where the prize used to be.
+function paintPumpkinUsed(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  const g = ctx.createLinearGradient(lx, y, lx, y + TILE);
+  g.addColorStop(0, colorToCss(mix(m.lit, m.hi, 0.25)));
+  g.addColorStop(1, colorToCss(mix(m.shade, m.deep, 0.55)));
+  ctx.fillStyle = g;
+  roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
+  ctx.fill();
+  ctx.save();
+  roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
+  ctx.clip();
+  const hg = ctx.createRadialGradient(lx + 8, y + 8, 1, lx + 8, y + 8, 6.5);
+  hg.addColorStop(0, rgba(m.deep, 0.85));
+  hg.addColorStop(1, rgba(m.deep, 0.55));
+  ctx.fillStyle = hg;
+  roundRectPath(ctx, lx + 3.5, y + 3.5, 10, 10, 2);
+  ctx.fill();
+  vgrad(ctx, lx, y, y + 2.6, [[0, rgba(m.hi, 0.4)], [1, rgba(m.hi, 0)]]);
+  ctx.fillRect(lx, y, TILE, 2.6);
+  ctx.restore();
+  ctx.strokeStyle = rgba(m.deep, 0.5);
+  ctx.lineWidth = 0.9;
+  roundRectPath(ctx, lx + 0.5, y + 0.5, 15, 15, 3);
+  ctx.stroke();
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, 'U', soft);
+}
+// Floating platform ('='): a wood plank band with lit/shaded edge lines, grain flecks and
+// dark end caps where the plank is not continued by a neighbour.
+function paintPlatform(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  vgrad(ctx, lx, y + 4, y + 12, [
+    [0, colorToCss(mix(m.lit, m.base, 0.5))],
+    [0.5, colorToCss(m.base)],
+    [1, colorToCss(mix(m.shade, m.deep, 0.4))],
+  ]);
+  ctx.fillRect(lx, y + 4, TILE, 8);
+  ctx.fillStyle = rgba(m.hi, 0.6);
+  ctx.fillRect(lx, y + 4, TILE, 1);
+  ctx.fillStyle = rgba(m.deep, 0.5);
+  ctx.fillRect(lx, y + 12, TILE, 1);
+  const r1 = seeded(tx * 7 + ty * 5, 141);
+  const r2 = seeded(tx * 7 + ty * 5, 142);
+  ctx.fillStyle = rgba(m.shade, 0.35);
+  ctx.fillRect(lx + 2 + r1 * 9, y + 5.5 + r2 * 4, 2, 0.8);
+  ctx.fillRect(lx + 3 + (1 - r1) * 9, y + 6 + (1 - r2) * 4, 2, 0.8);
+  if (artTile(level, cols, tx - 1, ty) !== '=') {
+    ctx.fillStyle = rgba(m.deep, 0.55);
+    ctx.fillRect(lx, y + 4, 1.2, 8);
+  }
+  if (artTile(level, cols, tx + 1, ty) !== '=') {
+    ctx.fillStyle = rgba(m.deep, 0.55);
+    ctx.fillRect(lx + TILE - 1.2, y + 4, 1.2, 8);
+  }
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, '=', soft);
+}
+// Pipe ('|'): the barrel gradient spans the WHOLE run in run-local x, plus a vertical
+// edge modulation; the top tile of a run adds a cap band (rim, seam line, under-rim
+// shadow) that never overhangs past its own tile — only in-tile ink is seam-safe.
+function paintPipe(ctx, th, m, level, cols, tx, ty, lx, y, soft) {
+  const run = pipeRun(level, cols, tx, ty);
+  const rx = run.left * TILE - tx * TILE + lx; // this tile's left edge in run-local x
+  const g = ctx.createLinearGradient(rx, 0, rx + run.w * TILE, 0);
+  g.addColorStop(0, colorToCss(m.deep));
+  g.addColorStop(0.1, colorToCss(mix(m.deep, m.lit, 0.45)));
+  g.addColorStop(0.26, colorToCss(m.lit));
+  g.addColorStop(0.5, colorToCss(m.base));
+  g.addColorStop(0.78, colorToCss(mix(m.base, m.shade, 0.55)));
+  g.addColorStop(1, colorToCss(m.deep));
+  ctx.fillStyle = g;
+  ctx.fillRect(lx, y, TILE, TILE);
+  vgrad(ctx, lx, y, y + TILE, [
+    [0, rgba(m.deep, 0.1)], [0.25, rgba(m.deep, 0)], [0.75, rgba(m.deep, 0)], [1, rgba(m.deep, 0.18)],
+  ]);
+  ctx.fillRect(lx, y, TILE, TILE);
+  if (m.key === 'pipe.cap') {
+    ctx.fillStyle = g;
+    ctx.fillRect(lx, y, TILE, 10);
+    vgrad(ctx, lx, y, y + 1.6, [[0, rgba(m.hi, 0.55)], [1, rgba(m.hi, 0)]]);
+    ctx.fillRect(lx, y, TILE, 1.6);
+    ctx.strokeStyle = rgba(m.deep, 0.5);
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(lx, y + 9.3);
+    ctx.lineTo(lx + TILE, y + 9.3);
+    ctx.stroke();
+    vgrad(ctx, lx, y + 10, y + 12.5, [[0, rgba(m.deep, 0.4)], [1, rgba(m.deep, 0)]]);
+    ctx.fillRect(lx, y + 10, TILE, 2.5);
+  }
+  if (artTile(level, cols, tx, ty + 1) === 'X') {
+    // A pipe standing on the ground casts a contact shadow onto the soil.
+    vgrad(ctx, lx, y + 13, y + 16, [[0, rgba(th.ao, 0)], [1, rgba(th.ao, 0.3)]]);
+    ctx.fillRect(lx, y + 13, TILE, 3);
+  }
+  paintContact(ctx, th, m, level, cols, tx, ty, lx, y, '|', soft);
+}
+// The one entry point for solid tiles: character -> painter.
+function paintTile(ctx, baked, th, tx, ty, lx, soft) {
+  const level = baked._level;
+  const cols = baked.cols;
+  const ch = artTile(level, cols, tx, ty);
+  if (ch === '.') return;
+  const m = matFor(th, level, cols, tx, ty, ch);
+  const y = ty * TILE;
+  if (ch === 'X') {
+    if (m.key === SURFACE_KEY) paintGroundTop(ctx, th, m, tx, ty, lx, y);
+    else paintGroundBody(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+  } else if (ch === 'S') paintStone(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+  else if (ch === 'B') paintBrick(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+  else if (ch === 'P' || ch === 'Q') paintPumpkin(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+  else if (ch === 'U') paintPumpkinUsed(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+  else if (ch === '=') paintPlatform(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+  else if (ch === '|') paintPipe(ctx, th, m, level, cols, tx, ty, lx, y, soft);
+}
+
 
 function buriedRows(level, cols, tx, ty) {
   let n = 0;
@@ -488,6 +794,41 @@ function buriedRows(level, cols, tx, ty) {
 function aoKernel(ao, k, ty) {
   return (0.25 * ao[k][ty] + 0.75 * ao[k + 1][ty] + 1.5 * ao[k + 2][ty] + 0.75 * ao[k + 3][ty] + 0.25 * ao[k + 4][ty]) / 3.5;
 }
+// Fractional air-AO: the integer kernel's five taps evaluated one subcolumn to the right,
+// interpolating between each pair of neighbour columns. f = 0 reproduces aoKernel exactly;
+// f in (0,1) taps one column further right, which is why the context fetch and the digest
+// each widen by one.
+function aoKernelF(ao, k, f, ty) {
+  // Same index space as aoKernel: the ao array starts at the strip's firstCol - 2, so the
+  // tile at local k taps ao[k..k+5] here (the +1 is the fractional column's reach, which
+  // is why the context fetch and the digest each widen by one).
+  const W = [0.25, 0.75, 1.5, 0.75, 0.25];
+  let s = 0;
+  for (let j = 0; j < 5; j++) {
+    const a = ao[k + j] ? ao[k + j][ty] || 0 : 0;
+    const b = ao[k + j + 1] ? ao[k + j + 1][ty] || 0 : 0;
+    s += W[j] * (a + (b - a) * f);
+  }
+  return s / 3.5;
+}
+
+// Air shadow for one tile: four 4-px subcolumns, each a vertical gradient from the
+// fractional field at its own x between this row and the next. Subcolumns fade the shadow
+// across the tile width; the rows ramp it vertically as the old per-pixel paint did.
+function paintAirAO(ctx, th, ao, k, ty, lx) {
+  for (let j = 0; j < 4; j++) {
+    const f = (j + 0.5) / 4;
+    const aTop = AO_MAX * aoKernelF(ao, k, f, ty);
+    const aBot = AO_MAX * aoKernelF(ao, k, f, ty + 1);
+    if (aTop < 0.004 && aBot < 0.004) continue;
+    const g = ctx.createLinearGradient(lx + j * 4, ty * TILE, lx + j * 4, ty * TILE + TILE);
+    g.addColorStop(0, rgba(th.ao, aTop));
+    g.addColorStop(1, rgba(th.ao, aBot));
+    ctx.fillStyle = g;
+    ctx.fillRect(lx + j * 4, ty * TILE, 4, TILE);
+  }
+}
+
 
 // Soft ambient occlusion, per LEVEL column (O(cols*rows) once per strip bake): a solid
 // tile seeds a shadow field of 1 and it decays to 0 over AO_ROWS tiles of air. Returned
@@ -525,35 +866,56 @@ export function visibleStrips(baked, camX) {
 
 // ---------------------------------------------------------------- ambient (sky + wash)
 
+// The sun, per theme: fields a high white, canyon a low hazy orange, palace a warm gold.
+const SUNS = {
+  fields: { x: 196, y: 44, color: '#ffffff' },
+  canyon: { x: 70, y: 150, color: '#ffd9a0' },
+  palace: { x: 184, y: 64, color: '#ffe0a0' },
+};
+
 function bakeAmbient(baked) {
   const th = baked._theme;
-  const sky = bakeVertical(VIEW_W, VIEW_H, th.sky, ART_SCALE); // the one gradient of the level
-  const { c, ctx } = makeLayer(VIEW_W * ART_SCALE, VIEW_H * ART_SCALE);
+  const sky = bakeVertical(VIEW_W, VIEW_H, th.sky, HD); // the one gradient of the level
+  const { c, ctx } = makeLayer(VIEW_W * HD, VIEW_H * HD);
   ctx.drawImage(sky, 0, 0);
-  // Horizon haze + a cool ceiling, in bands. §5.5 wants dither only in gradient fields and
-  // forbids a period that aliases with ART_SCALE, so a smooth ramp is left smooth: these
-  // are wide flat washes, where a 2-px dither is both safe and cheap.
-  ctx.scale(ART_SCALE, ART_SCALE);
-  for (let k = 0; k < 4; k++) {
-    const y0 = VIEW_H - 56 + k * 14;
-    ctx.fillStyle = rgba(th.fog, 0.05 + k * 0.045);
-    ctx.fillRect(0, y0, VIEW_W, 14);
-  }
-  ctx.fillStyle = rgba(th.ao, 0.07);
-  ctx.fillRect(0, 0, VIEW_W, 26);
-  ctx.fillStyle = rgba(th.ao, 0.04);
-  ctx.fillRect(0, 26, VIEW_W, 20);
+  ctx.scale(HD, HD);
+  // Sun: a broad radial glow plus a small bright core.
+  const sun = SUNS[baked.theme] || SUNS.fields;
+  const sc = rgb(sun.color, PALETTE.white);
+  let g = ctx.createRadialGradient(sun.x, sun.y, 2, sun.x, sun.y, 46);
+  g.addColorStop(0, rgba(sc, 0.55));
+  g.addColorStop(0.25, rgba(sc, 0.25));
+  g.addColorStop(1, rgba(sc, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(sun.x - 46, sun.y - 46, 92, 92);
+  g = ctx.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, 7);
+  g.addColorStop(0, rgba(sc, 0.9));
+  g.addColorStop(1, rgba(sc, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(sun.x - 7, sun.y - 7, 14, 14);
+  // Horizon glow: fog light pooling where the background meets the ground.
+  g = ctx.createRadialGradient(128, VIEW_H - 40, 10, 128, VIEW_H - 40, 150);
+  g.addColorStop(0, rgba(th.fog, 0.4));
+  g.addColorStop(1, rgba(th.fog, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, VIEW_H - 190, VIEW_W, 190);
+  // Ceiling wash: the scene darkens gently toward the top, echoing the lightmap.
+  vgrad(ctx, 0, 0, 46, [[0, rgba(th.ao, 0.1)], [1, rgba(th.ao, 0)]]);
+  ctx.fillRect(0, 0, VIEW_W, 46);
   if (baked.theme === 'palace') {
     // A handful of deterministic stars — the only sparkle the dusk theme gets.
     for (let i = 0; i < 26; i++) {
       const sx = (seeded(i, 91) * VIEW_W) | 0;
       const sy = (seeded(i, 92) * 64) | 0;
       ctx.fillStyle = rgba({ r: 255, g: 255, b: 255 }, 0.25 + 0.5 * seeded(i, 93));
-      ctx.fillRect(sx, sy, 1, 1);
+      ctx.beginPath();
+      ctx.arc(sx + 0.5, sy + 0.5, 0.8, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
   return c;
 }
+
 
 function ensureAmbient(baked) {
   if (baked.ambient.canvas === null) baked.ambient.canvas = bakeAmbient(baked);
@@ -578,18 +940,17 @@ function bakeParallax(baked) {
     const spec = DEPTHS[d];
     const look = th.depths[d];
     const w = VIEW_W + spec.period;
-    const { c, ctx } = makeLayer(w * ART_SCALE, VIEW_H * ART_SCALE);
-    ctx.scale(ART_SCALE, ART_SCALE);
+    const { c, ctx } = makeLayer(w * HD, VIEW_H * HD);
+    ctx.scale(HD, HD);
     if (d === 0) drawFar(ctx, th, spec, look, 3);
     else if (d === 1) drawMid(ctx, th, spec, look, 11);
     else drawNear(ctx, th, spec, look);
-    // Aerial fog: source-atop keeps the haze on the silhouette only, so the sky behind it
-    // stays the ambient ramp's colour (no readback, §7).
+    // Aerial fog pools at the bottom of the background: one soft gradient band, and
+    // source-atop keeps the haze on the silhouette only, so the sky behind it stays the
+    // ambient ramp's colour (no readback, §7).
     ctx.globalCompositeOperation = 'source-atop';
-    for (let k = 0; k < 3; k++) {
-      ctx.fillStyle = rgba(th.fog, spec.fog * (0.1 + 0.14 * k));
-      ctx.fillRect(0, VIEW_H - 96 + k * 32, w, 32);
-    }
+    vgrad(ctx, 0, VIEW_H - 100, VIEW_H, [[0, rgba(th.fog, spec.fog * 0.1)], [1, rgba(th.fog, spec.fog * 0.5)]]);
+    ctx.fillRect(0, VIEW_H - 100, w, 100);
     ctx.globalCompositeOperation = 'source-over';
     layers[d].canvas = c;
     layers[d].alpha = spec.alpha;
@@ -660,19 +1021,31 @@ function ridgeTable(shape, spec, salt) {
   return t;
 }
 
+// One background layer's silhouette: a single closed path filled with a vertical
+// lit->body->deep gradient, and a 1-px lit rim along the ridge line.
 function drawRidge(ctx, look, ridge, period, w) {
-  for (let x = 0; x < w; x++) {
-    const y = ridge[x % period];
-    ctx.fillStyle = colorToCss(look.body);
-    ctx.fillRect(x, y, 1, VIEW_H - y);
-    ctx.fillStyle = colorToCss(look.lit); // sunlit rim along the ridge (§5.2)
-    ctx.fillRect(x, y, 1, 1);
-    ctx.fillStyle = colorToCss(look.shade);
-    ctx.fillRect(x, y + 1, 1, 1);
-    ctx.fillStyle = colorToCss(look.deep); // a deeper foot so the band has three tones
-    ctx.fillRect(x, VIEW_H - 3, 1, 3);
-  }
+  let minY = VIEW_H;
+  for (let i = 0; i < period; i++) minY = Math.min(minY, ridge[i]);
+  const g = ctx.createLinearGradient(0, minY, 0, VIEW_H);
+  g.addColorStop(0, colorToCss(look.lit));
+  g.addColorStop(0.18, colorToCss(look.body));
+  g.addColorStop(1, colorToCss(look.deep));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(-1, VIEW_H + 1);
+  ctx.lineTo(-1, ridge[0]);
+  for (let x = 0; x <= w; x++) ctx.lineTo(x, ridge[x % period]);
+  ctx.lineTo(w + 1, VIEW_H + 1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = rgba(look.lit, 0.55);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-1, ridge[0]);
+  for (let x = 0; x <= w; x++) ctx.lineTo(x, ridge[x % period]);
+  ctx.stroke();
 }
+
 
 function drawFar(ctx, th, spec, look, salt) {
   const ridge = ridgeTable(th.shape, spec, salt);
@@ -680,14 +1053,27 @@ function drawFar(ctx, th, spec, look, salt) {
 }
 
 // Ellipse by scanlines: pixel-art puffs, no arc() in a bake the harness has to model.
-function puff(ctx, cx, cy, r, body, lit, deep) {
-  for (let dy = -r; dy <= r; dy++) {
-    const hw = Math.round(r * Math.sqrt(Math.max(0, 1 - (dy * dy) / (r * r))));
-    if (hw <= 0) continue;
-    ctx.fillStyle = colorToCss(dy < -r * 0.35 ? lit : dy > r * 0.4 ? deep : body);
-    ctx.fillRect(cx - hw, cy + dy, hw * 2 + 1, 1);
-  }
+// Soft puff: a radial-gradient unit circle scaled to (rx, ry) — a volume of light, not a
+// scanline blob. The alpha is mixed into the colour at a=1, so rgba() never has to encode
+// a sub-1 alpha (it cannot, exactly).
+function puffGrad(ctx, color, a) {
+  const g = ctx.createRadialGradient(0, 0, 0.1, 0, 0, 1);
+  g.addColorStop(0, rgba(color, a));
+  g.addColorStop(0.6, rgba(color, a * 0.8));
+  g.addColorStop(1, rgba(color, 0));
+  return g;
 }
+function puff(ctx, cx, cy, rx, ry, grad) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(rx, ry);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(0, 0, 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 
 function drawMid(ctx, th, spec, look, salt) {
   const P = spec.period;
@@ -695,39 +1081,51 @@ function drawMid(ctx, th, spec, look, salt) {
   const ridge = ridgeTable(th.shape, spec, salt);
   drawRidge(ctx, look, ridge, P, w);
   if (th.props === 'clouds') {
+    // Soft multi-lobe puffs: each lobe is a radial-gradient unit circle, so a cloud is a
+    // volume of light, not a blob. The lower lobes tint toward the fog so the cloud sits
+    // in the air instead of floating above it. Positions keep every lobe inside one
+    // period tile, so the wrap is seamless.
+    const white = th.cloud;
+    const gTop = puffGrad(ctx, white, 0.9);
+    const gLow = puffGrad(ctx, mix(white, th.fog, 0.3), 0.7);
     for (let k = 0; k < 4; k++) {
-      const cx = Math.round(seeded(k * 5 + salt, 21) * (P - 24)) + 12;
+      const r = 9 + Math.round(seeded(k * 5 + salt + 2, 23) * 8);
+      const cx = Math.round(1.4 * r + seeded(k * 5 + salt, 21) * (P - 2.8 * r));
       const cy = Math.round(24 + seeded(k * 5 + salt + 1, 22) * 58);
-      const r = 7 + Math.round(seeded(k * 5 + salt + 2, 23) * 7);
-      // `a: 1` is not decoration: `puff` stringifies these objects with `colorToCss`, and an
-      // alpha-less one becomes `rgba(255,255,255,NaN)` — invalid css the canvas ignores, so the
-      // cloud rows drew in the previous fillStyle (measured: 21035 px of `#eff9e4` and 0 px of
-      // `#ffffff` before, 16592 px of `#ffffff` after) and the harness' ink model threw on that
-      // layer's 0.96-alpha blit.
-      const cloud = { r: 255, g: 255, b: 255, a: 1 };
       for (let m = 0; m * P < w + P; m++) {
         const x = cx + m * P;
-        puff(ctx, x, cy, r, cloud, cloud, mix(cloud, th.fog, 0.5));
-        puff(ctx, x - r, cy + 3, Math.max(3, r - 4), cloud, cloud, mix(cloud, th.fog, 0.5));
-        puff(ctx, x + r, cy + 4, Math.max(3, r - 5), cloud, cloud, mix(cloud, th.fog, 0.5));
+        puff(ctx, x - 0.7 * r, cy + 4, 0.55 * r, 0.4 * r, gLow);
+        puff(ctx, x + 0.75 * r, cy + 3.5, 0.6 * r, 0.42 * r, gLow);
+        puff(ctx, x, cy + 2, r, 0.62 * r, gLow);
+        puff(ctx, x, cy, 0.8 * r, 0.55 * r, gTop);
       }
     }
   } else if (th.props === 'spires') {
+    // Tapered rock spires rising from the mid ridge: accent tip into a shaded foot.
     for (let k = 0; k < 3; k++) {
       const cx = Math.round(seeded(k * 3 + salt, 24) * (P - 20)) + 10;
       const h = 16 + Math.round(seeded(k * 3 + salt + 1, 25) * 20);
       for (let m = 0; m * P < w + P; m++) {
         const x = cx + m * P;
         const gy = ridge[x % P];
-        for (let dy = 0; dy < h; dy++) {
-          const hw = Math.max(1, Math.round(4 - dy * 0.16));
-          ctx.fillStyle = colorToCss(dy < 2 ? look.accent : dy > h - 6 ? look.shade : look.body);
-          ctx.fillRect(x - hw, gy - dy, hw * 2 + 1, 1);
-        }
+        const g = ctx.createLinearGradient(0, gy - h, 0, gy);
+        g.addColorStop(0, colorToCss(look.accent));
+        g.addColorStop(0.3, colorToCss(look.body));
+        g.addColorStop(1, colorToCss(look.deep));
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(x, gy - h);
+        ctx.lineTo(x + 2.5, gy - 3);
+        ctx.lineTo(x + 4, gy);
+        ctx.lineTo(x - 4, gy);
+        ctx.lineTo(x - 2.5, gy - 3);
+        ctx.closePath();
+        ctx.fill();
       }
     }
   } else {
-    // temples: tiered roofs on the mid ridge, with a few lit windows for night-time depth.
+    // Temples: tiered roofs on the mid ridge, the top tier lit, an accent window on the
+    // middle tier.
     for (let k = 0; k < 3; k++) {
       const cx = Math.round(seeded(k * 3 + salt, 26) * (P - 28)) + 14;
       const tiers = 3 + Math.round(seeded(k * 3 + salt + 1, 27) * 2);
@@ -737,14 +1135,17 @@ function drawMid(ctx, th, spec, look, salt) {
         for (let t = 0; t < tiers; t++) {
           const hw = 10 - t * 2;
           const hh = 8;
-          ctx.fillStyle = colorToCss(t === 0 ? look.lit : look.body);
+          const g = ctx.createLinearGradient(0, gy - hh, 0, gy);
+          g.addColorStop(0, colorToCss(t === 0 ? look.lit : look.body));
+          g.addColorStop(1, colorToCss(look.body));
+          ctx.fillStyle = g;
           ctx.fillRect(x - hw, gy - hh, hw * 2 + 1, hh);
           ctx.fillStyle = colorToCss(look.deep);
           ctx.fillRect(x - hw - 1, gy - hh, hw * 2 + 3, 1);
           if (t === 1) {
             ctx.fillStyle = colorToCss(look.accent);
-            ctx.fillRect(x - 1, gy - hh + 3, 1, 2);
-            ctx.fillRect(x + 1, gy - hh + 3, 1, 2);
+            ctx.fillRect(x - 1, gy - hh + 3, 1, 2.2);
+            ctx.fillRect(x + 1, gy - hh + 3, 1, 2.2);
           }
           gy -= hh + 1;
         }
@@ -752,17 +1153,24 @@ function drawMid(ctx, th, spec, look, salt) {
     }
   }
   if (th.near !== 'tuft') {
-    // bushes / hedges on the mid ridge, fields + palace only
+    // Bushes on the mid ridge: a shaded root lobe, a body, a lit crown.
+    const gDeep = puffGrad(ctx, look.deep, 0.7);
+    const gBody = puffGrad(ctx, look.body, 1);
+    const gLit = puffGrad(ctx, look.lit, 0.8);
     for (let k = 0; k < 6; k++) {
       const cx = Math.round(seeded(k * 7 + salt, 28) * (P - 12)) + 6;
       const r = 4 + Math.round(seeded(k * 7 + salt + 1, 29) * 4);
       for (let m = 0; m * P < w + P; m++) {
         const x = cx + m * P;
-        puff(ctx, x, ridge[x % P] - 1, r, look.body, look.lit, look.deep);
+        const by = ridge[x % P] - 1;
+        puff(ctx, x - 0.7 * r, by + 1, 0.6 * r, 0.5 * r, gDeep);
+        puff(ctx, x, by, r, 0.8 * r, gBody);
+        puff(ctx, x + 0.6 * r, by - 0.2 * r, 0.55 * r, 0.45 * r, gLit);
       }
     }
   }
 }
+
 
 // Foreground grass/leaves band. §5.7: <= FG_BOTTOM along the bottom, <= FG_TOP at the
 // top, so it can never hide the hero's feet or a landing surface. Clamped by construction.
@@ -781,22 +1189,29 @@ function drawNear(ctx, th, spec, look) {
   for (let x = 0; x < w; x++) {
     const h = down[x % P];
     const y = VIEW_H - h;
-    ctx.fillStyle = colorToCss(look.deep);
-    ctx.fillRect(x, VIEW_H - 2, 1, 2); // soil / base line
-    ctx.fillStyle = colorToCss(look.body);
-    ctx.fillRect(x, y + 1, 1, h - 3 > 0 ? h - 3 : 1);
-    ctx.fillStyle = colorToCss(th.near === 'vine' ? look.accent : look.lit);
-    ctx.fillRect(x, y, 1, 1); // lit tip
+    // One column of grass: lit tip into body into deep root, a dark soil foot.
+    const g = ctx.createLinearGradient(0, y, 0, VIEW_H);
+    g.addColorStop(0, colorToCss(look.lit));
+    g.addColorStop(0.35, colorToCss(look.body));
+    g.addColorStop(1, colorToCss(look.deep));
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y, 1, h);
+    if (th.near === 'vine') {
+      ctx.fillStyle = colorToCss(look.accent);
+      ctx.fillRect(x, y, 1, 1);
+    }
     if (th.near === 'tuft' && (x % 7) === 3) {
       ctx.fillStyle = colorToCss(look.accent);
-      ctx.fillRect(x, VIEW_H - 4, 2, 1); // pebble catching the light
+      ctx.fillRect(x, VIEW_H - 4, 2, 1);
     }
     const u = up[x % P];
     if (u > 0) {
-      ctx.fillStyle = colorToCss(look.body);
-      ctx.fillRect(x, 0, 1, u - 1);
-      ctx.fillStyle = colorToCss(look.deep);
-      ctx.fillRect(x, u - 1, 1, 1); // shaded leaf tip
+      // Hanging vine: dark where it drops from the top edge, body at the tip.
+      const gu = ctx.createLinearGradient(0, 0, 0, u);
+      gu.addColorStop(0, colorToCss(look.deep));
+      gu.addColorStop(1, colorToCss(look.body));
+      ctx.fillStyle = gu;
+      ctx.fillRect(x, 0, 1, u);
       if ((x & 3) === 0) {
         ctx.fillStyle = colorToCss(look.lit);
         ctx.fillRect(x, 0, 1, 1);
@@ -804,6 +1219,7 @@ function drawNear(ctx, th, spec, look) {
     }
   }
 }
+
 
 // ---------------------------------------------------------------- cache control
 

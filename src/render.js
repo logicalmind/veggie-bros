@@ -1,5 +1,5 @@
-import { ART_SCALE, PALETTE, VIEW_H, VIEW_W } from './config.js';
-import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, setAmbient } from './composite.js';
+import { PALETTE, VIEW_H, VIEW_W } from './config.js';
+import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, SCENE_SCALE as HD, setAmbient } from './composite.js';
 import { draw as drawFx, shakeOffset } from './fx.js';
 import { parseLevel } from './level.js';
 import { LEVELS } from './levels.js';
@@ -71,9 +71,9 @@ function worldFor(g) {
 }
 
 // The whole background in 1 + 3 + (4..6) blits: baked sky wash, the three parallax depths,
-// then the level's terrain strips. `o` is fx's ONE signed shake int, applied as (o, -o) to
-// the destination coordinates — this renderer never sets a canvas transform, so the jolt is
-// arithmetic and R45's draw-stream diff keeps working.
+// then the level's terrain strips. Called under render()'s single HD scene transform, so
+// every destination below is in LOGICAL px. `o` is fx's ONE signed shake int, applied as
+// (o, -o) to the destination coordinates — the jolt stays arithmetic.
 function drawWorld(ctx, baked, camX, o, oy) {
   // The ambient ramp is screen-aligned by terrain's contract, so it takes no shake: a
   // shifted full-view blit would leave a transparent row along one edge of the frame.
@@ -84,8 +84,8 @@ function drawWorld(ctx, baked, camX, o, oy) {
   for (let i = 0; i < layers.length; i++) {
     const L = layers[i];
     ctx.globalAlpha = L.alpha;
-    // The layer canvases are art-scale: dest is their logical size, (VIEW_W + period) wide.
-    ctx.drawImage(L.canvas, L.dx + o, oy, L.canvas.width / ART_SCALE, L.canvas.height / ART_SCALE);
+    // The layer canvases are HD-scale: dest is their logical size, (VIEW_W + period) wide.
+    ctx.drawImage(L.canvas, L.dx + o, oy, L.canvas.width / HD, L.canvas.height / HD);
   }
   ctx.globalAlpha = 1;
   // Strips. The coverage query takes the shake-shifted camera (camX - o) so the 1-3 px the
@@ -211,23 +211,24 @@ function outlinedText(ctx, text, x, y, color, scale) {
   drawPixelText(ctx, text, x, y, color, scale);
 }
 
-function drawTitle(ctx) {
+function drawTitle(sc, hud) {
   // Sky wash + the three parallax depths + the terrain strips, in drawWorld's own blit
   // order, parked at the spawn camera: the real ground the hero and turnip stand on, the
-  // first prize block peeking in at the right edge.
-  drawWorld(ctx, titleWorld(), 0, 0, 0);
-  outlinedText(ctx, 'VEGGIE BROS.', (VIEW_W - textW('VEGGIE BROS.', 3)) / 2, 48, RED, 3);
-  centerText(ctx, "A STRAWBERRY'S ADVENTURE", 98, INK);
+  // first prize block peeking in at the right edge. The world lands on the (unlit) scene;
+  // the glyph art stays on the HUD layer, which main.js composites over it.
+  drawWorld(sc, titleWorld(), 0, 0, 0);
+  outlinedText(hud, 'VEGGIE BROS.', (VIEW_W - textW('VEGGIE BROS.', 3)) / 2, 48, RED, 3);
+  centerText(hud, "A STRAWBERRY'S ADVENTURE", 98, INK);
   if (Math.floor(Date.now() / 500) % 2 === 0) {
     // white with a 1-px INK drop shadow: the call to action, readable over sky and hill alike
     const px = (VIEW_W - textW('PRESS ENTER TO START')) / 2;
-    drawPixelText(ctx, 'PRESS ENTER TO START', px + 1, 139, INK);
-    drawPixelText(ctx, 'PRESS ENTER TO START', px, 138, P.white);
+    drawPixelText(hud, 'PRESS ENTER TO START', px + 1, 139, INK);
+    drawPixelText(hud, 'PRESS ENTER TO START', px, 138, P.white);
   }
-  centerText(ctx, '< > / A D  MOVE   SHIFT RUN', 168, INK);
-  centerText(ctx, 'SPACE / Z  JUMP  P PAUSE  M MUTE', 182, INK);
-  drawHero(ctx, 100, 197, 1, false, 'idle', 0);
-  drawTurnip(ctx, 140, 196, 0, -1);
+  centerText(hud, '< > / A D  MOVE   SHIFT RUN', 168, INK);
+  centerText(hud, 'SPACE / Z  JUMP  P PAUSE  M MUTE', 182, INK);
+  drawHero(hud, 100, 197, 1, false, 'idle', 0);
+  drawTurnip(hud, 140, 196, 0, -1);
 }
 
 function drawOverlay(ctx, g) {
@@ -270,27 +271,37 @@ export function render(g) {
   // A destination ctx here would be a lie: nothing this function draws can land anywhere else.
   const L = layers();
   const hud = L.hud.ctx;
+  const sc = L.scene.ctx;
   // The FIRST op on `hud` comes from THIS file, deliberately (it mirrors `scene`'s clear below):
   // the harness resolves a composite-allocated surface's ink owner from that first op's stack and
   // demotes a `composite.js`-primed surface to FX scratch, so a composite-side priming clear would
   // make every HUD ink assertion (R19's runs, R24's zones) blind. Whole-surface, every frame, so
   // nothing here can inherit last frame's banner or a stale overlay.
   hud.clearRect(0, 0, VIEW_W, VIEW_H);
-  // The title screen takes the same surface as the HUD: it is unlit, unshaken glyph art, and a
-  // `drawTitle(ctx)` on the live canvas would put it in the top-left third of a css*dpr backing store.
-  if (g.state === 'TITLE') { drawTitle(hud); return; }
+  // The title world is unlit and unshaken: the scene gets the world pass alone (no lightmap or
+  // bloom over it) and the HUD gets the glyph art, so the title stays a clean composite of two
+  // whole-surface-cleared layers.
+  if (g.state === 'TITLE') {
+    sc.setTransform(HD, 0, 0, HD, 0, 0);
+    sc.clearRect(0, 0, VIEW_W, VIEW_H);
+    drawTitle(sc, hud);
+    sc.setTransform(1, 0, 0, 1, 0, 0);
+    return;
+  }
   const level = g.level;
   const camX = Math.floor(g.cam.x);
 
   // Camera shake enters as arithmetic: fx hands over ONE signed int, and the world is drawn
-  // at (o, -o) by shifting the camera it is measured against. This file sets no canvas
-  // transform anywhere (R45 diffs the draw stream), and never the HUD or the overlays (R52).
+  // at (o, -o) by shifting the camera it is measured against. The ONE canvas transform in this
+  // file is the HD scale on the scene (below and in the TITLE branch); the HUD and the overlays
+  // stay at identity (R52).
   const o = shakeOffset();
   const baked = worldFor(g);
   // Everything that can be LIT is drawn into the scene layer, which is a persistent buffer: it is
   // emptied first so the frame cannot inherit last frame's bloom. `main.js` blits it; nothing here
-  // touches the visible canvas (§7, R52, §4's pass order).
-  const sc = L.scene.ctx;
+  // touches the visible canvas (§7, R52, §4's pass order). World passes draw in LOGICAL px under
+  // the HD transform.
+  sc.setTransform(HD, 0, 0, HD, 0, 0);
   sc.clearRect(0, 0, VIEW_W, VIEW_H);
   drawWorld(sc, baked, camX, o, -o);
   // Checkpoints draw NOTHING. `level.checkpoints` stays live gameplay state — the arming band, the
@@ -309,6 +320,11 @@ export function render(g) {
   // §7's fixed order: `drawLightmap` fills the ambient base AND gathers this frame's lights,
   // `buildBloom` reuses that gather (it must run after it, on the same `g`), and each `apply*`
   // is one upscaled blit back into the scene — `multiply` then `lighter`, no other op touches it.
+  // Their blits target sceneW x sceneH DEVICE px, so the transform returns to identity first;
+  // and they are the scene's only non-1:1 draws (the world passes are 1:1 under the HD
+  // transform), so they are the only smoothed ones.
+  sc.setTransform(1, 0, 0, 1, 0, 0);
+  sc.imageSmoothingEnabled = true;
   drawLightmap(g, baked);
   applyLightmap(sc);
   buildBloom(g, baked);

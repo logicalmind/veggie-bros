@@ -54,7 +54,9 @@ import { configure as configureComposite, layers as compositeLayers, layout as c
 /** @type {HTMLCanvasElement} */
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-ctx.imageSmoothingEnabled = false;
+// HD-2D (R-1): pass 2 is the only fractional blit and the scene is now 4x logical, so the
+// final blit is a filter (1:1 at the usual size, bilinear on a cap-driven downscale).
+ctx.imageSmoothingEnabled = true;
 
 const SCALE_MIN = 1;
 const SCALE_MAX = 4;
@@ -86,9 +88,10 @@ function fit() {
   const lay = configureComposite(cssW, cssH, dpr);
   canvas.width = lay.backing.w;
   canvas.height = lay.backing.h;
-  // Resizing a canvas RESETS its 2D context state, and :41's nearest-neighbour flag is the shipped
-  // look — re-arm it here, or the first resize after boot turns pass 2 into a bilinear smear.
-  ctx.imageSmoothingEnabled = false;
+  // Resizing a canvas RESETS its 2D context state, and the boot smoothing flag is the shipped
+  // look (HD pass-2 filter) — re-arm it here, or the first resize after boot reverts pass 2
+  // to nearest-neighbour.
+  ctx.imageSmoothingEnabled = true;
 }
 window.addEventListener('resize', fit);
 fit();
@@ -681,10 +684,13 @@ let last = performance.now();
 let acc = 0;
 
 // §4's two-pass composite, and the ONLY thing that ever draws on the visible canvas. Three
-// nearest-neighbour blits (the ctx flags are all false), the `k` step integer so nothing downscales:
-//   1. `scene` (logical 256x240, LIT) → `upscale` at sceneW*k × sceneH*k
+// blits, the `k` step integer so pass 2 is at worst 1:1 or a downscale (at SCENE_SCALE 4 the
+// backing is capped to the scene's own area, so k is always 1):
+//   1. `scene` (1024x960 HD, LIT) → `upscale` at sceneW*k × sceneH*k
 //   2. `hud`   (logical 256x240, unlit) → the SAME rect, on top: never multiplied/lighted, never shaken
-//   3. `upscale` → the canvas at the exact backing size `configure` chose (pass 2, the only fractional one)
+//   3. `upscale` → the canvas at the exact backing size `configure` chose (pass 2, the only
+//      fractional one — smoothing is ON: it is a 1:1 copy at the usual size and only matters
+//      on a cap-driven downscale)
 // No clearRect of `upscale` or of the canvas: blit 1 covers both 1:1 every frame, and both logical
 // layers are themselves whole-surface cleared by render.js — TITLE included, whose `drawTitle` opens
 // with an opaque sky fill, so the stale `scene` content blit 1 lays down is always covered. Blits 1

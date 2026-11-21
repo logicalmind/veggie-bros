@@ -1,19 +1,21 @@
 // composite.js — HD-2D compositor buffers: DPR sizing math, layer table, dynamic lightmap.
 //
-// Resolution model (GRAPHICS_PLAN.md §4, decided 2026-11-18):
+// Resolution model (GRAPHICS_PLAN.md §4, decided 2026-11-18; raised to HD on 2026-11-21):
 //   backing  = floor(css * dpr), scaled down (aspect preserved) past MAX_BACKING_PX
 //   k        = largest integer with scene*k <= backing on BOTH axes (per-axis floor)
-//   scene    = LOGICAL resolution (256x240) — SCENE_SCALE = 1
+//   scene    = LOGICAL * SCENE_SCALE (256x240 -> 1024x960). SCENE_SCALE = 4 makes the
+//              scene EXACTLY MAX_BACKING_PX, so k lands on 1 and the compositor's pass 2
+//              is a 1:1 blit: the HD scene IS the final image.
 //   hud      = LOGICAL resolution (256x240), k-INDEPENDENT (§4): HUD/overlay ink is composited
 //              after the scene has been lit and upscaled, so it keeps its own full-res grid.
 //   lightmap/bloom/bloomHalf = sub-native FX buffers (§7); their upscale is the
 //              compositor's own bilinear step, NOT the k nearest-neighbor step.
 //
-// Scene at 1x logical is deliberate, not a simplification: blitting an art-scale
-// terrain strip (128x480 art px) into a 64-logical dest drops every odd art column
-// and costs only 3 of 242 exact colours / 0 of 118 q8 buckets
-// (integrator measurement, 2026-11-18). Export SCENE_SCALE so a later slice can
-// raise it without changing any call geometry.
+// World drawing runs under ONE ctx.setTransform(SCENE_SCALE, 0, 0, SCENE_SCALE, 0, 0) that
+// render.js sets (and resets to identity before the FX blits), so every world draw call
+// stays in LOGICAL px; baked HD canvases land 1:1, and gradients/paths rasterize at full
+// scene resolution. The FX buffers stay at fractions of LOGICAL on purpose: their
+// bilinear upscale to the HD scene is the soft, modern halo the look wants.
 //
 // Sizing authority for the DOM canvas (`canvas.style`, integer SCALE_STEP) stays in
 // main.js; this module owns buffer geometry only and is window-free at import, so
@@ -28,14 +30,14 @@ import { emissive } from './atlas.js';
 // it. NOT parity with config.js's MAX_SCREEN_PX / MAX_LAYERS, which §3 measures wrong.
 export const MAX_BACKING_PX = 1024 * 960;   // 983040
 const DPR_MIN = 1, DPR_MAX = 3;
-export const SCENE_SCALE = 1;
+export const SCENE_SCALE = 4;
 // §7's ceiling on the additive bloom pass, mirroring render.js's CLEAR_FLASH_MAX_ALPHA, and the
 // only place it is applied (applyBloom's Math.min). S-21: the halo the user called too bright is
 // BOTH the lightmap core and this second additive light source, so the ceiling came down to 0.18.
 // `R53` clause 4 measures the pass alpha on the op log: render.js:291 calls applyBloom with no
 // argument, so the constant IS what the `scene` recorder sees, and the clause pins it <= 0.22.
 export const BLOOM_MAX_ALPHA = 0.18;
-const BYTE_BUDGET = 8 * 1024 * 1024; // sanity ceiling over the six layers (worst case 4.30 MiB)
+const BYTE_BUDGET = 16 * 1024 * 1024; // sanity ceiling over the six layers (worst case 7.81 MiB at SCENE_SCALE 4)
 const LAYER_NAMES = ['scene', 'hud', 'upscale', 'lightmap', 'bloom', 'bloomHalf'];
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
