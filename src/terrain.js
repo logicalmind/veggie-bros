@@ -148,13 +148,16 @@ function solidArt(level, cols, tx, ty) {
   return isSolid(artTile(level, cols, tx, ty));
 }
 
-// One FNV-1a over the strip's tile chars plus one column of context on each side. It is
-// what makes the strip cache self-healing: main.js turns a punched 'P' into 'U' in
-// level.tiles, the digest changes, and that one strip re-bakes once with its spent block
-// instead of serving stale art forever. Same level in => same keys out (§R50).
+// One FNV-1a over the strip's tile chars plus the shadow kernel's context: two columns
+// on each side, matching the 5-wide kernel's reach exactly. It is what makes the strip
+// cache self-healing: main.js turns a punched 'P' into 'U' in level.tiles, the digest
+// changes, and that one strip re-bakes once with its spent block instead of serving stale
+// art forever. A punched block two columns over moves the shadow here, so the context
+// must span the kernel or the neighbour strip would keep its old shadow. Same level in
+// => same keys out (§R50).
 function stripDigest(level, cols, firstCol) {
   let h = 0x811c9dc5;
-  for (let tx = firstCol - 1; tx <= firstCol + TILES_PER_STRIP; tx++) {
+  for (let tx = firstCol - 2; tx <= firstCol + TILES_PER_STRIP + 1; tx++) {
     for (let ty = 0; ty < ROWS; ty++) {
       h ^= artTile(level, cols, tx, ty).charCodeAt(0);
       h = Math.imul(h, 0x01000193);
@@ -337,22 +340,38 @@ function bakeStrip(baked, index) {
   // Think in logical px everywhere: blit's destination is logical px, and this transform
   // turns it (and every shading fill below) into the art-scale backing store.
   ctx.scale(ART_SCALE, ART_SCALE);
-  // One column of AO context on each side: the soft shadow is a 3-column kernel, so a
-  // strip must be able to see next door's ceiling without next door's pixels.
-  const ao = aoColumns(level, cols, firstCol - 1, firstCol + TILES_PER_STRIP);
+  // Two columns of AO context on each side: the soft shadow is a 5-column kernel, so a
+  // strip must be able to see two doors down's ceiling without next door's pixels.
+  const ao = aoColumns(level, cols, firstCol - 2, firstCol + TILES_PER_STRIP + 1);
   for (let k = 0; k < TILES_PER_STRIP; k++) {
     const tx = firstCol + k;
     if (tx >= cols) break; // past the map's right edge: sky, not terrain
     const lx = tx * TILE - origin;
     for (let ty = 0; ty < rows; ty++) {
-      const soft = (ao[k][ty] + 2 * ao[k + 1][ty] + ao[k + 2][ty]) / 4;
+      // 5-column weighted average centred on this tile's column: same intensities as the
+      // old 3-column kernel at every covered spot, plus a soft tail two columns out —
+      // the old kernel's hard 16 px side steps read as blocky shadow edges.
+      const soft = aoKernel(ao, k, ty);
       const ch = artTile(level, cols, tx, ty);
       if (!isSolid(ch)) {
         // Air: the only thing baked into a strip's transparent cells is the soft shadow
         // of whatever ceiling is above it, which is what makes an overhang read as depth.
+        // The field is per-tile, so paint it as a 1-px row ramp between this tile's value
+        // and the tile below's: the old per-tile constant fill left four 16-px hard bands
+        // down every shadow pillar.
         if (soft > 0.004) {
-          ctx.fillStyle = rgba(th.ao, AO_MAX * soft);
-          ctx.fillRect(lx, ty * TILE, TILE, TILE);
+          const below = aoKernel(ao, k, ty + 1);
+          if (Math.abs(below - soft) > 0.004) {
+            for (let p = 0; p < TILE; p++) {
+              const s = soft + ((below - soft) * (p + 1)) / TILE;
+              if (s <= 0.004) break; // the field is non-increasing downwards, so this is last
+              ctx.fillStyle = rgba(th.ao, AO_MAX * s);
+              ctx.fillRect(lx, ty * TILE + p, TILE, 1);
+            }
+          } else {
+            ctx.fillStyle = rgba(th.ao, AO_MAX * soft);
+            ctx.fillRect(lx, ty * TILE, TILE, TILE);
+          }
         }
         continue;
       }
@@ -384,6 +403,7 @@ function matFor(th, level, cols, tx, ty, ch) {
 function shadeTile(ctx, baked, th, m, tx, ty, lx, soft) {
   const level = baked._level;
   const cols = baked.cols;
+  const ch = artTile(level, cols, tx, ty);
   const up = solidArt(level, cols, tx, ty - 1);
   const left = solidArt(level, cols, tx - 1, ty);
   const right = solidArt(level, cols, tx + 1, ty);
@@ -434,8 +454,22 @@ function shadeTile(ctx, baked, th, m, tx, ty, lx, soft) {
   }
   // The same ceiling shadow that darkens the air also settles on the tile face below it.
   if (soft > 0.02) {
-    ctx.fillStyle = rgba(th.ao, AO_MAX * soft * 0.7);
-    ctx.fillRect(lx, y, TILE, TILE);
+    if (up && artTile(level, cols, tx, ty - 1) === ch) {
+      // Stacked / buried body (X under X, | under |): keep the old flat deep tone — a
+      // fade here would sawtooth at every 16-px body boundary.
+      ctx.fillStyle = rgba(th.ao, AO_MAX * soft * 0.7);
+      ctx.fillRect(lx, y, TILE, TILE);
+    } else {
+      // A ceiling shadow landing on an exposed face (ground under a floating block, or a
+      // pipe's base on the ground): fade it down the tile so the contact shadow reads as
+      // a soft patch, not a hard-edged 16-px square.
+      for (let p = 0; p < TILE; p++) {
+        const a = AO_MAX * soft * 0.7 * (1 - p / TILE);
+        if (a <= 0.004) break;
+        ctx.fillStyle = rgba(th.ao, a);
+        ctx.fillRect(lx, y + p, TILE, 1);
+      }
+    }
   }
 }
 
@@ -445,9 +479,19 @@ function buriedRows(level, cols, tx, ty) {
   return n;
 }
 
+// The 5-wide shadow kernel at tile `k`, row `ty`: a weighted AVERAGE, weights
+// 0.25/0.75/1.5/0.75/0.25 over columns k-2..k+2 (the `ao` array is offset so the tile's
+// own column is index k+2), divided by the weight sum 3.5. A full-weight column under a
+// ceiling reads the same as the old 3-column (a+2b+c)/4 kernel did — a fully covered
+// centre stays 1.0, a lone ceiling 0.43 (old 0.5) — but the average extends two columns
+// further, so shadow edges get a 0.29/0.07 tail instead of a hard 16-px step.
+function aoKernel(ao, k, ty) {
+  return (0.25 * ao[k][ty] + 0.75 * ao[k + 1][ty] + 1.5 * ao[k + 2][ty] + 0.75 * ao[k + 3][ty] + 0.25 * ao[k + 4][ty]) / 3.5;
+}
+
 // Soft ambient occlusion, per LEVEL column (O(cols*rows) once per strip bake): a solid
 // tile seeds a shadow field of 1 and it decays to 0 over AO_ROWS tiles of air. Returned
-// indexed 0..(to-from) so the caller's 3-wide kernel spans neighbouring columns.
+// indexed 0..(to-from) so the caller's 5-wide kernel spans neighbouring columns.
 function aoColumns(level, cols, from, to) {
   const out = [];
   for (let tx = from; tx <= to; tx++) {
