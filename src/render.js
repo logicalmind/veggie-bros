@@ -216,16 +216,16 @@ function drawTitle(ctx) {
   // order, parked at the spawn camera: the real ground the hero and turnip stand on, the
   // first prize block peeking in at the right edge.
   drawWorld(ctx, titleWorld(), 0, 0, 0);
-  outlinedText(ctx, 'VEGGIE BROS.', (VIEW_W - textW('VEGGIE BROS.', 3)) / 2, 60, RED, 3);
-  centerText(ctx, 'A STRAWBERRY S ADVENTURE', 110, INK);
+  outlinedText(ctx, 'VEGGIE BROS.', (VIEW_W - textW('VEGGIE BROS.', 3)) / 2, 48, RED, 3);
+  centerText(ctx, "A STRAWBERRY'S ADVENTURE", 98, INK);
   if (Math.floor(Date.now() / 500) % 2 === 0) {
     // white with a 1-px INK drop shadow: the call to action, readable over sky and hill alike
     const px = (VIEW_W - textW('PRESS ENTER TO START')) / 2;
-    drawPixelText(ctx, 'PRESS ENTER TO START', px + 1, 151, INK);
-    drawPixelText(ctx, 'PRESS ENTER TO START', px, 150, P.white);
+    drawPixelText(ctx, 'PRESS ENTER TO START', px + 1, 139, INK);
+    drawPixelText(ctx, 'PRESS ENTER TO START', px, 138, P.white);
   }
-  centerText(ctx, '< > / A D  MOVE   SHIFT RUN', 180, INK);
-  centerText(ctx, 'SPACE / Z  JUMP  P PAUSE  M MUTE', 194, INK);
+  centerText(ctx, '< > / A D  MOVE   SHIFT RUN', 168, INK);
+  centerText(ctx, 'SPACE / Z  JUMP  P PAUSE  M MUTE', 182, INK);
   drawHero(ctx, 100, 197, 1, false, 'idle', 0);
   drawTurnip(ctx, 140, 196, 0, -1);
 }

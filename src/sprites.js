@@ -1053,6 +1053,7 @@ const INKED = 'X'; // glyph art marker: 'X' is ink, '.' is empty
 // and the left arrow used by touch hints. Lowercase falls back to uppercase.
 const GLYPH_ART = {
   ' ': '...../...../...../...../...../...../.....',
+  "'": '..X../..X../.X.../...../...../...../.....',
   '!': '..X../..X../..X../..X../..X../...../..X..',
   '+': '...../..X../..X../XXXXX/..X../..X../.....',
   '-': '...../...../...../.XXX./...../...../.....',
