@@ -57,6 +57,18 @@ function drawWorld(ctx, baked, camX, o, oy) {
   // The ambient ramp is screen-aligned by terrain's contract, so it takes no shake: a
   // shifted full-view blit would leave a transparent row along one edge of the frame.
   ctx.drawImage(ambientFor(baked, camX).canvas, 0, 0, VIEW_W, VIEW_H);
+  // The vertical half of the shake (oy) exposes |oy| rows along the OPPOSITE frame edge:
+  // a shifted full-view blit is still exactly VIEW_H tall, so that band falls through to
+  // the bright ambient ramp and reads as a 1-2 px white flash (bottom of the screen when
+  // the world jolts up — JASON, 2026-11-21). edgeFill() repeats the blit's own edge rows
+  // into the band, so the exposed row keeps the art that filled it the frame before.
+  // Source rects are device px (HD-scaled canvases); the call is a no-op when not shaking.
+  const edgeFill = (canvas, dx, w) => {
+    if (oy === 0) return;
+    const n = oy < 0 ? -oy : oy;
+    ctx.drawImage(canvas, 0, oy < 0 ? (VIEW_H - n) * HD : 0, canvas.width, n * HD,
+      dx, oy < 0 ? VIEW_H - n : 0, w, n);
+  };
   // Parallax is queried with the TRUE camera (its depth factors are scroll, not shake) and
   // shifted by the whole offset, so the jolt moves the frame rigidly.
   const layers = parallaxFor(baked, camX);
@@ -65,6 +77,7 @@ function drawWorld(ctx, baked, camX, o, oy) {
     ctx.globalAlpha = L.alpha;
     // The layer canvases are HD-scale: dest is their logical size, (VIEW_W + period) wide.
     ctx.drawImage(L.canvas, L.dx + o, oy, L.canvas.width / HD, L.canvas.height / HD);
+    edgeFill(L.canvas, L.dx + o, L.canvas.width / HD);
   }
   ctx.globalAlpha = 1;
   // Strips. The coverage query takes the shake-shifted camera (camX - o) so the 1-3 px the
@@ -75,6 +88,7 @@ function drawWorld(ctx, baked, camX, o, oy) {
   const strips = visibleStrips(baked, camX - o);
   for (let i = 0; i < strips.length; i++) {
     ctx.drawImage(strips[i].canvas, strips[i].dx, oy, baked.stripW, VIEW_H);
+    edgeFill(strips[i].canvas, strips[i].dx, baked.stripW);
   }
 }
 

@@ -281,3 +281,37 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     follow-up if wanted.
   - Next: R-6 was the last planned slice. All six commits are UNPUSHED (6554051, b27074e,
     bfd3467, 9960a75, d1833e1, + this one); the branch awaits JASON's next request.
+
+- [x] **R-7** — landing shake: configurable + playtuned down, shake edge-flash removed (approved 2026-11-21)
+  - Two playtest reports, both FX/render-only (`src/config.js`, `src/fx.js`, `src/render.js`);
+    no gameplay code touched.
+  - **Shake knob:** new `SHAKE_SCALE` in config.js (after `LAND_MIN_POWER`), applied at the
+    `fx.shake()` entry so every emitter — the landing puff is the only one today — runs
+    through it. 1.0 = the R54 tuning. Playtest-stepped: 1.0 → 0.5 (JASON: too much shake) →
+    0.25 (JASON: "still feels very jittery") → approved. The offset is integer and the ±1
+    floor in `fx.js` keeps any live shake at 1 px, so the knob shortens the jitter window,
+    not the step. At 0.25 only near-terminal landings (power > ~0.90) print one 1-px frame;
+    lighter landings land still. Next lever if the last frame ever still bugs: the floor
+    itself (the `if (o === 0)` block in `fx.js update()`) — removing it silences shake
+    entirely; not done preemptively.
+  - **Edge flash (new bug found in the same playtest):** the vertical half of the jolt
+    (`oy = -o` in render.js) shifts the world 1 px, but the strip/parallax blits stay
+    exactly VIEW_H tall, so the band at the OPPOSITE frame edge fell through to the bright
+    ambient fog ramp behind the world — a 1-2 px white flash, bottom of screen on upward
+    jolts. Root-caused with a pixel probe: o=+1 frame bottom band (181,222,140) bright fog
+    vs still-frame (95,75,58) dark dirt. Fix: `edgeFill()` in `drawWorld()` re-blits the
+    shifted canvas's own edge rows into the |oy|-px band (parallax layers AND terrain
+    strips; no-op when not shaking). Post-fix probe: both o signs equal the still frame
+    exactly.
+  - Measured (fresh-origin drop protocol, `fx.metrics().shakeFrames` deltas): full-power
+    176-px drop (p=1.0): 4 frames @1.0 → 2 @0.5 → **1 @0.25**; 20-px mid drop (p≈0.72):
+    2 → 1 → **0** (lands still, dust puff still fires). Cold scale probe (`shake(1.0)`,
+    20 updates): 3 → 1 → **0** live frames.
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,"stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true},"distinctColors":7856}`
+    — seam hash unchanged, zero console errors. Note: JASON's browser can still hold
+    pre-no-store-era module bytes; one hard reload (Cmd+Shift+R) before a playtest is the
+    working mechanism (a plain F5 re-served stale `fx.js` during this slice). Parked
+    `tools/verify.mjs` drift continues, never re-run.
+  - Next: R-7 was the post-R-6 playtest fix; the branch awaits JASON's next request.
+    All seven commits are UNPUSHED (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b,
+    + this one).

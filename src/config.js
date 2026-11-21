@@ -64,6 +64,14 @@ export const FX_SCALE = 0.5; // lightmap/fog/bloom run at 128x120: lighting is l
 // The one FX threshold main.js needs but no gameplay module owns: below this landing power the
 // touchdown is a tile seam, not a drop, so a flat walking pass must not spawn a dust puff.
 export const LAND_MIN_POWER = 0.15; // main.js compares |vy|/MAX_FALL against it
+// Global multiplier on every camera-shake increment, applied at the fx.shake() entry (the
+// landing puff is the only emitter). 1.0 is the 2026-11-19 R54 tuning; halved to 0.5 on
+// 2026-11-21 because landings shook too much; quartered to 0.25 the same day because even
+// the halved shake still read as jitter (JASON playtest). The offset stays integer and the
+// ±1 floor in fx.js keeps any live shake at 1 px, so this shortens the jitter window, not
+// the step. At 0.25 only near-terminal landings (power > ~0.90) print one 1-px frame;
+// lighter landings land still. 0.2 would silence even a full-power landing.
+export const SHAKE_SCALE = 0.25;
 
 export const PALETTE = {
   sky: "#9be3f5",

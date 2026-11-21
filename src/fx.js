@@ -7,7 +7,7 @@
 // Nothing here writes gameplay state (§3/R51): emitters take numbers, and the one piece of
 // per-entity data is a WeakMap entry the renderer only reads.
 
-import { VIEW_W, VIEW_H } from './config.js';
+import { SHAKE_SCALE, VIEW_W, VIEW_H } from './config.js';
 import { seeded } from './pixels.js';
 import { frames as frameCount, fxBlit as blit } from './props.js';
 
@@ -55,6 +55,8 @@ const TAB = Object.freeze([
 // a 1 px thump instead of the old ~18 frames of ±1. Measured 2026-11-19 by R54 on driven 1-1
 // landings: a released hop lands at power 0.619 -> 3 samples of |offset| 1; a held jump at
 // power 1.000 -> 4 samples, peak 1; fx.shake(4) clamps to the ceiling -> 7 samples, peak 2.
+// 2026-11-21: all increments now run through config's SHAKE_SCALE (halved to 0.5 there), so
+// those R54 numbers are pre-scale; at 0.5 a full-power landing shakes ~2 frames of ±1 px.
 const SHAKE_MAX = 2;
 const SHAKE_DECAY = 0.13;
 const SHAKE_RATE = SHAKE_MAX / SHAKE_DECAY;
@@ -300,7 +302,9 @@ export function poof(x, y) {
 export function shake(amount) {
   ensure();
   if (!(amount > 0)) return;
-  const sum = shakeAmp + amount;
+  // Every emitter's increment runs through the config multiplier (the landing puff is the
+  // only caller today), so SHAKE_SCALE is the single knob for how hard impacts shake.
+  const sum = shakeAmp + amount * SHAKE_SCALE;
   shakeAmp = sum < SHAKE_MAX ? sum : SHAKE_MAX;
 }
 
