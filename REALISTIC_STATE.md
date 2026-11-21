@@ -170,3 +170,53 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     drawPixelText/tileGrid and ART_SCALE); it stays parked and is never re-run.
   - Next: R-5 lighting/FX — bloom knobs live in `composite.js` (`BLOOM_MAX_ALPHA = 0.18`); the
     emissive-key expansion (gate/pumpkin/spark) is the open decision.
+
+- [x] **R-5** — HD lighting/FX (approved 2026-11-21; the screen-fixed vignette was rejected and
+  removed after the first evidence pass — "the bloom that encircles the play area is unnecessary")
+  - `composite.js`: `BLOOM_MAX_ALPHA` 0.18→**0.22**, `BLOOM_MASK_ALPHA` 0.25→**0.30** (gain 0.25
+    unchanged; both sit at the top of the old R53 envelope the parked verify's clause pinned, so a
+    future re-pin stays green). `EMISSIVE_KEYS` frozen to `['fruit','berry','gate','pumpkin']`;
+    `buildBloom` now emits the gate mask at `(gate.x - camX, gate.y - 103)` (the blit anchor
+    `drawGate` uses) and `scanPumpkinMasks` walks the same tile range as `scanBlocks` for `'P'`/`'Q'`
+    and masks each on its tile origin. All new emits run through the shared `MAX_LIGHTS` (12) cap
+    in items → enemies → gate → pumpkin order, so a block-crammed view degrades background glow
+    (lightmap discs share the same cap order in `drawLightmap`), never pickup halos. Punched
+    `'U'` blocks stay unlit — one spent sprite, one spent glow. `fx.spark` deliberately stays
+    unmasked: a 5×5 art-px spark is ~1.25 bloom-px, a single bright pixel the mip blur smears into
+    noise; sparks already read bright in HD art.
+  - `props.js`: `paintGateMask` (32×119, radial centre (16,52) r 3→60, `#a6ff72` 1/0.55/0) and
+    `paintPumpkinMask` (16×16, radial (8,8) r 0.5→8.5, `#ff9b2e` 1/0.5/0) — mask colours mirror the
+    existing lightmap GLOW table; `B.mask` gains `gate`/`pumpkin` entries.
+  - `render.js`: net zero. The first pass wired a screen-fixed multiply vignette into both the
+    TITLE branch and the main FX chain; after JASON's rejection it was deleted, leaving the file
+    byte-identical to R-4 (confirmed by `git status` showing only composite.js + props.js dirty).
+  - In-page catches: (1) first R-5 boot rendered a fully transparent canvas — `vignetteBake`
+    stored the layer OBJECT (`{c, ctx}`) in `VIG.c`, so `drawImage` threw a TypeError every frame
+    (6,478 logged errors, `frame`'s catch). The fix (`VIG.c = l.c`) was moot once the vignette was
+    removed, but the incident is exactly what hd-verify's live-canvas `distinctColors` check exists
+    for: it reported `renderSmoke:1, distinctColors:1` on the broken build vs 22k after. (2) First
+    gate shot at 250 ms after teleporting the player missed — the camera lerp hadn't arrived
+    (camX 2340, gate off-canvas); settle ≥2 s before sampling after any player teleport.
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"stripCanvas":[256,960],"determinism":true,"stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true},"distinctColors":7830}`
+    — seam hash unchanged (probe is terrain-only). `distinctColors` is a 1/4-stride snapshot of the
+    ANIMATED title frame: 7830 stable across 3 consecutive runs this pass (the vignette pass read
+    22176 — the multiply gradient inflated quantized colour counts; R-4 logged 11773 at a different
+    animation phase). Title corners/centre are byte-identical to R-4, so no title regression.
+    `C.metrics()` in the spawn view: `bloomAlpha: 0.22`, lights/emissives 3 (fruit + berry + one
+    pumpkin tile); gate view emissives include the gate mask. Zero console errors across
+    boot → title → PLAYING → gate.
+  - Pixel evidence (visible 768×720 canvas, avg RGB / luma range; BEFORE = R-4 build):
+    title corners TL/BL/BR [58,113,130]/[130,91,77]/[125,93,81] and centre [164,208,212]
+    187–198 — identical after (vignette removed); gameplay corners [62,118,112]/[110,88,64]
+    identical after, centre [170,230,190] 194–213 → [167,228,189] 194–208 (unchanged);
+    fruit halo box [152,213,182] 64–208 → [150,217,186] 61–203 (halo slightly hotter at the
+    0.22 ceiling; the 60×60 box spans the fruit's spin frames so averages vary by frame);
+    berry box [140,190,121] 31–241 → [141,191,121] 32–243 (unchanged); gate (new, after only,
+    player parked at gate.x−60, restored after the shot): gateBox 2896 distinct, avg [162,223,165],
+    luma 43–231; halo strip right of the gate 133 distinct, luma 206–226 — the green bloom halo is
+    the visible R-5 delta.
+  - Parked `tools/verify.mjs` drift continues and is never re-run; if ever re-pinned, its
+    `distinctColors` gate must expect the vignette-free animated-title counts.
+  - Next: R-6 (JASON request) — spent star boxes: remove the dark hollow so a hit P/Q block is a
+    plain solid-coloured body (the star marking already vanishes on hit; the hollow in
+    `paintPumpkinUsed` is the delta).

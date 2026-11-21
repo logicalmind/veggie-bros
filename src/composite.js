@@ -29,11 +29,14 @@ import { emissive } from './props.js';
 export const MAX_BACKING_PX = 1024 * 960;   // 983040
 const DPR_MIN = 1, DPR_MAX = 3;
 // §7's ceiling on the additive bloom pass, mirroring render.js's CLEAR_FLASH_MAX_ALPHA, and the
-// only place it is applied (applyBloom's Math.min). S-21: the halo the user called too bright is
-// BOTH the lightmap core and this second additive light source, so the ceiling came down to 0.18.
-// `R53` clause 4 measures the pass alpha on the op log: render.js:291 calls applyBloom with no
+// only place it is applied (applyBloom's Math.min). S-21 brought it down to 0.18 (the halo the
+// user called too bright was BOTH the lightmap core and this second additive light source); R-5
+// raises it to 0.22 — the top of the old R53 envelope — now that the masks own their own ceiling
+// (BLOOM_MASK_ALPHA) and the new gate/pumpkin masks need the headroom to read as light rather
+// than a faint outline.
+// `R53` clause 4 measures the pass alpha on the op log: render.js calls applyBloom with no
 // argument, so the constant IS what the `scene` recorder sees, and the clause pins it <= 0.22.
-export const BLOOM_MAX_ALPHA = 0.18;
+export const BLOOM_MAX_ALPHA = 0.22;
 const BYTE_BUDGET = 16 * 1024 * 1024; // sanity ceiling over the five layers (worst case 7.58 MiB at SCENE_SCALE 4)
 const LAYER_NAMES = ['scene', 'upscale', 'lightmap', 'bloom', 'bloomHalf'];
 
@@ -228,6 +231,20 @@ function scanBlocks(level, tx0, camX) {
   }
 }
 
+// R-5's mask twin of scanBlocks: same visible tile range, same 'P'/'Q' family (a punched 'U'
+// is spent and unlit), mask top-left on the tile origin. Runs after the items/enemies masks, so
+// it only spends leftover emit budget (emitMask enforces the cap).
+function scanPumpkinMasks(level, camX, ctx) {
+  const tx0 = Math.floor(camX / TILE);
+  for (let ty = 0; ty < ROWS && emitN < MAX_LIGHTS; ty++) {
+    for (let c = 0; c < LM_COLS; c++) {
+      const ch = tileAt(level, tx0 + c, ty);
+      if (ch !== 'P' && ch !== 'Q') continue;
+      emitMask(ctx, PUMPKIN_K, 0, (tx0 + c) * TILE - camX, ty * TILE);
+    }
+  }
+}
+
 export function drawLightmap(g, baked) {
   const lm = lightmapLayer();
   const ctx = lm.ctx;
@@ -324,16 +341,20 @@ const BLOOM_GAIN = 0.25;
 // 1-1's two fruit masks reached this buffer at alpha 1 — the brightest input on the recorder, and the
 // only one above the 0.30 ceiling every glow disc (<= 0.11) and both boost passes (0.25) stay under.
 // Masks are art, but they are art that blooms: 1-1's fruit halo is exactly "a halo around an object",
-// and the mip blur below smears whatever enters here across the buffer. There is still no readback, so
-// R53 clause 4 measures the op log: after this line every `lighter` blit on the bloom recorder is <= 0.25.
-const BLOOM_MASK_ALPHA = 0.25;
-// Keys that own an emissive mask in props.js — the two buildBloom actually emits: the fruit and
-// berry items. (The retired atlas also registered masks for pumpkin, gate and fx.spark, but the
-// items/enemies loops below only ever emit fruit and berry, so those entries were stale.) The
-// FRUIT_K/BERRY_K indices and EMISSIVE_SET derive from this list.
-export const EMISSIVE_KEYS = Object.freeze(['fruit', 'berry']);
+// and the mip blur below smears whatever enters here across the buffer. R-5 moves it to the top of
+// that same 0.30 envelope so the new gate/pumpkin masks (entering at the same gain) carry real
+// presence. There is still no readback, so R53 clause 4 measures the op log: after this line every
+// `lighter` blit on the bloom recorder is <= 0.30.
+const BLOOM_MASK_ALPHA = 0.30;
+// Keys that own an emissive mask in props.js. R-5 grew the set from the collectables to the
+// level's own light sources: the melon gate (the per-level landmark) and the intact pumpkin
+// blocks (P/Q; a punched 'U' is a spent block and stays dark, one spent sprite, one spent glow).
+// fx.spark stays OUT: its mask would be 5x5 art px = 1.25 bloom px, a single bright pixel the
+// mip blur smears into noise. The *_K indices and EMISSIVE_SET derive from this list.
+export const EMISSIVE_KEYS = Object.freeze(['fruit', 'berry', 'gate', 'pumpkin']);
 const EMISSIVE_SET = new Set(EMISSIVE_KEYS);
 const FRUIT_K = EMISSIVE_KEYS.indexOf('fruit'), BERRY_K = EMISSIVE_KEYS.indexOf('berry');
+const GATE_K = EMISSIVE_KEYS.indexOf('gate'), PUMPKIN_K = EMISSIVE_KEYS.indexOf('pumpkin');
 // The emissive cap is MAX_LIGHTS again, and the cull margins are the widest mask extents in the set
 // (gate is 2 tiles wide and its art runs 103 logical px above its origin).
 const EM_CULL_X = 64, EM_CULL_UP = 112, EM_CULL_DOWN = 64;
@@ -392,6 +413,12 @@ export function buildBloom(g, baked) {
     if (!EMISSIVE_SET.has(key)) continue;
     emitMask(ctx, EMISSIVE_KEYS.indexOf(key), e.frame | 0, e.x - camX, e.y);
   }
+  // R-5: the gate and the pumpkin family join the set AFTER the items and enemies, so the
+  // collectables always keep the emit budget; a view crammed with blocks degrades the background
+  // glow (their lightmap discs share the same cap order in drawLightmap), never the pickup halos.
+  const lv = g.level;
+  if (lv && lv.gate) emitMask(ctx, GATE_K, 0, lv.gate.x - camX, lv.gate.y - 103);
+  if (lv) scanPumpkinMasks(lv, camX, ctx);
   // Energy boost (self-composite ×2, still 'lighter'), then the mip blur. The up-pass is 'copy'
   // because the blur REPLACES the sharp accumulator — 'source-over' would re-add it and the boost
   // would run away. `bloomHalf` is cleared so the down-pass cannot inherit the last frame's halo.

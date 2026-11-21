@@ -402,10 +402,11 @@ function paintChip(ctx) {
 
 // ---------------------------------------------------------------- emissive masks
 // The bloom pass (composite.js buildBloom) blits these into its 0.25x buffer, so a 4x
-// bilinear downsample onto 9x9 / 14x7 bloom px IS the soft halo — the old hard-edged `E`-cell
-// silhouettes, upgraded. Only fruit and berry are emitted per frame (see EMISSIVE_KEYS);
-// gate and spark were registered emissive in the atlas but buildBloom never emitted them, so
-// no mask is baked here and R-5 owns any glow expansion.
+// bilinear downsample onto the mask's own art box IS the soft halo — the old hard-edged `E`-cell
+// silhouettes, upgraded. R-5 set: fruit, berry, gate and the intact pumpkin blocks (see
+// EMISSIVE_KEYS in composite.js). fx.spark stays unmasked: 5x5 art px is 1.25 bloom px — a
+// single bright pixel the mip blur smears into noise, and the spark already reads bright in
+// the HD art.
 
 function paintFruitMask(ctx) {
   const g = ctx.createRadialGradient(4.5, 4.5, 0.3, 4.5, 4.5, 4.8);
@@ -423,6 +424,31 @@ function paintBerryMask(ctx) {
   g.addColorStop(1, rgba(RM.berryBody.hi, 0));
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 14, 7);
+}
+
+// R-5's two new masks, same pattern: a soft radial field in the light's OWN colour, so the
+// bloom buffer's 'lighter' add tints the halo (gate green, pumpkin orange) instead of
+// whitening it. The hexes mirror composite.js's GLOW table (gate #a6ff72, pumpkin #ff9b2e).
+function paintGateMask(ctx) {
+  // 32x119: one radial centred on the melon-body column; the falloff leaves the plinth corners
+  // nearly clear, so the halo reads as the gate's body, not a glowing rectangle.
+  const g = ctx.createRadialGradient(16, 52, 3, 16, 52, 60);
+  g.addColorStop(0, rgba('#a6ff72', 1));
+  g.addColorStop(0.5, rgba('#a6ff72', 0.55));
+  g.addColorStop(1, rgba('#a6ff72', 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 32, 119);
+}
+
+function paintPumpkinMask(ctx) {
+  // 16x16 = one tile; the mask fades to zero at the tile edge so a row of blocks reads as one
+  // continuous warm band, not a grid of dots.
+  const g = ctx.createRadialGradient(8, 8, 0.5, 8, 8, 8.5);
+  g.addColorStop(0, rgba('#ff9b2e', 1));
+  g.addColorStop(0.6, rgba('#ff9b2e', 0.5));
+  g.addColorStop(1, rgba('#ff9b2e', 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 16, 16);
 }
 
 // ---------------------------------------------------------------- bake + blit
@@ -445,6 +471,8 @@ function ensure() {
     mask: {
       fruit: { w: 9, h: 9, c: bake(9, 9, paintFruitMask) },
       berry: { w: 14, h: 7, c: bake(14, 7, paintBerryMask) },
+      gate: { w: 32, h: 119, c: bake(32, 119, paintGateMask) },
+      pumpkin: { w: 16, h: 16, c: bake(16, 16, paintPumpkinMask) },
     },
   };
 }
