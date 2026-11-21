@@ -129,3 +129,44 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     1926→2110.
   - Title/HUD fruit + lives icons still transitional old downscales (R-4); bloom params
     (gain 0.25 / mask alpha 0.25) untouched — R-5 tuning.
+
+- [x] **R-4** — HD title/HUD (approved 2026-11-21)
+  - New `src/ui.js` (~230 lines), the art surface for every UI pixel. Font = the OS stack
+    (`-apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif`) — zero deps, no embedded
+    TTF. Panels = one surface everywhere: `rgba(18,22,30,0.55)` fill, 2-device-px
+    `rgba(255,255,255,0.22)` edge, rounded via an `arcTo` helper (`rr()`; no roundRect
+    dependency), soft drop shadow in DEVICE space (blur 10 / offsetY 3 — shadow params ignore
+    the transform). Exports `hud(ctx,g)`, `title(ctx,now)`, `banner(ctx,g)`, `overlay(ctx,g,now)`,
+    `popup(ctx,str,x,y)`; font/align/baseline are set per call, so nothing leaks into world passes.
+  - The 256×240 `hud` composite layer is RETIRED: `composite.js` drops it from `LAYER_NAMES` and
+    `build()` (byte-budget comment now five layers / 7.58 MiB), `main.js`'s composite is two
+    blits, and `render.js` draws the UI on the scene AFTER the lightmap/bloom passes under the HD
+    transform (TITLE before them — the title stays unlit and unshaken). The UI is never
+    multiplied, bloomed or shaken; the lightmap gather reads frozen state, so post-FX UI is safe.
+    Glyphs rasterize at 4× device resolution and the hero (12×12) / fruit (9×9) icons land 1:1 —
+    the last transitional bilinear downscales are gone.
+  - Title: sky scrim gradient (0→170 logical, 0.45/0.18/0 alpha), 'VEGGIE BROS.' gradient logo
+    (#ffe27a→crown→#ff8a30→red) with 5px black stroke and a soft shadow, sin bob, subtitle,
+    blinking ENTER pill, two control rows, hero + turnip pair. Logo measures 234.1 logical px
+    (fits 256 with margin; downsize threshold 246).
+  - HUD: score panel (88×34, label + 11/800 crown value + fruit icon + ×NN), centered WORLD pill,
+    right-aligned lives pill with a live `drawHero` idle icon (sharp 1:1, the R-4 target) and a
+    MUTED pill beside it when muted. Overlays: PAUSED = scrim + 24/800 title + hint; LEVEL_CLEAR =
+    white flash (clearT>0.9, max 0.6) + STAGE CLEAR on a dark pill + +1000; WIN/GAME_OVER = scrim
+    (the old build had none) + 24/800 title (GAME_OVER in red) + crown score + blinking ENTER.
+    Banner: dark pill, alpha min(1, bannerT). Item popups: 8.5px/800 white with 1.5px black stroke.
+  - `src/sprites.js` DELETED (pixel font + the last tile text); `src/config.js` drops `ART_SCALE`
+    (no imports left; only the parked verify.mjs mentioned it, in comments).
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,"stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true},"distinctColors":11773}`
+    — seam hash unchanged (the probe is terrain-only, UI-independent); distinct up from 7174 =
+    UI pixels now living on the scene layer. Zero console errors across title → PLAYING → all four
+    fake overlays (score pinned 12340, bannerT forced for the banner check).
+  - Pixel evidence (visible 768×720 canvas, same boxes as the R-4 BEFORE pass): logo 1864→4266
+    distinct; sky top avg [101,196,230]→[63,120,143] (scrim darkening); score row 32→833; world
+    pill 16→380 (luma reaches 255); lives row 169→951 with luma 26–255 (icon now sharp);
+    GAME_OVER line 65→565, luma 130–189→89–130 (new scrim); WIN line 103→811; PAUSED line 15→550;
+    LEVEL_CLEAR line 70→560; banner pill 1165 distinct.
+  - Parked `tools/verify.mjs` drift continues (it now also references the deleted hud layer,
+    drawPixelText/tileGrid and ART_SCALE); it stays parked and is never re-run.
+  - Next: R-5 lighting/FX — bloom knobs live in `composite.js` (`BLOOM_MAX_ALPHA = 0.18`); the
+    emissive-key expansion (gate/pumpkin/spark) is the open decision.

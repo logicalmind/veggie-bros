@@ -5,39 +5,17 @@ import { parseLevel } from './level.js';
 import { LEVELS } from './levels.js';
 import { ambientFor, bakeLevel, parallaxFor, visibleStrips } from './terrain.js';
 import { colorToCss } from './pixels.js';
-import { TEXT_PITCH, drawPixelText } from './sprites.js';
+import { banner, hud, overlay, popup, title } from './ui.js';
 import { drawBerry, drawFruit, drawGate, drawShard } from './props.js';
 import { drawBoss, drawHero, drawTurnip } from './chars.js';
 
 const P = PALETTE;
-// the HUD/title ink and the title/GameOver red are the palette's own black/red — alias them
-// so a palette edit in config.js reaches the text too
-const INK = P.black;
-const RED = P.red;
-// offset of the INK backing pass behind the white score popups, in source pixels
-const POPUP_BACKING_DX = 1;
-const POPUP_BACKING_DY = 1;
-// ceiling for the LEVEL_CLEAR white flash so the screen never goes full-strength white
-const CLEAR_FLASH_MAX_ALPHA = 0.6;
 // squashed turnip corpse: the flattened sprite is a turnipBody band this tall, with a
 // turnipTip root strip CORPSE_TIP_H rows tall along its bottom edge
 const CORPSE_H = 4;
 const CORPSE_TIP_H = 1;
 // width of the sprite's root column, centred inside the band (sprites draw at x - 1)
 const CORPSE_TIP_W = 2;
-// gap between the lives cluster and the MUTED badge on the right of the HUD row 1
-const MUTED_GAP = 4;
-// the 12x12 lives icon draws from y-2 (2 px leaf overhang), so y=6 puts its leaf at the
-// top of the 6 px text row instead of floating 2 px above the text it labels
-const LIVES_ICON_Y = 6;
-
-function textW(text, scale = 1) {
-  return text.length * TEXT_PITCH * scale;
-}
-
-function centerText(ctx, text, y, color, scale = 1) {
-  drawPixelText(ctx, text, (VIEW_W - textW(text, scale)) / 2, y, color, scale);
-}
 
 // The three shipped levels' terrain themes, in level order — the same mapping
 // /tmp/vb-w2-logic.mjs sweeps, and the only three names terrain.js's THEMES table carries.
@@ -114,10 +92,9 @@ function drawItems(ctx, items, camX, oy = 0) {
         break;
       case 'popup': {
         const py = it.y - 20 * (it.t / 0.6) + oy;
-        // INK backing pass first (offset down-right), then the white text on top,
-        // so the popup stays legible over the light sky and stone tiles
-        drawPixelText(ctx, it.text, ix + POPUP_BACKING_DX, py + POPUP_BACKING_DY, INK);
-        drawPixelText(ctx, it.text, ix, py, P.white);
+        // ui.popup: white with a black rim, top-left anchored exactly where the pixel text
+        // used to land, so the popup stays legible over the light sky and stone tiles
+        popup(ctx, it.text, ix, py);
         break;
       }
     }
@@ -166,24 +143,6 @@ function drawPlayer(ctx, player, camX, oy = 0) {
   drawHero(ctx, p.x - camX, p.y + oy, p.facing, p.big, pose, frame, p.onGround ? 0.24 : 0);
 }
 
-function drawHud(ctx, g) {
-  drawPixelText(ctx, 'SCORE ' + String(g.score).padStart(6, '0'), 8, 6, INK);
-  drawFruit(ctx, 8, 18, 0);
-  drawPixelText(ctx, 'x' + String(g.fruitCount).padStart(2, '0'), 18, 18, INK);
-  const world = 'WORLD ' + g.level.label;
-  centerText(ctx, world, 6, INK);
-  // lives on the right (Poppy mini icon = idle hero), MUTED far right, shifted left when shown
-  const livesText = 'x' + g.lives;
-  // the MUTED badge width has ONE source so the lives cluster and the badge can never
-  // drift into each other: textW('MUTED') = 5 chars * TEXT_PITCH = 30 px at scale 1.
-  const MUTED_W = textW('MUTED');
-  const mutedShift = g.muted ? MUTED_W + MUTED_GAP : 0;
-  const livesX = VIEW_W - 8 - (12 + 1 + textW(livesText)) - mutedShift;
-  drawHero(ctx, livesX, LIVES_ICON_Y, 1, false, 'idle', 0);
-  drawPixelText(ctx, livesText, livesX + 13, 6, INK);
-  if (g.muted) drawPixelText(ctx, 'MUTED', VIEW_W - 8 - MUTED_W, 6, INK);
-}
-
 // The title's backdrop is the game's own world: level 1 baked once per process and blitted
 // from the SAME bundle the first game start will use (terrain.js keys the bundle on
 // `label|theme|phase`), so the title's one-time bake cost is the game's own first-frame
@@ -195,88 +154,21 @@ function titleWorld() {
   if (!titleBaked) titleBaked = bakeLevel(parseLevel(LEVELS[0]), 'fields');
   return titleBaked;
 }
-// 8-way INK outline pass under logo-scale text. Offsets are screen px: drawPixelText
-// already works in final units, so one outline ring at any zoom.
-const OUTLINE = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
-function outlinedText(ctx, text, x, y, color, scale) {
-  for (const [dx, dy] of OUTLINE) drawPixelText(ctx, text, x + dx, y + dy, INK, scale);
-  drawPixelText(ctx, text, x, y, color, scale);
-}
-
-function drawTitle(sc, hud) {
-  // Sky wash + the three parallax depths + the terrain strips, in drawWorld's own blit
-  // order, parked at the spawn camera: the real ground the hero and turnip stand on, the
-  // first prize block peeking in at the right edge. The world lands on the (unlit) scene;
-  // the glyph art stays on the HUD layer, which main.js composites over it.
-  drawWorld(sc, titleWorld(), 0, 0, 0);
-  outlinedText(hud, 'VEGGIE BROS.', (VIEW_W - textW('VEGGIE BROS.', 3)) / 2, 48, RED, 3);
-  centerText(hud, "A STRAWBERRY'S ADVENTURE", 98, INK);
-  if (Math.floor(Date.now() / 500) % 2 === 0) {
-    // white with a 1-px INK drop shadow: the call to action, readable over sky and hill alike
-    const px = (VIEW_W - textW('PRESS ENTER TO START')) / 2;
-    drawPixelText(hud, 'PRESS ENTER TO START', px + 1, 139, INK);
-    drawPixelText(hud, 'PRESS ENTER TO START', px, 138, P.white);
-  }
-  centerText(hud, '< > / A D  MOVE   SHIFT RUN', 168, INK);
-  centerText(hud, 'SPACE / Z  JUMP  P PAUSE  M MUTE', 182, INK);
-  drawHero(hud, 100, 197, 1, false, 'idle', 0);
-  drawTurnip(hud, 140, 196, 0, -1);
-}
-
-function drawOverlay(ctx, g) {
-  switch (g.state) {
-    case 'PAUSED':
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-      centerText(ctx, 'PAUSED', 96, '#ffffff', 2);
-      centerText(ctx, 'P RESUME  R RESTART  M MUTE', 140, '#ffffff');
-      break;
-    case 'LEVEL_CLEAR':
-      // white flash first, clamped, so the overlay text and the HUD stay on top of the fade
-      if (g.clearT > 0.9) {
-        ctx.save();
-        ctx.globalAlpha = Math.min(CLEAR_FLASH_MAX_ALPHA, (g.clearT - 0.9) / 0.5);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-        ctx.restore();
-      }
-      centerText(ctx, 'STAGE CLEAR', 96, INK, 2);
-      centerText(ctx, '+1000', 124, INK);
-      break;
-    case 'WIN':
-      centerText(ctx, 'HARVEST SAVED!', 80, INK, 2);
-      centerText(ctx, 'SCORE ' + g.score, 120, INK);
-      centerText(ctx, 'PRESS ENTER', 150, INK);
-      break;
-    case 'GAME_OVER':
-      centerText(ctx, 'GAME OVER', 80, RED, 2);
-      centerText(ctx, 'SCORE ' + g.score, 120, INK);
-      centerText(ctx, 'PRESS ENTER', 150, INK);
-      break;
-  }
-}
-
 export function render(g) {
-  // No caller-supplied destination: `render` draws the world into `composite.layers().scene` and
-  // the HUD/banner/overlay/TITLE into `composite.layers().hud`, and `main.js` owns the ONLY blits
-  // that reach the visible canvas (§4's `scene -> upscale -> canvas`, `hud -> upscale` on top).
-  // A destination ctx here would be a lie: nothing this function draws can land anywhere else.
+  // No caller-supplied destination: `render` draws everything — the world, the particles, the
+  // lighting and the UI surfaces — into `composite.layers().scene`, and `main.js` owns the ONLY
+  // blits that reach the visible canvas (§4's `scene -> upscale -> canvas`). R-4 retired the
+  // `hud` layer: the UI now draws on the scene after the FX passes, in the same logical grid.
   const L = layers();
-  const hud = L.hud.ctx;
   const sc = L.scene.ctx;
-  // The FIRST op on `hud` comes from THIS file, deliberately (it mirrors `scene`'s clear below):
-  // the harness resolves a composite-allocated surface's ink owner from that first op's stack and
-  // demotes a `composite.js`-primed surface to FX scratch, so a composite-side priming clear would
-  // make every HUD ink assertion (R19's runs, R24's zones) blind. Whole-surface, every frame, so
-  // nothing here can inherit last frame's banner or a stale overlay.
-  hud.clearRect(0, 0, VIEW_W, VIEW_H);
-  // The title world is unlit and unshaken: the scene gets the world pass alone (no lightmap or
-  // bloom over it) and the HUD gets the glyph art, so the title stays a clean composite of two
-  // whole-surface-cleared layers.
+  // The title is unlit and unshaken: the scene gets the world pass alone (no lightmap or bloom
+  // over it) and the title UI (scrim, logo, copy, the hero pair) draws on that same unlit scene
+  // right after the world, so the front page is one whole-surface-cleared layer.
   if (g.state === 'TITLE') {
     sc.setTransform(HD, 0, 0, HD, 0, 0);
     sc.clearRect(0, 0, VIEW_W, VIEW_H);
-    drawTitle(sc, hud);
+    drawWorld(sc, titleWorld(), 0, 0, 0);
+    title(sc, Date.now());
     sc.setTransform(1, 0, 0, 1, 0, 0);
     return;
   }
@@ -284,9 +176,9 @@ export function render(g) {
   const camX = Math.floor(g.cam.x);
 
   // Camera shake enters as arithmetic: fx hands over ONE signed int, and the world is drawn
-  // at (o, -o) by shifting the camera it is measured against. The ONE canvas transform in this
-  // file is the HD scale on the scene (below and in the TITLE branch); the HUD and the overlays
-  // stay at identity (R52).
+  // at (o, -o) by shifting the camera it is measured against. The canvas transforms in this
+  // file are the HD scale on the scene (below, in the TITLE branch, and on the final UI pass);
+  // the FX blits run at identity (R52), and the UI is drawn AFTER them, unshaken.
   const o = shakeOffset();
   const baked = worldFor(g);
   // Everything that can be LIT is drawn into the scene layer, which is a persistent buffer: it is
@@ -324,19 +216,13 @@ export function render(g) {
   // The scene → upscale → canvas chain lives in `main.js` now, at `k`, so `R45`'s draw-stream
   // comparisons read the `scene` recorder and the live context takes exactly one blit per frame.
 
-  // HUD, banner and overlay go on the `hud` layer, never on the lit scene and never shaken: glyph
-  // ink keeps its own logical grid so §4's nearest-neighbour upscale cannot blur it (§4).
-  if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'LEVEL_CLEAR') {
-    drawHud(hud, g);
-  }
-
-  if (g.state === 'PLAYING' && g.bannerT > 0) {
-    const text = 'WORLD ' + level.label + ' \u2014 ' + level.name.toUpperCase();
-    hud.save();
-    hud.globalAlpha = Math.min(1, g.bannerT);
-    drawPixelText(hud, text, (VIEW_W - textW(text)) / 2, 60, INK);
-    hud.restore();
-  }
-
-  drawOverlay(hud, g);
+  // HUD, banner and overlay draw on the scene AFTER the FX passes (R-4): the UI is never
+  // multiplied, bloomed or shaken, and the HD transform gives its glyphs 4x device rasterization
+  // — the retired `hud` layer's one remaining job was sharpness, and scene-resolution text beats
+  // it. `ui` owns every string, panel and icon it lays out.
+  sc.setTransform(HD, 0, 0, HD, 0, 0);
+  if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'LEVEL_CLEAR') hud(sc, g);
+  if (g.state === 'PLAYING' && g.bannerT > 0) banner(sc, g);
+  overlay(sc, g, Date.now());
+  sc.setTransform(1, 0, 0, 1, 0, 0);
 }

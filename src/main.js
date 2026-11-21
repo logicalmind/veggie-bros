@@ -677,25 +677,23 @@ function updateState(dt) {
 let last = performance.now();
 let acc = 0;
 
-// §4's two-pass composite, and the ONLY thing that ever draws on the visible canvas. Three
+// §4's two-pass composite, and the ONLY thing that ever draws on the visible canvas. Two
 // blits, the `k` step integer so pass 2 is at worst 1:1 or a downscale (at SCENE_SCALE 4 the
 // backing is capped to the scene's own area, so k is always 1):
-//   1. `scene` (1024x960 HD, LIT) → `upscale` at sceneW*k × sceneH*k
-//   2. `hud`   (logical 256x240, unlit) → the SAME rect, on top: never multiplied/lighted, never shaken
-//   3. `upscale` → the canvas at the exact backing size `configure` chose (pass 2, the only
+//   1. `scene` (1024x960 HD, LIT, WITH the UI drawn on it — R-4 retired the `hud` layer)
+//      → `upscale` at sceneW*k × sceneH*k
+//   2. `upscale` → the canvas at the exact backing size `configure` chose (pass 2, the only
 //      fractional one — smoothing is ON: it is a 1:1 copy at the usual size and only matters
 //      on a cap-driven downscale)
-// No clearRect of `upscale` or of the canvas: blit 1 covers both 1:1 every frame, and both logical
-// layers are themselves whole-surface cleared by render.js — TITLE included, whose `drawTitle` opens
-// with an opaque sky fill, so the stale `scene` content blit 1 lays down is always covered. Blits 1
-// and 2 landing on `upscale` also keeps the live context's per-frame op stream at ONE drawImage.
+// No clearRect of `upscale` or of the canvas: blit 1 covers it 1:1 every frame, and the scene
+// is itself whole-surface cleared by render.js — TITLE included, whose world pass opens with
+// an opaque sky wash, so the stale `scene` content blit 1 lays down is always covered.
 function composite() {
   const lay = compositeLayout();
   const L = compositeLayers();
   const w = lay.sceneW * lay.k, h = lay.sceneH * lay.k;
   const up = L.upscale.ctx;
   up.drawImage(L.scene.c, 0, 0, w, h);
-  up.drawImage(L.hud.c, 0, 0, w, h);
   ctx.drawImage(L.upscale.c, 0, 0, lay.backing.w, lay.backing.h);
 }
 

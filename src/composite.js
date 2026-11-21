@@ -6,8 +6,6 @@
 //   scene    = LOGICAL * SCENE_SCALE (256x240 -> 1024x960). SCENE_SCALE = 4 makes the
 //              scene EXACTLY MAX_BACKING_PX, so k lands on 1 and the compositor's pass 2
 //              is a 1:1 blit: the HD scene IS the final image.
-//   hud      = LOGICAL resolution (256x240), k-INDEPENDENT (§4): HUD/overlay ink is composited
-//              after the scene has been lit and upscaled, so it keeps its own full-res grid.
 //   lightmap/bloom/bloomHalf = sub-native FX buffers (§7); their upscale is the
 //              compositor's own bilinear step, NOT the k nearest-neighbor step.
 //
@@ -36,8 +34,8 @@ const DPR_MIN = 1, DPR_MAX = 3;
 // `R53` clause 4 measures the pass alpha on the op log: render.js:291 calls applyBloom with no
 // argument, so the constant IS what the `scene` recorder sees, and the clause pins it <= 0.22.
 export const BLOOM_MAX_ALPHA = 0.18;
-const BYTE_BUDGET = 16 * 1024 * 1024; // sanity ceiling over the six layers (worst case 7.81 MiB at SCENE_SCALE 4)
-const LAYER_NAMES = ['scene', 'hud', 'upscale', 'lightmap', 'bloom', 'bloomHalf'];
+const BYTE_BUDGET = 16 * 1024 * 1024; // sanity ceiling over the five layers (worst case 7.58 MiB at SCENE_SCALE 4)
+const LAYER_NAMES = ['scene', 'upscale', 'lightmap', 'bloom', 'bloomHalf'];
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
@@ -81,12 +79,8 @@ function build(cssW, cssH, dpr) {
   const bloomW = Math.floor(lightW * FX_SCALE), bloomH = Math.floor(lightH * FX_SCALE);
   const layers = {
     scene: { w: sceneW, h: sceneH },
-    // §4 (S-09b): the HUD gets its own grid rather than drawing onto `upscale`. Glyph ink is
-    // authored in logical px (R16's 6px pitch) and must land exactly `k`-nearest-neighbour, so the
-    // buffer may not move with k/backing — nor with SCENE_SCALE, which is about the ART grid, not the
-    // text grid. Nearest-neighbour comes from makeLayer's imageSmoothingEnabled = false (pixels.js:31)
-    // exactly like `scene`; nothing here ever turns it back on, unlike the bloom mips below.
-    hud: { w: VIEW_W, h: VIEW_H },
+    // R-4 retired the `hud` layer: the UI draws on `scene` after the FX passes (ui.js), where the
+    // HD transform gives its glyphs 4x device rasterization and its icons land 1:1.
     upscale: { w: sceneW * k, h: sceneH * k },
     lightmap: { w: lightW, h: lightH },
     bloom: { w: bloomW, h: bloomH },

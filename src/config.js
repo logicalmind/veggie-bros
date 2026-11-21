@@ -56,7 +56,6 @@ export const SOLID = "XSBPQU=|";
 // Graphics-upgrade scales (GRAPHICS_PLAN.md §4). The logical world stays 256x240/TILE 16 —
 // these only say how much DETAIL is baked per logical pixel and at what rate the FX buffers
 // run. Nothing in player/enemy/items/level/camera reads them.
-export const ART_SCALE = 2; // sprites and terrain bake at 2 logical px per art px (512x480 art)
 export const SCENE_SCALE = 4; // scene buffer is logical * 4 (256x240 -> 1024x960); baked art
 // canvases use this scale so they land 1:1 under the scene transform (composite.js owns the
 // buffers, config.js owns the grid)
