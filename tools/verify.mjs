@@ -6054,7 +6054,7 @@ const sha256Hex = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 // recorder needs nothing: step() calls rec.reset() itself (:1187).
 //
 // Clause 2 asserts G.state === 'PLAYING' on every sampled frame because
-// src/render.js:199-200 blinks the title on Date.now() / 500: a TITLE frame
+// src/render.js:221 blinks the title on Date.now() / 500: a TITLE frame
 // inside the sample window makes the op log a function of the wall clock.
 // A "flaky" report on this id is therefore a route bug, never noise. Neither
 // run asks for { ink: true } — R49's lesson is that pixel ink costs about 4 s
@@ -6108,7 +6108,7 @@ check('R50', () => {
       const sr = sceneRec(), hr = hudRec();
       zeroOps(sr); zeroOps(hr); zeroOps(rec);
       renderFrames(1);
-      assert(G.state === 'PLAYING', `clause 2: the ${label} route sampled frame ${i} in state '${G.state}' — a TITLE frame blinks on Date.now()/500 (src/render.js:199-200), so a wall clock would be inside this digest`);
+      assert(G.state === 'PLAYING', `clause 2: the ${label} route sampled frame ${i} in state '${G.state}' — a TITLE frame blinks on Date.now()/500 (src/render.js:221), so a wall clock would be inside this digest`);
       const s = opStream(sr), h = opStream(hr), l = opStream(rec);
       out.scene.push(dig12(s)); out.hud.push(dig12(h)); out.live.push(dig12(l));
       out.all.push(dig12(s + '\n' + h + '\n' + l));
@@ -6186,7 +6186,7 @@ check('R50', () => {
 // equality: a red here means the world moved under a graphics slice, and the
 // message says to re-anchor in GRAPHICS_STATE.md rather than let the check
 // shrink. G.state is asserted at every sampled frame for R50's reason —
-// src/render.js:199-200 blinks the title on Date.now()/500. No wall clock is
+// src/render.js:221 blinks the title on Date.now()/500. No wall clock is
 // read and no timing figure is printed.
 check('R51', () => {
   const FRAMES = [60, 120, 600];
@@ -6255,7 +6255,7 @@ check('R51', () => {
   // S-10's measured end state: score 200, lives 1, fruit 0 at frame 600).
   const last = A.snaps[A.snaps.length - 1];
   const notPlaying = A.snaps.filter((s, i) => s.state !== 'PLAYING' || B.snaps[i].state !== 'PLAYING').map((s) => `${s.frame}=${s.state}/${B.snaps[FRAMES.indexOf(s.frame)].state}`);
-  assert(notPlaying.length === 0, `clause 3: a sampled frame was not in PLAYING (${notPlaying.join(', ')}) — a TITLE frame blinks on Date.now()/500 (src/render.js:199-200) and an end-state frame stops the simulation; either way the run is not the frozen route`);
+  assert(notPlaying.length === 0, `clause 3: a sampled frame was not in PLAYING (${notPlaying.join(', ')}) — a TITLE frame blinks on Date.now()/500 (src/render.js:221) and an end-state frame stops the simulation; either way the run is not the frozen route`);
   assert(last.score === 200 && last.lives === 1 && last.fruitCount === 0, `clause 3: frame ${last.frame} read score ${last.score}/lives ${last.lives}/fruit ${last.fruitCount}, not S-10's measured score 200/lives 1/fruit 0 — the route drifted, and a drifted route freezes the wrong run`);
   // clause 4 — the S-10 anchors, exactly.
   const dA = JSON.stringify(A.snaps, null, 1), dB = JSON.stringify(B.snaps, null, 1);

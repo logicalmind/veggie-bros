@@ -1,6 +1,8 @@
 import { ART_SCALE, PALETTE, VIEW_H, VIEW_W } from './config.js';
 import { applyBloom, applyLightmap, buildBloom, drawLightmap, layers, setAmbient } from './composite.js';
 import { draw as drawFx, shakeOffset } from './fx.js';
+import { parseLevel } from './level.js';
+import { LEVELS } from './levels.js';
 import { ambientFor, bakeLevel, parallaxFor, visibleStrips } from './terrain.js';
 import { colorToCss } from './pixels.js';
 import {
@@ -9,7 +11,6 @@ import {
   drawBoss,
   drawFruit,
   drawGate,
-  drawGround,
   drawHero,
   drawPixelText,
   drawShard,
@@ -191,14 +192,37 @@ function drawHud(ctx, g) {
   if (g.muted) drawPixelText(ctx, 'MUTED', VIEW_W - 8 - MUTED_W, 6, INK);
 }
 
+// The title's backdrop is the game's own world: level 1 baked once per process and blitted
+// from the SAME bundle the first game start will use (terrain.js keys the bundle on
+// `label|theme|phase`), so the title's one-time bake cost is the game's own first-frame
+// bake, spent on the menu instead of in it. `G.level` is null in TITLE, so the plan parses
+// LEVELS[0] directly; the front page is always the fields theme, whatever level the player
+// last reached.
+let titleBaked = null;
+function titleWorld() {
+  if (!titleBaked) titleBaked = bakeLevel(parseLevel(LEVELS[0]), 'fields');
+  return titleBaked;
+}
+// 8-way INK outline pass under logo-scale text. Offsets are screen px: drawPixelText
+// already works in final units, so one outline ring at any zoom.
+const OUTLINE = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+function outlinedText(ctx, text, x, y, color, scale) {
+  for (const [dx, dy] of OUTLINE) drawPixelText(ctx, text, x + dx, y + dy, INK, scale);
+  drawPixelText(ctx, text, x, y, color, scale);
+}
+
 function drawTitle(ctx) {
-  ctx.fillStyle = P.sky;
-  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-  for (let sx = 0; sx < VIEW_W; sx += 16) drawGround(ctx, sx, 208, true);
-  drawPixelText(ctx, 'VEGGIE BROS.', 29, 60, RED, 3);
+  // Sky wash + the three parallax depths + the terrain strips, in drawWorld's own blit
+  // order, parked at the spawn camera: the real ground the hero and turnip stand on, the
+  // first prize block peeking in at the right edge.
+  drawWorld(ctx, titleWorld(), 0, 0, 0);
+  outlinedText(ctx, 'VEGGIE BROS.', (VIEW_W - textW('VEGGIE BROS.', 3)) / 2, 60, RED, 3);
   centerText(ctx, 'A STRAWBERRY S ADVENTURE', 110, INK);
   if (Math.floor(Date.now() / 500) % 2 === 0) {
-    centerText(ctx, 'PRESS ENTER TO START', 150, INK);
+    // white with a 1-px INK drop shadow: the call to action, readable over sky and hill alike
+    const px = (VIEW_W - textW('PRESS ENTER TO START')) / 2;
+    drawPixelText(ctx, 'PRESS ENTER TO START', px + 1, 151, INK);
+    drawPixelText(ctx, 'PRESS ENTER TO START', px, 150, P.white);
   }
   centerText(ctx, '< > / A D  MOVE   SHIFT RUN', 180, INK);
   centerText(ctx, 'SPACE / Z  JUMP  P PAUSE  M MUTE', 194, INK);
