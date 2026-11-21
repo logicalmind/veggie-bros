@@ -48,3 +48,37 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
   - Pixel evidence (from the scene master): 18-step gradient across the pipe barrel; air shadow
     under the gold blocks = 27.5% darkening with a smooth 4-row decay; ground-near AO fades
     smoothly. 8-bit characters/items deliberately untouched (R-2/R-3).
+
+- [x] **R-2** — HD characters (approved 2026-11-21)
+  - New `src/chars.js`: the whole character set as procedural vector bakes at `SCENE_SCALE` 4.
+    Hero (strawberry, 9 frames × small/big), turnip (4 frames), crowned-pineapple boss (6 frames
+    incl. 2 hurt-flash). Per character: multi-stop body gradient lit from the top-left (matches
+    both the old `LIGHT` and the R-1 terrain keylight), clipped gloss + rim + bottom AO, baked
+    detail (seed dimples, leaf creases, pineapple lattice with bevel, crown spikes + band + gems),
+    and a live radial **contact shadow** that is gated on `onGround` — it pops with groundedness
+    rather than floating in air. Bakes are lazy plain `OffscreenCanvas`es at 4× logical size,
+    blitted at LOGICAL destination size: 1:1 under the scene transform (zero resampling),
+    bilinear downscale on the logical HUD canvas (transitional, R-4).
+  - Frozen contract kept byte-for-byte: same draw names/args/anchors ({0,−2} / {−1,−1} / {−2,−3}),
+    same 9-frame hero order, same `HERO_BASE` idle/run/jump/fall/land math, same run bob (−1 on
+    odd run frames), same boss `(hurt, frame&2, frame&1)` pose table. Only API change: optional
+    trailing `shadow` arg (default 0) on the three draw wrappers; `render.js` passes
+    `onGround ? ~0.2 : 0` at the 4 world call sites.
+  - `src/sprites.js` cutover (−371 lines): all character matrices, materials, rim arrays, atlas
+    registrations, and the old draw wrappers deleted; a pointer comment marks the section. The
+    squashed-turnip corpse stays `render.js`'s live `fillRect` (smooths under the 4× transform).
+  - One first-build bug caught by the in-page error log before approval: `BOSS_FRAMES` entries
+    passed the options object where `bake` passes `ctx` → `paintBossFrame` threw on `o.tuck`
+    every frame and the scene never presented (transparent canvas, loop kept running because
+    `frame()` catches per frame). Fixed the table to `(ctx) => paintBossFrame(ctx, o)`.
+  - Gates: `hd-verify` all green post-cutover:
+    `{"ok":true,"sceneScale":4,"scene":[1024,960],"stripCanvas":[256,960],"determinism":true,"stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true},"distinctColors":6328}`
+    (strip hash unchanged — terrain untouched; the distinct-colour drop is the character pixels
+    moving to the new art).
+  - Pixel evidence (scene master): hero body profile 41 distinct colours across 48 device px
+    (old art: ~5 tone steps); bake-vs-scene blit check pixel-exact at 4 sample points with only
+    the uniform lightmap delta (R ±5, G −6…−14, B −24…−44); contact shadow ≈14% radial
+    darkening under the feet when grounded, fully off airborne (measured across a real jump
+    arc); all 28 sheet frames inked, left-facing flips verified, HUD lives icon live.
+  - Items/FX/tiles remain 8-bit until R-3; title-screen hero + HUD lives icon are the
+    transitional bilinear downscales (R-4 redesigns the HUD).

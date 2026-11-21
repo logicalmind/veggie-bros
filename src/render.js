@@ -8,14 +8,12 @@ import { colorToCss } from './pixels.js';
 import {
   TEXT_PITCH,
   drawBerry,
-  drawBoss,
   drawFruit,
   drawGate,
-  drawHero,
   drawPixelText,
   drawShard,
-  drawTurnip,
 } from './sprites.js';
+import { drawBoss, drawHero, drawTurnip } from './chars.js';
 
 const P = PALETTE;
 // the HUD/title ink and the title/GameOver red are the palette's own black/red — alias them
@@ -141,9 +139,9 @@ function drawEnemies(ctx, enemies, camX, oy = 0) {
       if (e.defeated) {
         // 3-frame flip spin over the 1.5 s defeat window
         const spin = Math.floor(e.defeatT * 8) % 3;
-        drawBoss(ctx, ex, e.y + oy, spin, spin & 1 ? -facing : facing, false);
+        drawBoss(ctx, ex, e.y + oy, spin, spin & 1 ? -facing : facing, false, e.onGround ? 0.25 : 0);
       } else {
-        drawBoss(ctx, ex, e.y + oy, e.frame || 0, facing, e.hurtT > 0);
+        drawBoss(ctx, ex, e.y + oy, e.frame || 0, facing, e.hurtT > 0, e.onGround ? 0.25 : 0);
       }
     } else {
       const frame = e.frame || 0;
@@ -159,7 +157,7 @@ function drawEnemies(ctx, enemies, camX, oy = 0) {
         ctx.fillStyle = P.turnipTip;
         ctx.fillRect(ex - 1 + (e.w - CORPSE_TIP_W) / 2, top + CORPSE_H - CORPSE_TIP_H, CORPSE_TIP_W, CORPSE_TIP_H);
       } else {
-        drawTurnip(ctx, ex, e.y + oy, frame, facing);
+        drawTurnip(ctx, ex, e.y + oy, frame, facing, e.onGround ? 0.22 : 0);
       }
     }
   }
@@ -171,7 +169,7 @@ function drawPlayer(ctx, player, camX, oy = 0) {
   if (p.invulnT > 0 && Math.floor(p.t * 8) % 2 === 1) return; // blink
   const pose = p.dead ? 'jump' : !p.onGround ? 'jump' : Math.abs(p.vx) > 10 ? 'run' : 'idle';
   const frame = pose === 'run' ? Math.floor(p.t * 10) % 2 : 0;
-  drawHero(ctx, p.x - camX, p.y + oy, p.facing, p.big, pose, frame);
+  drawHero(ctx, p.x - camX, p.y + oy, p.facing, p.big, pose, frame, p.onGround ? 0.24 : 0);
 }
 
 function drawHud(ctx, g) {

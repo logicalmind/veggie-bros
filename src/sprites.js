@@ -58,26 +58,6 @@ function mat(...rows) {
   return rows.map((r) => (r.length === w ? r : r + '.'.repeat(w - r.length)));
 }
 
-// A pose: a hand-authored torso matrix with a hand-authored leg block dropped in at `top`.
-// '.' in the leg block lets the torso through. Legs are art, not derivation — one block per
-// stance, reused across a run cycle instead of retyped per frame.
-function pose(rows, legs, top) {
-  const w = Math.max(...rows.map((r) => r.length), ...legs.map((r) => r.length));
-  const out = rows.map((r) => r + '.'.repeat(w - r.length));
-  for (let i = 0; i < legs.length; i++) {
-    const y = top + i;
-    while (out.length <= y) out.push('.'.repeat(w));
-    const cur = out[y];
-    let s = '';
-    for (let x = 0; x < w; x++) {
-      const c = legs[i][x] === undefined ? '.' : legs[i][x];
-      s += c === '.' ? cur[x] : c;
-    }
-    out[y] = s;
-  }
-  return out;
-}
-
 // Stamp a hand-authored feature block over a field at (bx, by); '.' lets the field through.
 // Faces, keystones, pennants and plinths are authored as small named blocks rather than retyped
 // into a 119-row wall of counted dots — the only way the big matrices stay reviewable as art.
@@ -404,14 +384,6 @@ const BERRY = mat(
   '...11111111...'
 );
 
-// The squashed-turnip corpse, registered for wave 3: the flattened band render.js still
-// fillRects today (CORPSE_H), drawn as art, bottom-anchored where those rectangles sit.
-const TURNIP_SQUASH = mat(
-  '.4444444444..',
-  '344333334432.',
-  '232222222321.',
-  '111111111111.'
-);
 
 const SHARD = mat('4W21', '4321', '3321', '3221');
 
@@ -459,299 +431,9 @@ const PUMPKIN = stamp(grid(16, 16, (x, y) => {
 }), STAR_EMBLEM, 3, 3);
 
 // --------------------------------------------------------------------------- characters
-// The hero is four hand-authored torsos and eight leg blocks; the nine frames are poses of
-// them, which is how a sheet author works and why a run cycle cannot drift. Facing is flipX on
-// the blit, so the art is authored looking right and eyes, seeds and brim mirror with it.
-const HERO_S_TORSO = mat(
-  '.....5......',
-  '.3.4.5.4.3..',
-  '544433332221',
-  'aaaaaaaaaaaa',
-  'bddWWcccWWbb',
-  '.ddWKcccWKb.',
-  '.cicccccicb.',
-  '..ccccccbb..',
-  '..cbibbiba..',
-  '...baaaab...'
-);
-
-const HERO_S_TORSO_BLINK = mat(
-  '.....4......',
-  '.2.4.5.4.2..',
-  '544433332221',
-  'aaaaaaaaaaaa',
-  'bddccccccddb',
-  '.ddKccccKcb.',
-  '.cicccccicb.',
-  '..ccccccbb..',
-  '..cbbiibba..',
-  '...baaaab...'
-);
-
-const HERO_S_TORSO_RUN = mat(
-  '....5.......',
-  '.2.4.5.4.3..',
-  '444433332221',
-  'aaaaaaaaaaaa',
-  'bdWWcccWWbbb',
-  '.dWKcccWKbbb',
-  '.cicccccicb.',
-  '..ccccccbb..',
-  '..cbibbiba..',
-  '...baaaab...'
-);
-
-// Landing squash: shorter through the middle, twice as wide at the hem.
-const HERO_S_TORSO_LAND = mat(
-  '.....5......',
-  '.3.4.4.4.3..',
-  '544433332221',
-  'aaaaaaaaaaaa',
-  'bddWWcccWWbb',
-  'bddWKcccWKbb',
-  'bicccccccibb',
-  'bbccccccccbb',
-  'bbccibbiccbb',
-  'abaaaaaaaaab'
-);
-
-const HERO_S_LEGS = {
-  stand: mat('...mm.mm..', '...nn.nn..', '...nn.nn..', '...ll.ll..'),
-  together: mat('....mmmm....', '....nnnn....', '....nnnn....', '....llll....'),
-  stride: mat('..mm...mm...', '..nn...nn...', '..nn...nn...', '..ll...ll...'),
-  strideBack: mat('...mm...mm..', '...nn...nn..', '..nn...nn...', '..ll...ll...'),
-  pass: mat('....mm.mm...', '....nn.nn...', '....nn.nn...', '....ll.ll...'),
-  splay: mat('', '', '..mm...mm...', '..ll...ll...'),
-  dangle: mat('', '...nn.nn....', '...nn.nn....', '...ll.ll....'),
-  flat: mat('', '', '..mmm..mmm..', '..lll..lll..'),
-};
-
-const HERO_SMALL = [
-  pose(HERO_S_TORSO, HERO_S_LEGS.stand, 10),
-  pose(HERO_S_TORSO_BLINK, HERO_S_LEGS.together, 10),
-  pose(HERO_S_TORSO_RUN, HERO_S_LEGS.stride, 10),
-  pose(HERO_S_TORSO_RUN, HERO_S_LEGS.pass, 10),
-  pose(HERO_S_TORSO_RUN, HERO_S_LEGS.strideBack, 10),
-  pose(HERO_S_TORSO_RUN, HERO_S_LEGS.together, 10),
-  pose(HERO_S_TORSO, HERO_S_LEGS.splay, 10),
-  pose(HERO_S_TORSO, HERO_S_LEGS.dangle, 10),
-  pose(HERO_S_TORSO_LAND, HERO_S_LEGS.flat, 10),
-];
-
-const HERO_B_TORSO = mat(
-  '.....5......',
-  '.3.4.5.4.3..',
-  '544433332221',
-  'aaaaaaaaaaaa',
-  'bddccccccddb',
-  'bdWWccccWWdb',
-  'bdWKccccWKdb',
-  '.ddccccccdb.',
-  '.diccccccib.',
-  '.ddccccccdb.',
-  '..ccccccbb..',
-  '..cbbbbbbc..',
-  '..cbibbiba..',
-  '...baaaab...',
-  '...baaaab...',
-  '...baaaab...',
-  '....bbbb....',
-  '....bccb....',
-  '....bccb....',
-  '....baab....'
-);
-
-const HERO_B_TORSO_BLINK = mat(
-  '.....4......',
-  '.2.4.5.4.2..',
-  '544433332221',
-  'aaaaaaaaaaaa',
-  'bddccccccddb',
-  'bdcccccccbdb',
-  'bdKcccccKbdb',
-  '.ddccccccdb.',
-  '.diccccccib.',
-  '.ddccccccdb.',
-  '..ccccccbb..',
-  '..cbbiibbc..',
-  '..cbbbbbbc..',
-  '...baaaab...',
-  '...baaaab...',
-  '...baaaab...',
-  '....bbbb....',
-  '....bccb....',
-  '....bccb....',
-  '....baab....'
-);
-
-const HERO_B_TORSO_RUN = mat(
-  '....5.......',
-  '.2.4.5.4.3..',
-  '444433332221',
-  'aaaaaaaaaaaa',
-  'bddccccccddb',
-  'bdWWccccWWdb',
-  'bdWKccccWKdb',
-  '.ddccccccdb.',
-  '.diccccccib.',
-  '.ddccccccdb.',
-  '..ccccccbb..',
-  '..cbbbbbbc..',
-  '..cbibbiba..',
-  '...baaaab...',
-  '...baaaab...',
-  '...baaaab...',
-  '....bbbb....',
-  '....bccb....',
-  '....bccb....',
-  '....baab....'
-);
-
-const HERO_B_TORSO_LAND = mat(
-  '.....5......',
-  '.3.4.4.4.3..',
-  '544433332221',
-  'aaaaaaaaaaaa',
-  'bddccccccddb',
-  'bdWWccccWWdb',
-  'bdWKccccWKdb',
-  'bddccccccddb',
-  'bdiccccccibd',
-  'bddccccccddb',
-  'bbccccccccbb',
-  'bbcbbiibbcbb',
-  'bbccbbbbccbb',
-  'bbbbaaaabbbb',
-  'bbbbaaaabbbb',
-  '.bbbaaaabbb.',
-  '..bbbbbbbb..',
-  '..bbbbbbbb..',
-  '..baabbaabb.',
-  '..aaaaaaaa..'
-);
-
-const HERO_B_LEGS = {
-  stand: mat('...mm.mm..', '...nn.nn..', '...nn.nn..', '...nn.nn..', '...nn.nn..', '...nn.nn..', '...nn.nn..', '...ll.ll..'),
-  together: mat('....mmmm....', '....nnnn....', '....nnnn....', '....nnnn....', '....nnnn....', '....nnnn....', '....nnnn....', '....llll....'),
-  stride: mat('..mm...mm...', '..nn...nn...', '..nn...nn...', '..nn...nn...', '..nn...nn...', '...nn...nn..', '...nn...nn..', '...ll...ll..'),
-  strideBack: mat('...mm...mm..', '...nn...nn..', '..nn...nn...', '..nn...nn...', '..nn...nn...', '..nn...nn...', '..nn...nn...', '..ll...ll...'),
-  pass: mat('....mm.mm...', '....nn.nn...', '....nn.nn...', '....nn.nn...', '....nn.nn...', '....nn.nn...', '....nn.nn...', '....ll.ll...'),
-  splay: mat('', '', '', '..mm...mm...', '..nn...nn...', '..nn...nn...', '..nn...nn...', '..ll...ll...'),
-  dangle: mat('', '', '...nn.nn....', '...nn.nn....', '...nn.nn....', '...nn.nn....', '...nn.nn....', '...ll.ll....'),
-  flat: mat('', '', '', '', '...nn.nn....', '..mmm..mmm..', '..nnn..nnn..', '..lll..lll..'),
-};
-
-const HERO_BIG = [
-  pose(HERO_B_TORSO, HERO_B_LEGS.stand, 20),
-  pose(HERO_B_TORSO_BLINK, HERO_B_LEGS.together, 20),
-  pose(HERO_B_TORSO_RUN, HERO_B_LEGS.stride, 20),
-  pose(HERO_B_TORSO_RUN, HERO_B_LEGS.pass, 20),
-  pose(HERO_B_TORSO_RUN, HERO_B_LEGS.strideBack, 20),
-  pose(HERO_B_TORSO_RUN, HERO_B_LEGS.together, 20),
-  pose(HERO_B_TORSO, HERO_B_LEGS.splay, 20),
-  pose(HERO_B_TORSO, HERO_B_LEGS.dangle, 20),
-  pose(HERO_B_TORSO_LAND, HERO_B_LEGS.flat, 20),
-];
-
-// Turnip: 13 columns with col 0 dead — old code drew from (x - 1) but inked from (x).
-const TURNIP_BODY = mat(
-  '...b...cc..b.',
-  '....dccccd...',
-  '....233332...',
-  '..233333332..',
-  '.2344WW334WW2',
-  '.2344WK334WK2',
-  '.22333333322.',
-  '..233333332..',
-  '...2111112...',
-  '.....111.....',
-  '',
-  '',
-  ''
-);
-const TURNIP_LEGS = {
-  spread: mat('..33.....33..', '..22.....22..'),
-  together: mat('.....3333....', '.....2222....'),
-  passing: mat('....33.33....', '....22.22....'),
-  kick: mat('.....33.33...', '.....22.22...'),
-};
-const TURNIP = [
-  pose(TURNIP_BODY, TURNIP_LEGS.spread, 11),
-  pose(TURNIP_BODY, TURNIP_LEGS.together, 11),
-  pose(TURNIP_BODY, TURNIP_LEGS.passing, 11),
-  pose(TURNIP_BODY, TURNIP_LEGS.kick, 11),
-];
-
-// Boss: the silhouette is a row table (the old sprite's box rows, dropped one to make room for
-// the crown bob), the diamond hatch is the body's MATERIAL so it is generated over that
-// silhouette from one ramp, and the crown, eyes and mouth are stamped blocks. Hurt is the same
-// art painted with the pineapple ramp's brightest steps: a flash, not a redraw.
-const BOSS_ROWS = [
-  [4, 5, 6, 25],
-  [6, 8, 4, 27],
-  [9, 25, 2, 29],
-  [26, 28, 4, 27],
-  [29, 29, 7, 24],
-  [30, 30, 10, 21],
-];
-
-function bossBody(o) {
-  const s = o || {};
-  return grid(30, 31, (x, y) => {
-    let box = null;
-    for (const r of BOSS_ROWS) if (y >= r[0] && y <= r[1]) box = r;
-    if (!box) return '.';
-    let l = box[2];
-    let rr = box[3];
-    if (s.tuck && y >= 26) { l += 1; rr -= 1; } // hop: the base pulls up under the body
-    if (x < l || x > rr) return '.';
-    if (s.flash) return (x + y) % 3 === 0 ? '5' : '4';
-    const u = (x - l) / Math.max(1, rr - l);
-    const lit = y <= 5 || (y < 14 && u < 0.28);
-    if ((x + y) % 7 === 0 || ((((x - y) % 7) + 7) % 7) === 0) return lit ? '3' : '1';
-    if (y >= 30 || u > 0.93) return '1';
-    if (lit) return '4';
-    if (u > 0.78 || y > 27) return '2';
-    return '3';
-  });
-}
-
-// The old crown's exact spike columns, kept. Low is the resting frame; high is the 1 px bob odd
-// frames get, which is what the spare matrix row 0 exists for.
-function bossCrown(high) {
-  const tips = [2, 7, 13, 19, 24];
-  const wide = [1, 6, 12, 17, 23];
-  const isWide = (x) => wide.some((c) => x === c || x === c + 1);
-  return grid(28, 4, (x, y) => {
-    const base = high ? 0 : 1;
-    if (y === base && tips.indexOf(x) >= 0) return 'e';
-    if (y === base + 1 && isWide(x)) return 'd';
-    if (y === 3) return '4';
-    if (y === 2) return high ? 'b' : (isWide(x) ? 'd' : '.');
-    return '.';
-  });
-}
-
-function bossFrame(high, body) {
-  let rows = mat(...bossBody(body));
-  rows = stamp(rows, bossCrown(high), 2, 0);
-  rows = stamp(rows, mat('WW', 'WK'), 10, 13);
-  rows = stamp(rows, mat('WW', 'WK'), 20, 13);
-  rows = stamp(rows, mat('KKKK', 'KKKK'), 14, 19);
-  return rows;
-}
-
-// Two frames per pose rather than one, because the old sprite's crown bob depended on the
-// `frame` argument even while hurt and while spinning: (x, y, 0, …) inked one row lower than
-// (x, y, 1, …) in every one of those states, and that 1 px is part of the frozen footprint.
-const BOSS = [
-  bossFrame(false, {}), // idle, crown resting
-  bossFrame(true, {}), // idle, crown bobbed up
-  bossFrame(false, { tuck: true }), // hop, base tucked under
-  bossFrame(true, { tuck: true }),
-  bossFrame(false, { flash: true }), // hurt flash
-  bossFrame(true, { flash: true }),
-];
+// The hero, turnip and boss are HD procedural bakes in src/chars.js — same anchors, same
+// frozen frame tables (HERO_BASE, crown-bob math), rendered as vector art under the 4x
+// scene transform instead of matrix blits.
 
 // No checkpoint sprite, deliberately: a banked checkpoint is invisible in play. The `K` tiles in
 // the maps are authoring markers and a trigger band in config.js only — see render.js's note at
@@ -818,10 +500,6 @@ function opts(extra) {
 
 const PADDED = (deep) => ({ outline: { color: deep, width: 1 } });
 
-const M_HERO = mapOf(ramp(RM.heroLeaf, '12345'), ramp(RM.heroBody, 'abcde'), ramp(RM.heroSeed, 'fghij'),
-  { l: RM.heroBody.deep, m: RM.heroBody.shade, n: RM.heroBody.base });
-const M_TURNIP = mapOf(ramp(RM.turnipBody, '12345'), ramp(RM.heroLeaf, 'abcde'));
-const M_BOSS = mapOf(ramp(RM.pineapple, '12345'), ramp(RM.heroLeaf, 'abcde'));
 const M_GROUND = mapOf(ramp(RM.dirt, '12345'), ramp(RM.grass, 'abcde'), ramp(RM.stone, 'fghij'));
 const M_STONE = mapOf(ramp(RM.stone, '12345'));
 const M_BRICK = mapOf(ramp(RM.brick, '12345'));
@@ -845,32 +523,9 @@ const M_CHIP = mapOf(ramp(RM.brick, '12345'));
 
 const DITHER = { dither: true };
 
-// Keys whose box the harness measures wear their rim INSIDE the matrix, because the pad outline
-// would ink a row the frozen geometry does not know about. `rim` recolours cells that are
-// already on the silhouette, so the inked box it reports is the box that gets painted. The lit
-// tone is the same material one ramp step up (`m` is `heroBody.shade` in `M_HERO`), so what is
-// recovered is a ramp step, not an invented colour. Measured by atlas readback, distinct colours
-// per key before -> after: hero.small 29->34, hero.big 25->28, lives 19->21, boss 16->24,
-// shard 11->14.
-// `turnip` stays SINGLE-TONE, deliberately: a distinct lit letter pulls its key-lit silhouette
-// cells into bakeMatrix's directional pass, which at shade.strength 1 replaces the cell colour
-// with a ramp step outright (src/pixels.js:302-326), collapsing 6 body tones into one `lit` —
-// 22 colours -> 19, tone bands 17 -> 15. `deep` is the tone that pass leaves alone, so a
-// one-tone rim keeps the turnip its ramp. Both `2` and `3` as the lit tone measured identically,
-// so this is the pass, not the letter.
-const HERO_SMALL_RIM = HERO_SMALL.map((f) => rim(f, 'l', 'm'));
-const HERO_BIG_RIM = HERO_BIG.map((f) => rim(f, 'l', 'm'));
-const TURNIP_RIM = TURNIP.map((f) => rim(f, '1'));
-const TURNIP_SQUASH_RIM = rim(TURNIP_SQUASH, '1');
-const BOSS_RIM = BOSS.map((f) => rim(f, '1', '2'));
+// The shard wears its rim INSIDE the matrix so the measured ink box is exactly the silhouette.
 const SHARD_RIM = rim(SHARD, '1', '2');
 
-register({ key: 'hero.small', frames: HERO_SMALL_RIM, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
-register({ key: 'hero.big', frames: HERO_BIG_RIM, map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
-register({ key: 'lives', frames: [HERO_SMALL_RIM[0]], map: M_HERO, anchor: { x: 0, y: -2 }, opts: opts() });
-register({ key: 'turnip', frames: TURNIP_RIM, map: M_TURNIP, anchor: { x: -1, y: -1 }, opts: opts() });
-register({ key: 'turnip.squash', frames: [TURNIP_SQUASH_RIM], map: M_TURNIP, anchor: { x: -1, y: 0 }, opts: opts() });
-register({ key: 'boss', frames: BOSS_RIM, map: M_BOSS, anchor: { x: -2, y: -3 }, opts: opts() });
 register({ key: 'ground.top', frames: [GROUND_TOP], map: M_GROUND, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
 register({ key: 'ground.body', frames: [GROUND_BODY], map: M_GROUND, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
 register({ key: 'stone', frames: [STONE], map: M_STONE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
@@ -923,32 +578,6 @@ function facingLeft(facing) {
 
 function ensure() {
   if (!ready()) bakeAll(ART_SCALE);
-}
-
-// idle x2, run x4, jump, fall, land: the pose picks the frame and the frame index picks inside
-// it. Old code bobbed the whole sprite 1 px up on odd run frames, and the atlas anchor is
-// per-entry, so that bob stays where it always was — on the draw position.
-const HERO_BASE = { idle: 0, run: 2, jump: 6, fall: 7, land: 8 };
-
-export function drawHero(ctx, x, y, facing, big, pose, frame) {
-  ensure();
-  const base = HERO_BASE[pose] === undefined ? 0 : HERO_BASE[pose];
-  const f = pose === 'run' ? base + (frame & 3) : pose === 'idle' ? base + (frame & 1) : base;
-  const bob = pose === 'run' && (frame & 1) ? -1 : 0;
-  blit(ctx, big ? 'hero.big' : 'hero.small', f, x, y + bob, facingLeft(facing));
-}
-
-export function drawTurnip(ctx, x, y, frame, facing) {
-  ensure();
-  blit(ctx, 'turnip', frame & 3, x, y, facingLeft(facing));
-}
-
-export function drawBoss(ctx, x, y, frame, facing, hurt) {
-  ensure();
-  // The pose picks the pair; the low bit of `frame` keeps the old crown bob exactly, so the
-  // inked box of any (frame, hurt) call is the box the old sprite put on the grid.
-  const f = (hurt ? 4 : (frame & 2) === 2 ? 2 : 0) + (frame & 1);
-  blit(ctx, 'boss', f, x, y, facingLeft(facing));
 }
 
 export function drawGround(ctx, x, y, top) {
