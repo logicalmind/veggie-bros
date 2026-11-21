@@ -237,48 +237,73 @@ const PLATFORM = grid(16, 16, (x, y) => {
   return step(x, y, 12, 11, FIVE);
 });
 
-const PUMPKIN_USED = grid(16, 16, (x, y) => {
-  if (y === 0 || x === 0) return '3';
-  if (y === 15 || x === 15) return '1';
-  if (y === 1 && x === 1) return '4';
-  if ((x === 5 && y > 2 && y < 9) || (x === 10 && y > 4 && y < 12)) return '1'; // split ribs
-  if ((x === 6 && y === 9) || (x === 11 && y === 12)) return '2';
-  if ((x === 4 && y === 4) || (x === 12 && y === 6)) return '2'; // hollowed faces
-  if (blot(x, y, 17) > 0.93) return '4';
-  return step(x, y, 16, 16, FIVE);
-});
+// Spent prize block: the same silhouette as `pumpkin`, dimmed to the used ramp with the
+// Sunfruit knocked down to a dark recess — the same 9x9 silhouette, all deep — so a taken
+// block reads as the same block gone empty. One ramp step deeper than the filled block's
+// first cut: the spent face must sit clearly below the live gold, not hover beside it.
+const STAR_RECESS = mat(
+  '...1.1...',
+  '...111...',
+  '..11111..',
+  '.1111111.',
+  '111111111',
+  '.1111111.',
+  '.11...11.',
+  '..11.11..',
+  '..1...1..'
+);
+const PUMPKIN_USED = stamp(grid(16, 16, (x, y) => {
+  if (y === 0 || y === 15 || x === 0 || x === 15) return '1'; // deep rim
+  if (y === 1) return '3';
+  if (x === 2 && (y === 2 || y === 13)) return '1'; // corner rivets
+  if (x === 13 && (y === 2 || y === 13)) return '1';
+  if (y >= 11) return '1';
+  return '2';
+}), STAR_RECESS, 3, 3);
 
-// A pipe is one extruded barrel: a pale flesh ridge down the middle of the run, a deep seam
-// either side of it, the near edge lit. The body is authored as the RIGHT-hand half of a run
-// and mirrored with flipX for the left half, which is what puts the highlight on the inner
-// seam both halves need. `pipe.cap` is authored as the LEFT half for the same reason.
-const PIPE_BODY = grid(14, 16, (x, y) => {
-  if (x === 1) return 'a'; // flesh ridge
-  if (x === 0) return '4';
-  if (x === 2) return '5';
-  if (x === 3) return '1'; // seam
-  if (x === 11) return '2';
-  if (x === 13) return '2';
-  if (y === 0) return x === 1 || x === 2 ? '5' : '4';
-  if (y === 15) return '1';
-  if (blot(x, y, 18) > 0.95) return '4';
-  return step(x, y, 14, 16, FIVE);
-});
+// A pipe is one extruded barrel lit from the left. Shipped runs are exactly two tiles wide
+// (checked against levels.js), so the barrel is authored as TWO frames instead of a mirrored
+// half: frame 0 is the left column — a bright band on the outer edge falling toward the seam
+// — and frame 1 the right column — mid at the seam falling to a dark outer edge. A mirrored
+// single half cannot shade a cylinder (bright-left, dark-right), which is why the old
+// one-cell art read as two identical bars with a gap between them. `terrain.matFor` picks the
+// frame by run position; the keys stay 'pipe.body'/'pipe.cap' so nothing else moves.
+const PIPE_BODY = [
+  grid(16, 16, (x) => {
+    if (x === 0) return '2';
+    if (x < 5) return '5'; // key band on the outer left edge
+    if (x < 15) return '4';
+    return '3';
+  }),
+  grid(16, 16, (x) => {
+    if (x < 4) return '3'; // mid at the seam
+    if (x < 10) return '2';
+    return '1';
+  }),
+];
 
-const PIPE_CAP = grid(16, 16, (x, y) => {
-  if (y === 0) return x === 0 || x === 15 ? '5' : '4';
-  if (y === 1) return x < 2 || x > 13 ? '3' : '1'; // the lip's underside
-  if (y === 2) return x === 0 || x === 15 ? '3' : 'a';
-  if (y === 3) return '4';
-  if (y === 4) return '2';
-  if (x < 2) return y > 4 ? '4' : '3'; // body inset 2 px on the outer side
-  if (x === 4) return '1';
-  if (x === 12) return '2';
-  if (x === 15) return '2';
-  if (y === 15) return '1';
-  if (blot(x, y, 19) > 0.95) return '4';
-  return step(x, y, 14, 16, FIVE);
-});
+// The cap is the same barrel with a lit top face (and a short specular glint), a rim band and
+// a 1-px lip shadow, then the body continues to the tile's bottom so no gap band opens under
+// the rim. Stacked body tiles get their 1-px joint line from shadeTile.
+const PIPE_CAP = [
+  grid(16, 16, (x, y) => {
+    if (y === 0) return x === 0 ? '2' : x > 1 && x < 5 ? 'W' : '5'; // top face, glint
+    if (y === 1) return x === 0 ? '2' : x < 5 ? '5' : x < 15 ? '4' : '3'; // rim band
+    if (y === 2) return '1'; // lip shadow
+    if (x === 0) return '2';
+    if (x < 5) return '5';
+    if (x < 15) return '4';
+    return '3';
+  }),
+  grid(16, 16, (x, y) => {
+    if (y === 0) return x === 15 ? '4' : '5';
+    if (y === 1) return x < 4 ? '3' : x < 10 ? '2' : '1';
+    if (y === 2) return '1';
+    if (x < 4) return '3';
+    if (x < 10) return '2';
+    return '1';
+  }),
+];
 
 // Hills are one baked silhouette each, scaled to the radius render.js asks for, so their tone
 // field is deliberately smooth: fine grain would alias under that scale (§5.5). The near slope
@@ -405,27 +430,33 @@ const FX_POOF = [
 ];
 const FX_CHIP = mat('4W2', '432', '321');
 
-// Pumpkin block: a ribbed melon with a cut stem and two glow clusters. The emissive cells are
-// the block's own light source in the bloom pass (§7), so they are art and light at once. The
-// dark rim is authored in (a tile cannot wear a pad outline — it would stripe the level).
-const PUMPKIN = mat(
-  '.......cc.......',
-  '......bddb......',
-  '4455155515554432',
-  '1445144414444432',
-  '1455155415544432',
-  '1EE5155415544432',
-  '1EE4144414444432',
-  '1444144414444432',
-  '1444144414EE4532',
-  '1444134413EE3432',
-  '1444133313333321',
-  '1344133313333321',
-  '1333133313332321',
-  '1333133213322321',
-  '1332122212222221',
-  '1111111111111111'
+// Prize block: a gold question-block (crown ramp) with a deep rim, corner rivets and a 9x9
+// Sunfruit emblem — the exact silhouette of the collected fruit (FRUIT_STAR above), all
+// emissive, so the block reads as "contains that star" rather than a decoration. The crown
+// ramp sits one step deeper than the first cut (body '3', top '4'): the bright gold read as
+// too hot at play scale and buried the white star; the deeper tone also lifts the contrast
+// between star and body. The emblem is the block's light source in the bloom pass (§7) and
+// the anchor of the R53 glow disc.
+const STAR_EMBLEM = mat(
+  '...E.E...',
+  '...EEE...',
+  '..EEEEE..',
+  '.EEEEEEE.',
+  'EEEEEEEEE',
+  '.EEEEEEE.',
+  '.EE...EE.',
+  '..EE.EE..',
+  '..E...E..'
 );
+const PUMPKIN = stamp(grid(16, 16, (x, y) => {
+  if (y === 0 || y === 15 || x === 0 || x === 15) return '1'; // deep rim
+  if (y === 1) return '4';
+  if (x === 1 && y < 4) return '4'; // key-lit left edge
+  if (x === 2 && (y === 2 || y === 13)) return '1'; // corner rivets
+  if (x === 13 && (y === 2 || y === 13)) return '1';
+  if (y >= 11) return '2';
+  return '3';
+}), STAR_EMBLEM, 3, 3);
 
 // --------------------------------------------------------------------------- characters
 // The hero is four hand-authored torsos and eight leg blocks; the nine frames are poses of
@@ -796,9 +827,8 @@ const M_STONE = mapOf(ramp(RM.stone, '12345'));
 const M_BRICK = mapOf(ramp(RM.brick, '12345'));
 const M_PLATFORM = mapOf(ramp(RM.platform, '12345'), ramp(RM.bush, 'abcde'));
 const M_USED = mapOf(ramp(RM.used, '12345'));
-const M_PUMPKIN = mapOf(ramp(RM.pumpkin, '12345'), ramp(RM.heroLeaf, 'abcde'), ramp(RM.crown, 'fghij'),
-  { E: RM.crown.hi });
-const M_PIPE = mapOf(ramp(RM.pipe, '12345'), { a: RM.grass.hi });
+const M_PUMPKIN = mapOf(ramp(RM.crown, '12345'), { E: RM.white.hi });
+const M_PIPE = mapOf(ramp(RM.pipe, '12345'));
 const M_GATE = mapOf(ramp(RM.pipe, '12345'), ramp(RM.stone, 'abcde'), ramp(RM.red, 'fghij'),
   { E: RM.crown.hi });
 const M_FRUIT = mapOf(ramp(RM.crown, '12345'), { E: P.crown });
@@ -848,8 +878,8 @@ register({ key: 'brick', frames: [BRICK], map: M_BRICK, anchor: { x: 0, y: 0 }, 
 register({ key: 'pumpkin', frames: [PUMPKIN], map: M_PUMPKIN, anchor: { x: 0, y: 0 }, opts: opts({ emissive: { chars: 'E', color: P.pumpkinLit } }) });
 register({ key: 'pumpkin.used', frames: [PUMPKIN_USED], map: M_USED, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
 register({ key: 'platform', frames: [PLATFORM], map: M_PLATFORM, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
-register({ key: 'pipe.cap', frames: [PIPE_CAP], map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
-register({ key: 'pipe.body', frames: [PIPE_BODY], map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'pipe.cap', frames: PIPE_CAP, map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
+register({ key: 'pipe.body', frames: PIPE_BODY, map: M_PIPE, anchor: { x: 0, y: 0 }, opts: opts(DITHER) });
 register({ key: 'gate', frames: [GATE], map: M_GATE, anchor: { x: 0, y: -103 }, opts: opts({ dither: true, emissive: { chars: 'E', color: P.pumpkinLit } }) });
 register({ key: 'fruit', frames: [FRUIT_STAR, FRUIT_SPIN, FRUIT_EDGE, FRUIT_SPIN], map: M_FRUIT, anchor: { x: 0, y: 0 }, opts: opts({ emissive: { chars: 'E', color: P.crown } }) });
 register({ key: 'berry', frames: [BERRY], map: M_BERRY, anchor: { x: 0, y: 0 }, opts: opts({ emissive: { chars: 'E', color: RM.berryBody.hi } }) });

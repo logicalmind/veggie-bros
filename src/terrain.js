@@ -357,19 +357,25 @@ function bakeStrip(baked, index) {
         continue;
       }
       const m = matFor(th, level, cols, tx, ty, ch);
-      blit(ctx, m.key, 0, lx, ty * TILE);
+      blit(ctx, m.key, m.frame || 0, lx, ty * TILE);
       shadeTile(ctx, baked, th, m, tx, ty, lx, soft);
     }
   }
   return { index, key: baked.stripKeys[index], canvas: c, ctx };
 }
 
-// The atlas key for one solid tile: 'X' with air above is the grass-capped surface, a
-// pipe's top tile is its cap. Both read the level, never the canvas.
+// The atlas key for one solid tile: 'X' with air above is the grass-capped surface. A pipe
+// run is two tiles wide (no wider in shipped levels): the left column blits frame 0, the
+// right frame 1, so the run shades as one barrel lit from the left; the run's top tile is
+// its cap. All of it reads the level, never the canvas.
 function matFor(th, level, cols, tx, ty, ch) {
   const base = th.mat[ch] || th.mat.X;
   if (ch === 'X' && !solidArt(level, cols, tx, ty - 1)) return { key: SURFACE_KEY, deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
-  if (ch === '|' && artTile(level, cols, tx, ty - 1) !== '|') return { key: 'pipe.cap', deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
+  if (ch === '|') {
+    const frame = artTile(level, cols, tx - 1, ty) === '|' ? 1 : 0;
+    const key = artTile(level, cols, tx, ty - 1) !== '|' ? 'pipe.cap' : 'pipe.body';
+    return { key, frame, deep: base.deep, shade: base.shade, lit: base.lit, hi: base.hi };
+  }
   return base;
 }
 

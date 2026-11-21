@@ -5402,16 +5402,19 @@ check('R45', () => {
   // would depend on suite order. The DEST half is not decoration — two same-size cells can trade places
   // and leave the source multiset intact, and the only thing that says which of them belongs where is
   // where it landed.
-  // Measured 2026-11-19 over the atlas as it ships. Re-measure ONLY when art is intentionally added,
-  // removed or moved, and say so in `GRAPHICS_STATE.md`; a silent re-pin here re-opens the hole §8:186
-  // says this check has had since the renderer went to the atlas.
+  // Measured 2026-11-19 over the atlas as it ships; re-pinned 2026-11-20 for S-25 (the pipe
+  // body/cap cells went from 14-wide one-frame halves to two 16-wide frames and the packer
+  // slid the 64x238 and 18x18 cells 70 px right: 1303->1373 and 1433->1503). Re-measure ONLY
+  // when art is intentionally added, removed or moved, and say so in `GRAPHICS_STATE.md`; a
+  // silent re-pin here re-opens the hole §8:186 says this check has had since the renderer
+  // went to the atlas.
   // Format: `count x sx,sy,sw,sh->dx,dy`, sorted. Nine of the fifteen are the whole-canvas
   // parallax/ambient/lightmap blits: they come from 5-argument `drawImage` calls, and the RAW
   // `rec.blits` entry files the dest rect under `sx..sh` and leaves `dx..dh` `undefined` (the 3-arg
   // form leaves six of nine keys `undefined`) — the dest in that entry is therefore not even in the
   // field its name suggests. `1,1,24,28` / `151,1,24,28` are the two same-size 24x28 cells on atlas
   // row 1 that the world and the HUD each draw.
-  const CELL_REGISTRY = '1x0,0,128,120->0,0|1x0,0,128,480->-56,0|1x0,0,128,480->136,0|1x0,0,128,480->200,0|1x0,0,128,480->72,0|1x0,0,128,480->8,0|1x0,0,512,480->0,0|1x0,0,608,480->-9,0|1x0,0,64,60->0,0|1x0,0,704,480->-92,0|1x0,0,768,480->-62,0|1x1,1,24,28->223,4|1x1303,1,64,238->1880,89|1x1433,1,18,18->8,18|1x151,1,24,28->120,194';
+  const CELL_REGISTRY = '1x0,0,128,120->0,0|1x0,0,128,480->-56,0|1x0,0,128,480->136,0|1x0,0,128,480->200,0|1x0,0,128,480->72,0|1x0,0,128,480->8,0|1x0,0,512,480->0,0|1x0,0,608,480->-9,0|1x0,0,64,60->0,0|1x0,0,704,480->-92,0|1x0,0,768,480->-62,0|1x1,1,24,28->223,4|1x1373,1,64,238->1880,89|1x1503,1,18,18->8,18|1x151,1,24,28->120,194';
   const regKey = (e) => `${e.sx},${e.sy},${e.sw},${e.sh}->${e.dx},${e.dy}`;
   const regOf = (ops) => { const m = new Map(); for (const e of ops) { const k = regKey(e); m.set(k, (m.get(k) || 0) + 1); } return m; };
   const regText = (m) => [...m.entries()].sort((p, q) => (p[0] < q[0] ? -1 : 1)).map((e) => `${e[1]}x${e[0]}`).join('|');
