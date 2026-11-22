@@ -64,6 +64,13 @@ export const FX_SCALE = 0.5; // lightmap/fog/bloom run at 128x120: lighting is l
 // The one FX threshold main.js needs but no gameplay module owns: below this landing power the
 // touchdown is a tile seam, not a drop, so a flat walking pass must not spawn a dust puff.
 export const LAND_MIN_POWER = 0.15; // main.js compares |vy|/MAX_FALL against it
+// Gate-celebration cutscene timeline (seconds, GATE_DANCE): the hero walks to the arch,
+// the doorway glow floods the screen, the grown dancer appears on the far side over the
+// growth beat, then dances until a fresh key press. DANCE_TEXT_T is the growth end = the
+// "press any key" prompt appears = the exit arms (main.js and ui.js share these).
+export const DANCE_WALK_T = 1.45;
+export const DANCE_GLOW_END = 1.75;
+export const DANCE_TEXT_T = 2.15;
 // Global multiplier on every camera-shake increment, applied at the fx.shake() entry (the
 // landing puff is the only emitter). 1.0 is the 2026-11-19 R54 tuning; halved to 0.5 on
 // 2026-11-21 because landings shook too much; quartered to 0.25 the same day because even

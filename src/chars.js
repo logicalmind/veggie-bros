@@ -648,3 +648,283 @@ export function drawBoss(ctx, x, y, frame, facing, hurt, shadow = 0) {
   if (shadow > 0) drawShadow(ctx, x, y, SHADOWS.boss, shadow);
   hdBlit(ctx, HD.boss[f], 30, 31, x, y, -2, -3, facingLeft(facing));
 }
+
+// ------------------------------------------------------------------ the dancer (grown hero)
+// The gate celebration's character: the hero grown into a human-like strawberry person —
+// head and face on a neck, berry torso, arms, butt, legs and feet — painted live (no bake:
+// it exists only inside the few-second cutscene, so per-frame painting costs nothing the
+// world pass already pays). Feet at (x, y); the cutscene owns the contact shadow scale.
+// Rig, upright: hips at -14, thigh 6.5 + shin 6.0, torso to -28.4, head r 4.8 at -35.2,
+// cap to ~-44; DANCER_SCALE brings the ~30 px rig to ~40 px, about 3x the small hero.
+const DANCER_SCALE = 1.3;
+const TAU = Math.PI * 2;
+
+// One pose, character space (a1 measured from straight DOWN, + toward the facing side;
+// the renderer mirrors arm/leg 1's angles for the far side). t = seconds since the dance
+// started; the three dances: 0 floss (full 360 arm sweeps), 1 twerk (back view, thrust),
+// 2 dougie (bounce + counter-sway + elbow pumps).
+function dancerPose(dance, t) {
+  const po = {
+    front: true,
+    hipX: 0, hipY: -14, lean: 0,
+    headX: 0, headY: 0, headTilt: 0,
+    arms: [{ a1: 0.30, bend: -0.35 }, { a1: 0.30, bend: -0.35 }],
+    legs: [{ a1: -0.14, a2: -0.05 }, { a1: 0.16, a2: 0.06 }],
+    buttPop: 0,
+  };
+  if (dance === 0) {
+    // Floss: 1.2 s per full arm round, a 2 Hz body bob, arms counter-rotating.
+    const ph = TAU * t / 1.2;
+    po.hipY = -14 - 0.9 * ((1 + Math.sin(TAU * t / 0.6)) / 2);
+    po.lean = 0.10 * Math.sin(TAU * t / 0.6 + Math.PI / 2);
+    po.headTilt = 0.15 * Math.sin(ph + Math.PI / 2);
+    po.arms = [{ a1: ph, bend: 0.9 }, { a1: ph + Math.PI, bend: 0.9 }];
+    po.legs = [
+      { a1: -0.16 + 0.08 * Math.sin(ph), a2: -0.06 },
+      { a1: 0.20 + 0.08 * Math.sin(ph + Math.PI), a2: 0.08 },
+    ];
+  } else if (dance === 1) {
+    // Twerk: back view, 0.5 s thrust cycle. A mirrored squat — each knee out to its own
+    // screen side (a real back-view crouch), ankles back under the hips on the ground line.
+    // The hip rise is capped at 1.2 px so the planted feet never leave that line; the butt
+    // scale + cleft sell the thrust.
+    const ph = TAU * t / 0.5;
+    const thrust = Math.sin(ph);
+    po.front = false;
+    po.hipY = -11.5 + 1.2 * thrust;
+    po.headY = 1.2 * thrust;
+    // Hands ON the buns: the arm is lengthened to 7.5+7.5 so the hand (near-shoulder
+    // target (4.4, 2.0) torso space, d=14.5 < 15) just reaches the bun tops in the deep
+    // squat — the single most legible twerk cue. IK: axis to target -0.014, elbow out 0.258.
+    po.arms = [{ a1: -0.27, bend: 0.52, u: 7.5, f: 7.5 }, { a1: -0.27, bend: 0.52, u: 7.5, f: 7.5 }];
+    po.legs = [{ a1: -0.50, a2: 1.23 }, { a1: 0.52, a2: -1.26 }];
+    po.buttPop = Math.max(0, thrust);
+  } else {
+    // Dougie: 1.0 s bounce/step, knees flexing into the bottom, hips and head counter-sway,
+    // elbows pumping alternately across the chest.
+    const ph = TAU * t;
+    const bounce = (1 - Math.cos(ph)) / 2;
+    po.hipY = -14 + 1.8 * bounce;
+    po.hipX = 1.3 * Math.sin(ph);
+    po.lean = -0.14 * Math.sin(ph);
+    po.headTilt = -0.18 * Math.sin(ph);
+    po.arms = [
+      { a1: 0.55 + 0.25 * Math.sin(ph + Math.PI), bend: Math.PI - 0.5 + 0.45 * Math.sin(ph + Math.PI) },
+      { a1: 0.55 + 0.25 * Math.sin(ph), bend: Math.PI - 0.5 + 0.45 * Math.sin(ph) },
+    ];
+    po.legs = [
+      { a1: -0.10 - 0.10 * Math.sin(ph), a2: -0.35 * bounce },
+      { a1: 0.14 + 0.10 * Math.sin(ph), a2: -0.35 * bounce },
+    ];
+  }
+  return po;
+}
+
+function dancerLeg(ctx, po, side) {
+  // side 0 = far (left), 1 = near (right). Body space: the hips do not lean, the body does.
+  const HB = RM.heroBody;
+  const near = side === 1;
+  const L = po.legs[side];
+  const hx = po.hipX + (near ? 2.4 : -2.4);
+  const hy = po.hipY;
+  const a2 = L.a1 + L.a2;
+  const kx = hx + Math.sin(L.a1) * 6.5;
+  const ky = hy + Math.cos(L.a1) * 6.5;
+  const ax = kx + Math.sin(a2) * 6.0;
+  const ay = ky + Math.cos(a2) * 6.0;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = near ? HB.shade : HB.deep;
+  ctx.lineWidth = 3.4;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(kx, ky);
+  ctx.stroke();
+  ctx.lineWidth = 3.0;
+  ctx.beginPath();
+  ctx.moveTo(kx, ky);
+  ctx.lineTo(ax, ay);
+  ctx.stroke();
+  foot(ctx, ax + 1.6, ay + 1.0, 5.2, 2.6, near ? 0.10 : -0.10,
+    near ? HB.shade : HB.deep, HB.base, HB.deep);
+}
+
+function dancerArm(ctx, po, side) {
+  // Torso space (the caller has translated to the hips and rotated the lean). The far side
+  // mirrors BOTH angles so a pose written once reads symmetric on either shoulder.
+  const HB = RM.heroBody;
+  const near = side === 1;
+  const A = po.arms[side];
+  const a1 = near ? A.a1 : -A.a1;
+  const bend = near ? A.bend : -A.bend;
+  const u = A.u || 6.5;   // upper-arm length (poses may lengthen for reach)
+  const f = A.f || 6.0;   // forearm length
+  const sx = near ? 4.6 : -4.6;
+  const sy = -12.5;
+  const ex = sx + Math.sin(a1) * u;
+  const ey = sy + Math.cos(a1) * u;
+  const fx = ex + Math.sin(a1 + bend) * f;
+  const fy = ey + Math.cos(a1 + bend) * f;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = near ? HB.shade : HB.deep;
+  ctx.lineWidth = 3.4;
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+  ctx.lineWidth = 3.0;
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(fx, fy);
+  ctx.stroke();
+  ell(ctx, fx, fy, 2.1, 2.1);
+  // shade, not base: in the twerk the near hand rests on the HB.base buns and must read
+  ctx.fillStyle = near ? HB.shade : HB.deep;
+  ctx.fill();
+}
+
+function dancerTorsoPath(ctx) {
+  // Torso space: the hips are the origin, +y down; the berry body runs from the hip line
+  // (+2.4) to the shoulders (-14.4).
+  ctx.beginPath();
+  ctx.moveTo(-5.6, 1.0);
+  ctx.bezierCurveTo(-6.8, -3.5, -6.2, -10.5, -2.6, -13.4);
+  ctx.bezierCurveTo(-1.1, -14.4, 1.1, -14.4, 2.6, -13.4);
+  ctx.bezierCurveTo(6.2, -10.5, 6.8, -3.5, 5.6, 1.0);
+  ctx.bezierCurveTo(3.6, 2.4, -3.6, 2.4, -5.6, 1.0);
+  ctx.closePath();
+}
+
+const DANCER_SEEDS = [[-3.6, -8.0], [3.4, -10.0], [-1.5, -5.5], [2.6, -4.5], [0.0, -11.0]];
+
+function dancerTorso(ctx, po) {
+  const HB = RM.heroBody;
+  dancerTorsoPath(ctx);
+  let g = ctx.createLinearGradient(0, -14, 0, 2);
+  g.addColorStop(0, HB.lit);
+  g.addColorStop(0.45, HB.base);
+  g.addColorStop(0.8, HB.shade);
+  g.addColorStop(1, HB.deep);
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.save();
+  dancerTorsoPath(ctx);
+  ctx.clip();
+  // bottom AO, upper-left gloss, left key rim — paintHero's three, at dancer scale
+  g = ctx.createLinearGradient(0, -1.4, 0, 2.4);
+  g.addColorStop(0, rgba(HB.deep, 0));
+  g.addColorStop(1, rgba(HB.deep, 0.32));
+  ctx.fillStyle = g;
+  ctx.fillRect(-6.8, -1.4, 13.6, 3.8);
+  g = ctx.createRadialGradient(-2.4, -10.5, 0.3, -2.4, -10.5, 3.0);
+  g.addColorStop(0, rgba('#ffffff', 0.38));
+  g.addColorStop(1, rgba('#ffffff', 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(-5.6, -13.5, 6.0, 6.0);
+  g = ctx.createLinearGradient(-5.6, 0, -3.2, 0);
+  g.addColorStop(0, rgba(HB.lit, 0.32));
+  g.addColorStop(1, rgba(HB.lit, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(-5.6, -13, 2.4, 15);
+  ctx.restore();
+  if (!po.front) {
+    // Back view: the two buns over the bottom edge, cleft between, scaled by the thrust.
+    const pop = po.buttPop;
+    // Twerk buns: LOW — their bottom edge (torso +6.6 = ~-3.7 absolute) sits only a shin's
+    // width above the ground, so the backside is the figure's lowest mass and the knees
+    // (±5.6) poke out past the bun sides (±5.2). The hands (on the bun tops) seal the cue.
+    const rx = 2.9 + 0.4 * pop;
+    const ry = 2.8 + 0.4 * pop;
+    const by = 3.4 - 0.3 * pop;
+    ell(ctx, -2.0, by, rx, ry);
+    ctx.fillStyle = HB.base;
+    ctx.fill();
+    ell(ctx, 2.0, by, rx, ry);
+    ctx.fill();
+    ctx.strokeStyle = rgba(HB.deep, 0.7);
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(0, by - 2.0);
+    ctx.lineTo(0, by + 1.8);
+    ctx.stroke();
+  }
+  for (const s of DANCER_SEEDS) seed(ctx, s[0], s[1], 0, RM.heroSeed.lit, HB.deep, RM.heroSeed.hi);
+}
+
+function dancerHead(ctx, po) {
+  const HB = RM.heroBody;
+  ctx.save();
+  ctx.translate(po.headX + po.headTilt * 2.0, po.headY);
+  ctx.rotate(po.headTilt);
+  const cx = 0;
+  const cy = -21.2;
+  // neck, then the berry ball
+  rr(ctx, -1.4, -17.4, 2.8, 2.6, 0.8);
+  ctx.fillStyle = HB.base;
+  ctx.fill();
+  ell(ctx, cx, cy, 4.8, 4.8);
+  const g = ctx.createLinearGradient(cx - 3, cy - 3, cx + 3, cy + 3);
+  g.addColorStop(0, HB.lit);
+  g.addColorStop(0.5, HB.base);
+  g.addColorStop(0.85, HB.shade);
+  g.addColorStop(1, HB.deep);
+  ctx.fillStyle = g;
+  ctx.fill();
+  const gl = ctx.createRadialGradient(cx - 1.8, cy - 1.9, 0.2, cx - 1.8, cy - 1.9, 2.4);
+  gl.addColorStop(0, rgba('#ffffff', 0.4));
+  gl.addColorStop(1, rgba('#ffffff', 0));
+  ctx.fillStyle = gl;
+  ctx.fillRect(cx - 4.2, cy - 4.2, 8.4, 8.4);
+  if (po.front) {
+    eye(ctx, cx - 1.9, cy - 0.4, 0.95, 1.15, false);
+    eye(ctx, cx + 1.9, cy - 0.4, 0.95, 1.15, false);
+    ctx.strokeStyle = rgba(P.black, 0.7);
+    ctx.lineWidth = 0.45;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(cx, cy + 1.1, 1.5, Math.PI * 0.25, Math.PI * 0.75);
+    ctx.stroke();
+  }
+  // cap: stem, then three leaves fanned over the top (cap()'s shape at head scale)
+  rr(ctx, cx - 0.7, cy - 6.4, 1.4, 2.4, 0.5);
+  const sg = ctx.createLinearGradient(0, cy - 6.4, 0, cy - 4);
+  sg.addColorStop(0, RM.heroLeaf.lit);
+  sg.addColorStop(1, RM.heroLeaf.base);
+  ctx.fillStyle = sg;
+  ctx.fill();
+  const b = RM.heroLeaf.base;
+  const tp = RM.heroLeaf.lit;
+  const e = RM.heroLeaf.deep;
+  leaf(ctx, cx, cy - 4.2, cx - 3.6, cy - 7.4, 1.5, b, tp, e);
+  leaf(ctx, cx, cy - 4.2, cx, cy - 8.4, 1.6, b, tp, e);
+  leaf(ctx, cx, cy - 4.2, cx + 3.6, cy - 7.4, 1.5, b, tp, e);
+  ctx.restore();
+}
+
+// The grown dancer. (x, y) = the feet; `dance` 0 floss / 1 twerk / 2 dougie, t seconds
+// since the dance started (the growth beat passes a clamped value, so the pose is frozen
+// neutral at 0 while the cutscene scales it up).
+export function drawDancer(ctx, x, y, dance, t) {
+  const po = dancerPose(dance, Math.max(0, t));
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(DANCER_SCALE, DANCER_SCALE);
+  // contact shadow (feet at the origin)
+  ell(ctx, 0, 0.8, 8.5, 2.0);
+  ctx.fillStyle = rgba(P.black, 0.18);
+  ctx.fill();
+  dancerLeg(ctx, po, 0);
+  ctx.save();
+  ctx.translate(po.hipX, po.hipY);
+  ctx.rotate(po.lean);
+  dancerArm(ctx, po, 0);
+  dancerTorso(ctx, po);
+  dancerHead(ctx, po);
+  ctx.restore();
+  dancerLeg(ctx, po, 1);
+  ctx.save();
+  ctx.translate(po.hipX, po.hipY);
+  ctx.rotate(po.lean);
+  dancerArm(ctx, po, 1);
+  ctx.restore();
+  ctx.restore();
+}

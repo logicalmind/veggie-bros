@@ -8,9 +8,9 @@
 // surfaces draw AFTER applyLightmap/applyBloom, so UI is never multiplied, bloomed, or
 // shaken, and the world pass's camera shake never reaches it.
 
-import { PALETTE, VIEW_W, VIEW_H } from './config.js';
-import { drawHero, drawTurnip } from './chars.js';
-import { drawFruit } from './props.js';
+import { DANCE_GLOW_END, DANCE_TEXT_T, DANCE_WALK_T, PALETTE, VIEW_H, VIEW_W } from './config.js';
+import { drawDancer, drawHero, drawTurnip } from './chars.js';
+import { drawFruit, drawGate } from './props.js';
 
 const P = PALETTE;
 // Zero-dependency stack: the OS UI face (SF Pro on macOS, Segoe UI on Windows). Weights
@@ -21,9 +21,6 @@ const STACK = `-apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
 // which is the glass look the panels want over a 1024x960 scene.
 const PANEL_FILL = 'rgba(18,22,30,0.55)';
 const PANEL_EDGE = 'rgba(255,255,255,0.22)';
-// The LEVEL_CLEAR white flash ceiling moved here with the overlay it clamps (render.js
-// no longer draws it).
-const CLEAR_FLASH_MAX_ALPHA = 0.6;
 
 function setFont(ctx, size, weight) {
   ctx.font = `${weight} ${size}px ${STACK}`;
@@ -188,31 +185,13 @@ function scrim(ctx) {
 
 const blink = (now) => Math.floor(now / 500) % 2 === 0;
 
-// PAUSED / LEVEL_CLEAR / WIN / GAME_OVER. LEVEL_CLEAR keeps its white flash (clamped) and
-// puts its title line on a dark pill so it stays readable over BOTH the flash and the scene;
-// the other three get the full scrim.
+// PAUSED / WIN / GAME_OVER: the full scrim behind the text.
 export function overlay(ctx, g, now) {
   switch (g.state) {
     case 'PAUSED':
       scrim(ctx);
       centerText(ctx, 'PAUSED', 88, { size: 24, weight: 800 });
       centerText(ctx, 'P RESUME    R RESTART    M MUTE', 136, { size: 9, weight: 600, color: 'rgba(255,255,255,0.85)' });
-      break;
-    case 'LEVEL_CLEAR':
-      if (g.clearT > 0.9) {
-        ctx.save();
-        ctx.globalAlpha = Math.min(CLEAR_FLASH_MAX_ALPHA, (g.clearT - 0.9) / 0.5);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-        ctx.restore();
-      }
-      {
-        const s = 'STAGE CLEAR';
-        const w = textW(ctx, s, 24, 800);
-        panel(ctx, (VIEW_W - w - 36) / 2, 82, w + 36, 36, 10);
-        centerText(ctx, s, 100, { size: 24, weight: 800, mid: true });
-      }
-      centerText(ctx, '+1000', 128, { size: 12, weight: 700, color: P.crown });
       break;
     case 'WIN':
       scrim(ctx);
@@ -241,4 +220,91 @@ export function popup(ctx, str, x, y) {
   ctx.strokeText(str, x, y);
   ctx.fillStyle = P.white;
   ctx.fillText(str, x, y);
+}
+
+// ---------------------------------------------------------------- the gate dance cutscene
+// The GATE_DANCE state's whole screen (render.js draws nothing else): the arch fills the
+// frame at 1.75x its world size, the small hero walks into the doorway, a green-white
+// glow floods the screen, and the grown dancer appears on the far side over the growth
+// beat, then dances until the "press any key" prompt is answered. Timeline = config's
+// DANCE_* constants; the doorway centre, the walk target and the dancer all key off
+// (VIEW_W/2, DANCE_GROUND_Y).
+const DANCE_GROUND_Y = 211; // the title screen's baked ground line: hero feet sit here
+const DANCE_ARCH_SCALE = 1.75;
+
+function danceBackdrop(ctx) {
+  // The far side of the gate: pale warm sky lit from behind the arch, one ground band.
+  let g = ctx.createLinearGradient(0, 0, 0, DANCE_GROUND_Y);
+  g.addColorStop(0, '#f4fae6');
+  g.addColorStop(0.65, '#dcefc6');
+  g.addColorStop(1, '#c2e3a4');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VIEW_W, DANCE_GROUND_Y);
+  g = ctx.createLinearGradient(0, DANCE_GROUND_Y, 0, VIEW_H);
+  g.addColorStop(0, '#8cc863');
+  g.addColorStop(1, '#5e9c42');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, DANCE_GROUND_Y, VIEW_W, VIEW_H - DANCE_GROUND_Y);
+  ctx.fillStyle = 'rgba(40,80,30,0.35)';
+  ctx.fillRect(0, DANCE_GROUND_Y, VIEW_W, 1);
+  const halo = ctx.createRadialGradient(VIEW_W / 2, 150, 10, VIEW_W / 2, 150, 95);
+  halo.addColorStop(0, 'rgba(166,255,114,0.5)');
+  halo.addColorStop(1, 'rgba(166,255,114,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+}
+
+function danceArch(ctx) {
+  // drawGate(x, y) = the bottom gate tile; art runs 103 px above it, so at 1.75x the dome
+  // top lands at y ~3 and the posts sink 28 px below the ground line — the arch fills
+  // the frame. The doorway's dark opening then reads over the walking hero.
+  ctx.save();
+  ctx.translate(VIEW_W / 2, DANCE_GROUND_Y);
+  ctx.scale(DANCE_ARCH_SCALE, DANCE_ARCH_SCALE);
+  drawGate(ctx, -16, 0);
+  ctx.restore();
+}
+
+export function danceScene(ctx, g, now) {
+  const t = g.danceT;
+  const p = g.player;
+  danceBackdrop(ctx);
+  if (t < DANCE_GLOW_END) {
+    // Walk-in: the hero crosses from off-screen left to the doorway centre; the arch
+    // draws AFTER it, so the dark doorway swallows it exactly as the glow takes over.
+    const walk = Math.min(1, t / DANCE_WALK_T);
+    const x = Math.floor(-14 + 136 * walk);
+    drawHero(ctx, x, DANCE_GROUND_Y - (p.big ? 28 : 14), 1, p.big, 'run', Math.floor(t * 7) % 2, 0.25);
+    danceArch(ctx);
+    if (t >= DANCE_WALK_T) {
+      const a = (t - DANCE_WALK_T) / (DANCE_GLOW_END - DANCE_WALK_T);
+      ctx.fillStyle = `rgba(166,255,114,${(a * 0.9).toFixed(3)})`;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    }
+    return;
+  }
+  // Far side: the grown dancer, scaled 0.35x (small-hero size) up to full over the growth
+  // beat, under a fading white wash; the pose clock starts at the prompt so the dance
+  // loops whole from the moment control arms.
+  const k = Math.min(1, (t - DANCE_GLOW_END) / (DANCE_TEXT_T - DANCE_GLOW_END));
+  const scale = 0.35 + 0.65 * (1 - Math.pow(1 - k, 3));
+  danceArch(ctx);
+  ctx.save();
+  ctx.translate(VIEW_W / 2, DANCE_GROUND_Y);
+  ctx.scale(scale, scale);
+  drawDancer(ctx, 0, 0, g.dance, t - DANCE_TEXT_T);
+  ctx.restore();
+  if (k < 1) {
+    ctx.fillStyle = `rgba(255,255,255,${(1 - k).toFixed(3)})`;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  }
+  if (t >= DANCE_TEXT_T) {
+    const msg = 'PRESS ANY KEY TO CONTINUE';
+    const w = textW(ctx, msg, 9, 700);
+    panel(ctx, (VIEW_W - w - 26) / 2, 222, w + 26, 15, 7.5);
+    const pulse = 0.7 + 0.3 * (0.5 + 0.5 * Math.sin(now / 280));
+    centerText(ctx, msg, 229.5, { size: 9, weight: 700, mid: true, color: `rgba(255,255,255,${pulse.toFixed(3)})` });
+  }
 }

@@ -2,6 +2,8 @@ import {
   CHECKPOINT_TRIGGER_BOTTOM,
   CHECKPOINT_TRIGGER_TOP,
   CHECKPOINT_TRIGGER_W,
+  DANCE_GLOW_END,
+  DANCE_TEXT_T,
   GROW_H,
   INVULN_TIME,
   LAND_MIN_POWER,
@@ -37,6 +39,7 @@ import {
   update as updateFx,
 } from './fx.js';
 import {
+  consumeAnyKey,
   consumeJumpPressed,
   consumeMute,
   consumePause,
@@ -116,7 +119,13 @@ export const G = {
   enemies: [],
   items: [],
   cam: makeCamera(),
-  clearT: 0,
+  // The gate-celebration cutscene (GATE_WALK → GATE_DANCE): walkT is the in-world walk into
+  // the arch, danceT the cutscene clock, dance the chosen dance (0 floss, 1 twerk, 2 dougie;
+  // -1 = none yet) and danceExit which end the dance takes ('next' level or the WIN screen).
+  walkT: 0,
+  danceT: 0,
+  dance: -1,
+  danceExit: 'next',
   bannerT: 0,
   winT: 0,
   overT: 0,
@@ -199,7 +208,7 @@ function onDeathResolved() {
     respawnAtCheckpoint();
     // The kill sites stopped the loop so the die jingle plays alone, and this is the only way
     // back into PLAYING that does not go through a state branch (startGame, the pause
-    // transitions and LEVEL_CLEAR all restart it themselves). It sits after the call, not inside
+    // transitions and GATE_DANCE all restart it themselves). It sits after the call, not inside
     // respawnAtCheckpoint(): that function returns early on its no-checkpoint fallback, and a
     // restart it never reached would leave that — the common, first-death — path silent.
     audio.musicStart();
@@ -244,8 +253,8 @@ function respawnAtCheckpoint() {
 }
 
 function onGate() {
-  G.state = 'LEVEL_CLEAR';
-  G.clearT = 0;
+  G.state = 'GATE_WALK';
+  G.walkT = 0;
   G.gateScored = true;
   G.score += SCORE.gate;
   audio.musicStop();
@@ -258,9 +267,10 @@ function onGate() {
   G.player.vy = 0;
 }
 
-// Shared WIN transition. It is deliberately not the same function as onBossDown(): a gate
-// walked into on the last level also ends the run, and that player has not beaten a boss, so
-// routing them through onBossDown() would pay out SCORE.bossDown for touching an arch.
+// Shared WIN transition, reached only through the dance's exit: a boss defeat dances with
+// danceExit 'win', and a gate on the (hypothetical) final level would dance out the same
+// way. Nobody else calls it — the dance is now the only door to the WIN screen, so a gate
+// touch can never skip straight past the celebration.
 function goWin() {
   G.state = 'WIN';
   G.winT = 0;
@@ -268,9 +278,20 @@ function goWin() {
   audio.sfx('win');
 }
 
+// The level's celebration. The dance is picked at random at entry — runtime state, not a
+// bake, so Math.random is fine here; G.dance doubles as the seam for forcing each dance in
+// tests. 'win' is taken only by the last level (the boss level, which has no gate), so every
+// real gate exit loads the next level.
+function startDance() {
+  G.state = 'GATE_DANCE';
+  G.danceT = 0;
+  G.dance = Math.floor(Math.random() * 3);
+  G.danceExit = G.levelIndex + 1 >= LEVELS.length ? 'win' : 'next';
+}
+
 function onBossDown() {
   G.score += SCORE.bossDown;
-  goWin();
+  startDance();
 }
 
 function rectOverlap(a, b) {
@@ -311,7 +332,7 @@ const GATE_TRIGGER_BOTTOM = TILE;
 // press latches until the next pause restarts the level, and Enter held from play snaps
 // GAME_OVER/WIN straight back to TITLE. Held-direction flags are deliberately absent here:
 // they belong to the input layer, not to a frame.
-const TRANSIENT_INPUT = ['jumpPressed', 'start', 'pausePressed', 'mutePressed', 'restartPressed'];
+const TRANSIENT_INPUT = ['jumpPressed', 'start', 'pausePressed', 'mutePressed', 'restartPressed', 'anyKeyPressed'];
 
 function endFrame() {
   for (const flag of TRANSIENT_INPUT) input[flag] = false;
@@ -640,20 +661,36 @@ function updateState(dt) {
   }
 
   // Items keep animating outside PLAYING: the gate's +1000 popup has to rise through the
-  // whole 1.4 s clear window, and WIN/GAME_OVER have no dimming rect, so mid-flight shards
-  // and any live berry would otherwise hang there frozen. (The p.dead branch above stays a
-  // full freeze — the world is frozen during death, architecture.md:41.)
-  if (G.state === 'LEVEL_CLEAR') {
-    G.clearT += dt;
-    updateItems(G.items, dt, G.level);
+  // walk-in and into the cutscene, and WIN/GAME_OVER have no dimming rect, so mid-flight
+  // shards and any live berry would otherwise hang there frozen. (The p.dead branch above
+  // stays a full freeze — the world is frozen during death, architecture.md:41.)
+  if (G.state === 'GATE_WALK') {
+    // The gate just paid out: control is the player's last, and the hero walks into the
+    // arch on its own. The synthetic input is the one authority here — no keys are read —
+    // and the walk is short (the trigger band IS the arch), so the visible "through the
+    // gate" beat lives in the cutscene. Enemies stay frozen: this is the celebration, not
+    // gameplay. walkT > 3 is the safety valve if the arch center is ever out of reach.
     const p = G.player;
     const gate = G.level.gate;
-    p.y = Math.min(p.y + 120 * dt, (gate.row + 1) * 16 - p.h);
-    if (G.clearT > 1.4) {
-      // Bounds check first: LEVELS has a fixed length, so on the last level there is no next
-      // level to load and loadLevel() would hand parseLevel() an undefined map. The final
-      // gate ends the run instead, and levelIndex stays on the last index.
-      if (G.levelIndex + 1 >= LEVELS.length) {
+    G.walkT += dt;
+    updatePlayer(p, dt, { left: false, right: true, run: false, jump: false, jumpPressed: false }, G.level, checkpointBounds().playerX);
+    consumeJumpPressed();
+    updateCamera(G.cam, dt, p, G.level.widthPx, checkpointBounds().camX);
+    updateItems(G.items, dt, G.level);
+    if (p.x + p.w / 2 >= gate.x + GATE_W / 2 || G.walkT > 3) startDance();
+    return;
+  }
+
+  if (G.state === 'GATE_DANCE') {
+    G.danceT += dt;
+    updateItems(G.items, dt, G.level);
+    // The 'power' jingle fires on the growth beat itself (the far side appearing), once.
+    if (G.danceT >= DANCE_GLOW_END && G.danceT - dt < DANCE_GLOW_END) audio.sfx('power');
+    // The exit arms only after the prompt is on screen, and only on a FRESH key press
+    // (consumeAnyKey is set on !e.repeat keydowns), so the right-hold from the walk-in
+    // cannot skip the dance.
+    if (G.danceT >= DANCE_TEXT_T && consumeAnyKey()) {
+      if (G.danceExit === 'win') {
         goWin();
       } else {
         G.levelIndex += 1;

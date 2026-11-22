@@ -315,3 +315,55 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
   - Next: R-7 was the post-R-6 playtest fix; the branch awaits JASON's next request.
     All seven commits are UNPUSHED (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b,
     + this one).
+
+- [x] **R-8** — gate celebration: auto walk-in, grown dancer (floss/twerk/dougie),
+  press-any-key continue (approved 2026-11-21)
+  - The one gameplay-surface slice on this branch: `LEVEL_CLEAR` is **deleted outright**,
+    replaced by two states, `GATE_WALK` (in-world auto-walk into the arch, ~0.25 s) and
+    `GATE_DANCE` (the cutscene). Files: `src/config.js`, `src/input.js`, `src/main.js`,
+    `src/chars.js`, `src/ui.js`, `src/render.js`. Approved design: gate exits go
+    1-1→1-2→1-3, the 1-3 boss defeat ALSO dances then WIN→TITLE; the grown form is
+    celebration-only (next level restarts small); the scene is the gate's own doorway.
+  - **Timeline** (config.js, shared by main.js + ui.js): `DANCE_WALK_T 1.45` (hero crosses
+    off-screen-left → doorway centre; drawn BEFORE the arch so the dark opening swallows
+    him), `DANCE_GLOW_END 1.75` (green/white flood), `DANCE_TEXT_T 2.15` (far-side growth
+    completes 0.35x→1.0 ease-out-cubic under the fading white; pose clock starts here so
+    the dance loops whole from the moment control arms).
+  - **Dancer** (chars.js, scene-only, live-painted — no bake): `drawDancer(ctx, x, y, dance, t)`
+    rig in local units × `DANCER_SCALE` 1.3, feet at origin, one `dancerPose(dance, t)`
+    driving three procedural poses over a 4-limb IK rig (bent arms: upper+fore with
+    shoulder→hand distance check; mirrored far-side limbs at darker `HB.deep`).
+    Berry torso (lit→base→shade→deep grad + AO/gloss/rim), neck, r4.8 head with cap;
+    front view = face + smile, back view = bare head.
+  - **Twerk legibility fix (two-part root cause):** (a) the pose itself — buns hung at
+    mid-thigh leaving shins below (read "wide-hipped standing"), and with 12.5-length
+    arms the hands cannot reach the knees in a deep squat (shoulder→knee 18.2 > 12.5).
+    Fix: buns dropped to the torso bottom (abs y ≈ −3.7 at rest, a shin's width off the
+    ground, knees ±5.6 poking past bun sides ±5.2, cleft line between), arms parameterized
+    per-pose (`A.u`/`A.f`) with the twerk override to 7.5/7.5 and IK targets on the bun
+    tops (distance 14.5 < 15 ✓), limbs thickened (thigh/shin/upper 3.4, fore 3.0), hands
+    r2.1 in near `HB.shade`/far `HB.deep` to read on the `HB.base` buns. (b) My probe
+    scale math was wrong (isolated canvas 4× × 1.3 = ÷5.2, not ÷4) — the code always drew
+    the pose spec. Pixel probes are ground truth at this scale; the VLM hallucinates
+    (claimed a face on the back view; probes found 0 dark eye pixels).
+  - **Exit input:** `input.anyKeyPressed` set on non-repeat keydowns, consumed via
+    `consumeAnyKey()`, armed only at `danceT >= DANCE_TEXT_T` — held direction keys
+    (repeats) can never skip, and a pre-arm press is dropped at the frame-end transient
+    reset (verified: 'x' at danceT 0.72 rejected; held ArrowRight for 40+ s never
+    skipped).
+  - **Boss path:** `danceExit` computed at `startDance()` — last level ⇒ `'win'`.
+    1-3 has no gate; the boss defeat call site (`defeatT > 1.5`) now funnels through
+    `onBossDown()` → `startDance()`; `goWin()` is reachable ONLY through the dance exit.
+  - Verified live in-page: full run 1-1 gate → dance (random 0/1/2, `danceExit:'next'`,
+    +1000) → 1-2 → gate → 1-3 → boss `defeated` (needs `active` — a far-spawn boss is
+    not simulated until the camera reaches it; a real defeat is always active) → 1.5 s
+    → `GATE_DANCE danceExit:'win'` → fresh key → `WIN` (score 4000) → Enter → `TITLE`.
+    Twerk geometry pixel-probed at max thrust: hips (±2.4,−10.3), knees (±5.6,−4.7),
+    ankles (±1.6,0), bun bottom abs −3.7, hands on bun tops. All three dances + walk-in
+    frame vision-checked, no glitches.
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,
+    "stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true}}` — hash unchanged (the
+    dance scene is state-gated, out of the bake strips). Parked `tools/verify.mjs`
+    drift continues, never re-run.
+  - Next: R-8 was the post-R-7 feature request. All eight commits are UNPUSHED
+    (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, + this one).

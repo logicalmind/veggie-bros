@@ -8,6 +8,7 @@ export const input = {
   pausePressed: false,
   mutePressed: false,
   restartPressed: false,
+  anyKeyPressed: false,
 };
 
 export function consumeJumpPressed() {
@@ -19,6 +20,12 @@ export function consumeJumpPressed() {
 export function consumeStart() {
   const v = input.start;
   input.start = false;
+  return v;
+}
+
+export function consumeAnyKey() {
+  const v = input.anyKeyPressed;
+  input.anyKeyPressed = false;
   return v;
 }
 
@@ -60,6 +67,10 @@ const PREVENT_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
 // letter binding tests both and a keydown can never be missed by one of them.
 function onKeyDown(e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // Any physical key, including the bound ones. Fresh presses only: a key already held
+  // (e.repeat, or a latched direction) cannot re-arm this, so a walk-in right-hold cannot
+  // auto-skip the dance cutscene.
+  if (!e.repeat) input.anyKeyPressed = true;
   if (PREVENT_KEYS.has(e.key)) e.preventDefault();
   const k = e.key.toLowerCase();
   if (e.key === "ArrowLeft" || e.code === "KeyA" || k === "a") {

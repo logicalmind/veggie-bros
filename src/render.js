@@ -5,7 +5,7 @@ import { parseLevel } from './level.js';
 import { LEVELS } from './levels.js';
 import { ambientFor, bakeLevel, parallaxFor, retileColumn as terrainRetile, visibleStrips } from './terrain.js';
 import { colorToCss } from './pixels.js';
-import { banner, hud, overlay, popup, title } from './ui.js';
+import { banner, danceScene, hud, overlay, popup, title } from './ui.js';
 import { drawBerry, drawFruit, drawGate, drawShard } from './props.js';
 import { drawBoss, drawHero, drawTurnip } from './chars.js';
 
@@ -195,6 +195,17 @@ export function render(g) {
     sc.setTransform(1, 0, 0, 1, 0, 0);
     return;
   }
+  // The dance cutscene is its own whole-surface layer, like TITLE: ui.danceScene paints the
+  // arch, the glow and the grown dancer directly, so nothing from the world pass (lightmap,
+  // bloom, shake, HUD) is under it. GATE_WALK, by contrast, is still the in-world view —
+  // the hero physically walking into the arch — and falls through to the normal pass below.
+  if (g.state === 'GATE_DANCE') {
+    sc.setTransform(HD, 0, 0, HD, 0, 0);
+    sc.clearRect(0, 0, VIEW_W, VIEW_H);
+    danceScene(sc, g, Date.now());
+    sc.setTransform(1, 0, 0, 1, 0, 0);
+    return;
+  }
   const level = g.level;
   const camX = Math.floor(g.cam.x);
 
@@ -244,7 +255,7 @@ export function render(g) {
   // — the retired `hud` layer's one remaining job was sharpness, and scene-resolution text beats
   // it. `ui` owns every string, panel and icon it lays out.
   sc.setTransform(HD, 0, 0, HD, 0, 0);
-  if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'LEVEL_CLEAR') hud(sc, g);
+  if (g.state === 'PLAYING' || g.state === 'PAUSED' || g.state === 'GATE_WALK') hud(sc, g);
   if (g.state === 'PLAYING' && g.bannerT > 0) banner(sc, g);
   overlay(sc, g, Date.now());
   sc.setTransform(1, 0, 0, 1, 0, 0);
