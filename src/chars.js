@@ -223,7 +223,16 @@ const SEEDS_BIG = [
   [6.0, 20.6, 0],
 ];
 
-// One hero frame. o: { big, blink, squash, feet }.
+// Arms: short limbs proportional to the body — the small hero's arm is ~38% of body
+// height, the big's the same ratio at 1.8x (its body is 1.81x tall). [outX, dyFromShoulder]
+// per state; hand x = 6 ± outX, shoulder x = 6 ± sx sits under the silhouette edge.
+const ARMS = {
+  small: { sy: 7.2, sx: 4.35, w: 1.3, down: [4.85, 3.75], mid: [4.70, 4.10], up: [5.00, -0.80] },
+  big: { sy: 12.6, sx: 4.45, w: 1.8, down: [4.95, 6.85], mid: [4.80, 7.50], up: [4.80, -1.05] },
+};
+const ARM_BY_FRAME = ['down', 'down', 'mid', 'down', 'mid', 'down', 'up', 'up', 'down'];
+
+// One hero frame. o: { big, blink, squash, feet, arm }.
 function paintHero(ctx, o) {
   const HB = RM.heroBody;
   for (const f of o.feet) foot(ctx, f[0], f[1], f[2], f[3], f[4] || 0, HB.shade, HB.base, HB.deep);
@@ -290,6 +299,27 @@ function paintHero(ctx, o) {
   ctx.arc(6, my - 0.25, o.big ? 0.95 : 0.85, Math.PI * 0.2, Math.PI * 0.8);
   ctx.stroke();
   if (squash) ctx.restore();
+  // Arms over the body's sides (drawn outside the squash transform: a still arm through the
+  // one-frame landing squash is invisible at this scale and keeps the hand dot unclipped).
+  // The shoulder end hides under the silhouette edge; the limb is the darkest body tone so
+  // it reads both on the base band and on the background, with a mid-tone hand dot at the end.
+  const A = o.big ? ARMS.big : ARMS.small;
+  const a = A[o.arm] || A.down;
+  for (const s of [-1, 1]) {
+    const x2 = 6 + s * a[0];
+    const y2 = A.sy + a[1];
+    ctx.strokeStyle = HB.deep;
+    ctx.lineWidth = A.w;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(6 + s * A.sx, A.sy);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.fillStyle = HB.shade;
+    ctx.beginPath();
+    ctx.arc(x2, y2, A.w * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 // Nine frames, in the frozen order:
@@ -307,7 +337,7 @@ function heroFrames(big) {
     ['dangle', false, false],
     ['flat', false, true],
   ];
-  return specs.map(([pose, blink, squash]) => (ctx) => paintHero(ctx, { big, blink, squash, feet: F[pose] }));
+  return specs.map(([pose, blink, squash], i) => (ctx) => paintHero(ctx, { big, blink, squash, feet: F[pose], arm: ARM_BY_FRAME[i] }));
 }
 
 // ------------------------------------------------------------------ the turnip

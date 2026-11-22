@@ -367,3 +367,45 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     drift continues, never re-run.
   - Next: R-8 was the post-R-7 feature request. All eight commits are UNPUSHED
     (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, + this one).
+
+- [x] **R-9** — hero arms: proportional limbs on the small and big strawberry (approved 2026-11-21)
+  - Play request: "during normal play, can we add arms to strawberry that are
+    proportional to its size". Single file: `src/chars.js`. No canvas/anchor changes
+    — arms draw inside the existing 12px-wide bake canvas (small 12×14, big 12×28).
+  - **Geometry:** `ARMS` table keyed small/big — `sy` shoulder y, `sx` shoulder x
+    offset (under the silhouette edge), `w` stroke width, and per-state `[outX, dy]`
+    for `down`/`mid`/`up` hand positions. Small: shoulder (6±4.35, 7.2), down hand
+    (6±4.85, 10.95) — arm ≈3.75–4.1 units on a 10.3-unit body (~38% of body height);
+    big: shoulder (6±4.45, 12.6), down hand (6±4.95, 19.45) — same ratio, the big
+    body is 1.81× tall. Widths 1.3/1.8, hand dot r = 0.62·w. `ARM_BY_FRAME`
+    (9 entries in frame-table order) swings `mid` on the stride frames, `up` on
+    jump/fall, `down` otherwise — idle, blink, together, land rest.
+  - **Contrast (measured, not guessed):** first pass used `HB.shade` stroke +
+    `HB.deep` hand — arm (172,30,61) vs body-at-arm-height (197,47,66) was too
+    close to read and the VLM confirmed "no arms visible". Final: stroke
+    `HB.deep` (102,13,44) + hand dot `HB.shade` (172,30,61) — deep reads on both
+    the base band and the background (probe bg 223,232,210).
+  - **Draw order:** feet → (squash-transformed) body/shading/seeds/cap/face → arms
+    LAST, deliberately OUTSIDE the squash transform: a still arm through the
+    one-frame landing squash is invisible at this scale and keeps the hand dot
+    unclipped. The shoulder end hides under the silhouette edge; the limb is the
+    darkest body tone.
+  - Verified: pixel probes on both heroes (small: arm mid (102,13,44) ✓, hand
+    (172,30,61) ✓, body at arm height (197,47,66); big: same arm/hand values,
+    body (185,39,64); leftmost arm px x=2 / rightmost x=45 (small, canvas 0–47)
+    and x=1/x=46 (big) — no clipping). Scene-scale capture 1024×960 with 4× zoom
+    before/after crop: at the arm position the before pixel is background green
+    (119,188,100), the after is the arm (89,12,35); body pixels identical in both.
+    VLM vision-check at scene scale confirmed arms present/absent as expected.
+  - Pre-existing, NOT a regression: the hero's visible foot sliver (device rows
+    53–55, logical y ≈13.25–13.75) renders dark red, not the green `F.green` the
+    `foot()` call specifies. Proven pre-existing — byte-identical between the
+    committed arm-less build and the arms build (R-2 art, out of scope here).
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,
+    "stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true}}` — hash unchanged
+    (the arm pixels land in the hero's baked strips but the strip hash covers the
+    strip layout/edge contract, which is untouched). Parked `tools/verify.mjs`
+    drift continues, never re-run.
+  - Next: R-9 was the post-R-8 play request. All nine commits are UNPUSHED
+    (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, 763be6f,
+    + this one).
