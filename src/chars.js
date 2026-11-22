@@ -224,13 +224,31 @@ const SEEDS_BIG = [
 ];
 
 // Arms: short limbs proportional to the body — the small hero's arm is ~38% of body
-// height, the big's the same ratio at 1.8x (its body is 1.81x tall). [outX, dyFromShoulder]
-// per state; hand x = 6 ± outX, shoulder x = 6 ± sx sits under the silhouette edge.
+// height, the big's the same ratio at 1.8x (its body is 1.81x tall). Each state gives
+// [outX, dyFromShoulder] PER SIDE (L = the −x side, R = the +x side): hand x = 6 ∓ outX,
+// hand y = sy + dy; shoulder x = 6 ± sx sits under the silhouette edge.
+// down/mid/up are symmetric rest/transition/air; lf/rf are the run swing — the arm
+// OPPOSITE the leading leg carries forward (the art faces +x, so "forward" is the up
+// hand), the other trails down. stride = right foot forward ⇒ lf; strideBack ⇒ rf.
 const ARMS = {
-  small: { sy: 7.2, sx: 4.35, w: 1.3, down: [4.85, 3.75], mid: [4.70, 4.10], up: [5.00, -0.80] },
-  big: { sy: 12.6, sx: 4.45, w: 1.8, down: [4.95, 6.85], mid: [4.80, 7.50], up: [4.80, -1.05] },
+  small: {
+    sy: 7.2, sx: 4.35, w: 1.3,
+    down: { L: [4.85, 3.75], R: [4.85, 3.75] },
+    mid: { L: [4.70, 4.10], R: [4.70, 4.10] },
+    up: { L: [5.00, -0.80], R: [5.00, -0.80] },
+    lf: { L: [4.45, 1.70], R: [5.05, 5.45] },
+    rf: { L: [5.05, 5.45], R: [4.45, 1.70] },
+  },
+  big: {
+    sy: 12.6, sx: 4.45, w: 1.8,
+    down: { L: [4.95, 6.85], R: [4.95, 6.85] },
+    mid: { L: [4.80, 7.50], R: [4.80, 7.50] },
+    up: { L: [4.80, -1.05], R: [4.80, -1.05] },
+    lf: { L: [4.60, 2.20], R: [4.95, 8.60] },
+    rf: { L: [4.95, 8.60], R: [4.60, 2.20] },
+  },
 };
-const ARM_BY_FRAME = ['down', 'down', 'mid', 'down', 'mid', 'down', 'up', 'up', 'down'];
+const ARM_BY_FRAME = ['down', 'down', 'lf', 'mid', 'rf', 'mid', 'up', 'up', 'down'];
 
 // One hero frame. o: { big, blink, squash, feet, arm }.
 function paintHero(ctx, o) {
@@ -306,8 +324,9 @@ function paintHero(ctx, o) {
   const A = o.big ? ARMS.big : ARMS.small;
   const a = A[o.arm] || A.down;
   for (const s of [-1, 1]) {
-    const x2 = 6 + s * a[0];
-    const y2 = A.sy + a[1];
+    const [ox, dy] = s < 0 ? a.L : a.R;
+    const x2 = 6 + s * ox;
+    const y2 = A.sy + dy;
     ctx.strokeStyle = HB.deep;
     ctx.lineWidth = A.w;
     ctx.lineCap = 'round';

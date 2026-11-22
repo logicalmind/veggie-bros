@@ -409,3 +409,36 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
   - Next: R-9 was the post-R-8 play request. All nine commits are UNPUSHED
     (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, 763be6f,
     + this one).
+
+- [x] **R-10** — run arms: contralateral swing in concert with the legs (approved 2026-11-21)
+  - Play request: "can we have the arms move while the character is running. In
+    concert with the legs". Single file: `src/chars.js`. No canvas/anchor changes.
+  - **Design:** the symmetric `[outX, dy]` arm states became per-side `{L: [outX,dy],
+    R: [outX,dy]}` (the draw loop reads `s < 0 ? a.L : a.R`), and two run-swing
+    states were added: `lf` (left hand up, right hand low) and `rf` (mirror). The
+    arm OPPOSITE the leading leg carries forward/up, so the arms read as pumping
+    with the stride instead of bobbing in unison.
+  - **Frame mapping:** run frames are baked stride/pass/strideBack/together —
+    stride (right foot forward) ⇒ `lf`, pass ⇒ `mid`, strideBack (left foot
+    forward) ⇒ `rf`, together ⇒ `mid`. `ARM_BY_FRAME` is now
+    `['down','down','lf','mid','rf','mid','up','up','down']`; jump/fall keep
+    `up`, idle/blink/land keep `down`.
+  - **Amplitude:** small hero's hands travel sy+1.70 → sy+5.45, a 3.75-unit
+    (15 device px at 1:1) vertical swing vs the old 0.35-unit ≈ 1.4 px
+    down↔mid bob — why the arms previously read as still. Big: 6.4 units
+    (25.6 px), same ratios as R-9. Trail-hand x flare ≤ 5.05/4.95 keeps the
+    hand dot inside the 12px canvas (small: 0.95 − r 0.806 > 0).
+  - Verified: pixel probes at 1:1 on all four run frames (exact hand-dot color
+    (172,30,61) clusters): stride left (6,35) / right (44,50); strideBack right
+    (41,35) / left (3,50) — exact mirrors; pass/together both ≈(5,41) and
+    (43,41) (odd frames carry the pre-existing −1 run bob). 4x-zoom before/after
+    sheet vision-checked (alternation visible, no clipping, legs alternate);
+    in-game scene capture mid-stride shows one arm high, the other low.
+  - Gates: `hd-verify` `{"ok":true,"sceneScale":4,"scene":[1024,960],"determinism":true,
+    "stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true}}` — unchanged
+    (the arm pixels land in the hero's baked strips; the strip hash covers the
+    strip layout/edge contract, untouched). Parked `tools/verify.mjs` drift
+    continues, never re-run.
+  - Next: R-10 was the post-R-9 play request. All ten commits are UNPUSHED
+    (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, 763be6f,
+    1d0549d, + this one).
