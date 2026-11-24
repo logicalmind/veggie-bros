@@ -279,8 +279,9 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
   - Deferral: "solid color" read as "no star, no hollow" — the rounded body gradient, top
     highlight strip and outline stay. A literally flat single-colour fill is a one-line
     follow-up if wanted.
-  - Next: R-6 was the last planned slice. All six commits are UNPUSHED (6554051, b27074e,
-    bfd3467, 9960a75, d1833e1, + this one); the branch awaits JASON's next request.
+  - Next: R-6 was the last planned slice; the branch awaits JASON's next request.
+    (Push status as of 2026-11-23: the whole branch up to R-10 is on `origin`;
+    read `git rev-list --count origin/feature/realistic-graphics..HEAD` for the live count.)
 
 - [x] **R-7** — landing shake: configurable + playtuned down, shake edge-flash removed (approved 2026-11-21)
   - Two playtest reports, both FX/render-only (`src/config.js`, `src/fx.js`, `src/render.js`);
@@ -313,8 +314,6 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     working mechanism (a plain F5 re-served stale `fx.js` during this slice). Parked
     `tools/verify.mjs` drift continues, never re-run.
   - Next: R-7 was the post-R-6 playtest fix; the branch awaits JASON's next request.
-    All seven commits are UNPUSHED (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b,
-    + this one).
 
 - [x] **R-8** — gate celebration: auto walk-in, grown dancer (floss/twerk/dougie),
   press-any-key continue (approved 2026-11-21)
@@ -365,8 +364,7 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     "stripHash":"f7206cb3","seam":{"cam140":true,"cam420":true}}` — hash unchanged (the
     dance scene is state-gated, out of the bake strips). Parked `tools/verify.mjs`
     drift continues, never re-run.
-  - Next: R-8 was the post-R-7 feature request. All eight commits are UNPUSHED
-    (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, + this one).
+  - Next: R-8 was the post-R-7 feature request.
 
 - [x] **R-9** — hero arms: proportional limbs on the small and big strawberry (approved 2026-11-21)
   - Play request: "during normal play, can we add arms to strawberry that are
@@ -406,9 +404,7 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     (the arm pixels land in the hero's baked strips but the strip hash covers the
     strip layout/edge contract, which is untouched). Parked `tools/verify.mjs`
     drift continues, never re-run.
-  - Next: R-9 was the post-R-8 play request. All nine commits are UNPUSHED
-    (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, 763be6f,
-    + this one).
+  - Next: R-9 was the post-R-8 play request.
 
 - [x] **R-10** — run arms: contralateral swing in concert with the legs (approved 2026-11-21)
   - Play request: "can we have the arms move while the character is running. In
@@ -439,6 +435,4 @@ zero-dependency vanilla-ES-module canvas stack. No new deps, no build step, no h
     (the arm pixels land in the hero's baked strips; the strip hash covers the
     strip layout/edge contract, untouched). Parked `tools/verify.mjs` drift
     continues, never re-run.
-  - Next: R-10 was the post-R-9 play request. All ten commits are UNPUSHED
-    (6554051, b27074e, bfd3467, 9960a75, d1833e1, 2995d5b, 7bffa55, 763be6f,
-    1d0549d, + this one).
+  - Next: R-10 was the post-R-9 play request.
