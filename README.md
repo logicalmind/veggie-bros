@@ -1,6 +1,6 @@
 # Veggie Bros.
 
-8-bit-inspired fruit-and-vegetable side-scrolling platformer in vanilla JS + HTML5 canvas — zero dependencies, no build step, original content.
+Fruit-and-vegetable side-scrolling platformer in vanilla JS + HTML5 canvas — zero dependencies, no build step, original content. The art is fully procedural high-resolution 2D (gradients, seeded noise, soft lighting, bloom, multi-depth parallax), painted in code at 4× a 256×240 logical playfield. No image files anywhere.
 
 ## Run
 
@@ -36,17 +36,18 @@ Collect Sunfruit, stomp Turnip Troopers, and grow with the Mega Berry. Reach the
 
 ## Verification
 
-The repo ships its own headless test harness — no test framework, node builtins only. From the repo root:
+The render pipeline is gated by `tools/hd-verify.mjs` — a browser-side sanity set. With the dev server running, open the game and paste it into the DevTools console (or fetch-and-eval it):
 
-```sh
-node tools/verify.mjs        # 50/50 pass, 0 fail
-node tools/verify.mjs R49    # one id on its own
+```js
+window.__hd = await (0, eval)(await (await fetch('/tools/hd-verify.mjs')).text())
 ```
 
-`tools/verify.mjs` stubs just enough DOM, canvas and audio to import and drive the real `src/main.js`, fixed-timestep loop included, and registers one named check per historical defect: `SMOKE` (shipped map-data hygiene plus the standing-surface gap/rise metric), `R01`–`R33`, `R36`–`R38` and `R40`–`R52`. `R34`, `R35` and `R39` are reserved ids that were never registered. Any id also runs alone (`node tools/verify.mjs R47`), which is how a check that only passes because an earlier check left ink behind gets caught.
+(Any paste-and-run form works as long as the text is **evaluated**, not `import`ed: the file is a bare async IIFE with no export, so `import(blobURL)` resolves to an empty module.)
 
-The renderer is measured rather than eyeballed. `R47` counts draw calls per surface on one settled frame; `R48` proves terrain and atlas baking happens per level rather than per frame; `R49` gates art density (≥ 90 distinct colours on a reference frame, per-tile luminance tone bands median ≥ 5 and minimum ≥ 3, per-tile distinct colours median ≥ 6); `R50`–`R52` pin draw-stream determinism, a frozen gameplay snapshot, and screen shake that stays in the renderer instead of moving the camera or the player. For scale, read back from the canvas at device-pixel ratio 3 and downsampled to the logical 256×240 (nearest-neighbour, so no invented colours): the canonical 1-1 frame carries **1245** unique colours on this build, where the pre-upgrade build carried **26**. `R49` bounds density per tile on purpose — no check pins a palette digest, so the art can still change.
+It prints one JSON report and checks the invariants that must hold forever: the scene backing is `SCENE_SCALE` 4 → 1024×960; terrain strip bakes (256×960 HD px) are deterministic across `invalidate()`; the **seam contract** — the same view rendered through two different strip phases (0 and 8) is byte-identical, the property that makes the strip LRU legal; and the live canvas is a real HD frame (≥ 50 distinct colours; a settled 1-1 frame carries ~11–12 k). Expected: `{"ok":true,...,"seam":{"cam140":true,"cam420":true}}`.
+
+The older headless suite `tools/verify.mjs` (54 checks, one per historical defect) is **parked on this branch and currently cannot run** — its digests pin the pre-HD 8-bit atlas byte-for-byte, and `src/sprites.js`, which it imports, no longer exists. It still works on `feature/graphics-upgrade` and `main`. Gameplay itself has no automated coverage here; the state machine, physics and levels are verified by playtest and by the pixel probes recorded in `REALISTIC_STATE.md`.
 
 ## Structure
 
-See [architecture.md](architecture.md) for the module map and design, and its **Deviations** section for the places where the shipped game deliberately differs from the original design.
+See [architecture.md](architecture.md) for the module map and design, and its **Deviations** section for the places where the shipped game deliberately differs from the original design. Caveat: its file map and line citations describe the pre-HD renderer (`sprites.js`/`atlas.js` no longer exist; their successors are `chars.js` + the HD painter in `terrain.js`/`composite.js`); the gameplay sections still hold. `REALISTIC_STATE.md` is the running log of the HD branch.
