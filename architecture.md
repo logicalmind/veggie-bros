@@ -13,32 +13,35 @@ Citations are `file:line` as of the `R34` docs commit. When code moves, locate b
 ### File map
 
 ```
-index.html          page shell, canvas, touch overlay, module entry; +4 dark-boot metas in <head> (`index.html:22,25,28,29`)
+index.html          page shell, canvas, touch overlay, module entry; +4 dark-boot metas in <head>
 README.md           run instructions + controls
 architecture.md     this document
 serve-local.sh      localhost http server, default port 8010, refuses 8000
 serve-network.sh    same on all interfaces (play from another device)
-src/config.js    105 all tunable constants; the graphics-upgrade keys ART_SCALE 2, FX_SCALE 0.5, ART_MAX_PX, LAND_MIN_POWER are config.js:59-67 and nothing in player/enemy/items/level/camera reads them
-src/sprites.js  1079 art DATA: pixel-string matrices + palette-letter maps that register into the atlas at load, plus the 5x7 GLYPH_ART font; every draw function is now ONE atlas blit behind the frozen (x, y) contract (sprites.js:1-4,853,1057)
-src/atlas.js     237 ONE atlas canvas + metadata table: register(entry) at load, bakeAll(scale) packs every frame once in registration order behind a 1-px gutter under a 2048-px width ceiling, blit()/emissive() are the only draws and metrics() counts unknown-key blits (atlas.js:7,8,30,45,157,170,179)
-src/pixels.js    467 bake-time pixel primitives — hash/seeded (the project's only RNG, no Math.random), colour/HSL helpers, buildRamps, bakeMatrix (outline/light/shade/rim/dither/emissive applied in one fixed order) and the lightmap/glow bakes bakeRadial/bakeVertical; nothing here runs per frame (pixels.js:9,17,194,252,435,454)
-src/terrain.js   782 per-level baked layers: an ambient sky wash, three parallax depths, and terrain strips STRIP_W 64 logical px wide under a MAX_LIVE 12 LRU, so the frame's background is 1+3+N drawImages and nothing here runs per frame either (terrain.js:31,33,44,247,462,517,555)
-src/fx.js        434 particles, impact FX, squash and camera shake — render-only, fixed-capacity typed arrays (MAX_PARTICLES 96), one signed shake int; the only per-entity data is a squash slot the renderer reads (fx.js:14,97,101,298,320)
-src/composite.js 410 the resolution model and the six named layer buffers (scene/hud/upscale/lightmap/bloom/bloomHalf — composite.js:36), kFor/configure/layout/layers sizing (composite.js:44,97,101,120), and the two lighting passes: drawLightmap gathers (composite.js:215), applyLightmap multiplies, buildBloom/applyBloom add with 'lighter' under BLOOM_MAX_ALPHA (composite.js:34,276,338,396)
-src/render.js    310 the LOGICAL 256x240 frame: world into `scene`, HUD/banner/overlay/TITLE into `hud`, never the visible canvas (render.js:242)
-src/input.js     251 keyboard + touch input state
+stop-server.sh      stops the server by port; refuses to touch a port held by anything else
+src/config.js    121 all tunable constants; the HD keys SCENE_SCALE 4, FX_SCALE 0.5 and LAND_MIN_POWER are config.js:56-67 and nothing in player/enemy/items/level/camera reads the scales
+src/chars.js     979 HD character bakes — the strawberry hero (small + big), the turnip, the crowned-pineapple boss, and the gate dancer: procedural vector paints at SCENE_SCALE, lazily baked once per (key, frame), blitted at LOGICAL size so they land 1:1 under the scene transform; the draw surface is the frozen sprites.js one — same names, args, anchors, frame tables (chars.js:1-16)
+src/props.js     570 HD item/FX art — fruit, berry, shard, the melon gate, the four particle kinds — plus the emissive masks the bloom pass gathers; the art successor of sprites.js's item/FX section and of src/atlas.js, retired by the same cutover; frozen draw surface, one drawImage over a lazily-baked vector canvas each (props.js:1-18,486-565)
+src/ui.js        310 HD UI: OS-font vector text, soft panels, HUD/banner/overlay/TITLE/GATE_DANCE screens — R-4 retired the `hud` layer AND the 5x7 pixel font; every surface draws on the scene under the HD transform, after the FX passes, in the same logical grid (ui.js:1-9)
+src/pixels.js    226 bake-time primitives — hash/seeded (the project's only RNG, no Math.random), colour/HSL helpers (rgbToHex/parseColor/colorToCss/rgbToHsl/hslToRgb), makeLayer (the project's only canvas factory), buildRamps, and the glow/gradient bakes bakeRadial/bakeVertical; the old bakeMatrix died with the atlas (pixels.js:9,17,23,175,194,213)
+src/terrain.js  1261 per-level baked layers, HD: procedural painters per tile (grass-capped dirt, beveled stone, seeded bricks, pumpkins, platforms, pipes), fractional air AO, baked ambient sky, 3 HD parallax depths, and terrain strips STRIP_W 64 logical px (256×960 HD px) under a MAX_LIVE 8 LRU, so the frame's background is 1+3+N drawImages and nothing here runs per frame (terrain.js:29-31,252,259-266)
+src/fx.js        453 particles, impact FX, squash and camera shake — render-only, fixed-capacity typed arrays (MAX_PARTICLES 96), one signed shake int; KIND values are the props.js art keys 'fx.dust'|'fx.spark'|'fx.poof'|'fx.chip'; the only per-entity data is a squash slot the renderer reads (fx.js:14,17,302,313,335)
+src/composite.js 465 the resolution model and the FIVE named layer buffers (scene/upscale/lightmap/bloom/bloomHalf — the `hud` layer was retired by R-4, composite.js:41), configure/layout/layers sizing, and the two lighting passes: drawLightmap gathers + applyLightmap multiplies, buildBloom/applyBloom add with 'lighter' under BLOOM_MAX_ALPHA (composite.js:29,41,121)
+src/render.js    262 assembles ONE frame: world → lighting → FX → UI all into `composite.layers().scene` under render()'s single SCENE_SCALE transform, never the visible canvas (render.js:180-188)
+src/input.js     262 keyboard + touch input state
 src/audio.js     214 Web Audio synth: SFX, music loop, mute
 src/levels.js     65 the 3 level maps (string grids) + metadata
 src/level.js     119 map parser + tile helpers (no DOM — node-importable)
 src/player.js    205 hero physics, collision, damage/death
-src/enemy.js     114 Turnip Trooper + Bromely (boss)
-src/items.js     117 Sunfruit, Mega Berry, block pops, shards, score popups
+src/enemy.js    114 Turnip Trooper + Bromely (boss)
+src/items.js    117 Sunfruit, Mega Berry, block pops, shards, score popups
 src/camera.js     93 side-scroll camera
-src/main.js      728 entry: the boot bakes (bakeSprites + initFx, main.js:106-107), DPR sizing delegated to composite.configure (main.js:86), the fixed-timestep loop, the state machine, and the only blits that reach the canvas (main.js:697-699)
-tools/verify.mjs 6331 headless harness: SMOKE + one check per round (`SMOKE` + `R01`–`R33` + `R36`–`R38` + `R40`–`R52` — 49 numbered ids + SMOKE = 50, no duplicates; `R34`/`R35`/`R39` stay unregistered by policy, see `WORKFLOW_STATE.md`)
+src/main.js      766 entry: the boot bakes (fx init, main.js:107), DPR sizing delegated to composite.configure, the fixed-timestep loop, the state machine (incl. the GATE_DANCE cutscene), and the only blits that reach the canvas (main.js:731-761)
+tools/hd-verify.mjs  97 browser-side HD gate: scene dims, bake determinism, the strip seam contract, live-frame colour floor — one JSON report (invocation in README §Verification)
+tools/verify.mjs 6842 headless harness: SMOKE + one check per round (`SMOKE` + `R01`–`R33` + `R36`–`R38` + `R40`–`R52`) — PARKED on this branch and currently unrunnable: its digests pin the pre-HD 8-bit art and it imports the deleted `src/sprites.js`. Live and green on `feature/graphics-upgrade` / pre-cutover `main`.
 ```
 
-Four modules touch the DOM: `main.js` and `input.js` as always, plus the two bake modules — `pixels.js:24-26` and `atlas.js:128-130` are the only `document`/`OffscreenCanvas` references elsewhere in `src/` (`grep -c "document\\.\\|window\\.\\|OffscreenCanvas" src/*.js` → `input.js` 12, `main.js` 4, `pixels.js` 3, `atlas.js` 3, every other file 0; `composite.js:67,98`'s two matches are comments). Both allocations sit inside a function — `makeLayer` (`pixels.js:23`) and `makeCanvas` (`atlas.js:127`) — so no canvas exists at import time, and `sprites.js` (the art data) has zero DOM references. That leaves the thirteen modules `config.js`, `levels.js`, `level.js`, `sprites.js`, `audio.js`, `player.js`, `enemy.js`, `items.js`, `camera.js`, `render.js`, `composite.js`, `terrain.js`, `fx.js` DOM-reference-free and importable in Node — which is how `tools/verify.mjs` drives the real game. `audio.js` touches Web Audio only (`AudioContext`), never the DOM (`audio.js:5,127`).
+Three modules touch the DOM: `main.js` and `input.js` as always, plus `pixels.js:24-26` — `makeLayer` is the project's ONLY canvas factory, and every bake module (`chars.js`, `props.js`, `terrain.js`, `composite.js`, `ui.js`) allocates through it (`grep -c "document\\.\\|window\\.\\|OffscreenCanvas" src/*.js` → `input.js` 12, `main.js` 4, `pixels.js` 3, every other file 0 — `composite.js:72,99`'s and `props.js:12`'s matches are comments). The allocation sits inside the function, so no canvas exists at import time. That leaves the fifteen modules `config.js`, `levels.js`, `level.js`, `chars.js`, `props.js`, `ui.js`, `audio.js`, `player.js`, `enemy.js`, `items.js`, `camera.js`, `render.js`, `composite.js`, `terrain.js`, `fx.js` DOM-reference-free and importable in Node. `audio.js` touches Web Audio only (`AudioContext`), never the DOM (`audio.js:5,127`).
 
 ### Game loop
 

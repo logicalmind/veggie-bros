@@ -50,4 +50,4 @@ The older headless suite `tools/verify.mjs` (54 checks, one per historical defec
 
 ## Structure
 
-See [architecture.md](architecture.md) for the module map and design, and its **Deviations** section for the places where the shipped game deliberately differs from the original design. Caveat: its file map and line citations describe the pre-HD renderer (`sprites.js`/`atlas.js` no longer exist; their successors are `chars.js` + the HD painter in `terrain.js`/`composite.js`); the gameplay sections still hold. `REALISTIC_STATE.md` is the running log of the HD branch.
+See [architecture.md](architecture.md) for the module map and design, and its **Deviations** section for the places where the shipped game deliberately differs from the original design. Caveat: the file map is current, but the deep sections' `file:line` citations still date from the pre-HD era — locate code by expression, not by number. `REALISTIC_STATE.md` is the running log of the HD branch.
